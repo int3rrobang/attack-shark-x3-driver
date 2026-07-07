@@ -42,6 +42,19 @@ The mouse supports four polling rate levels. The value sent at index 3 determine
 ### Checksum Calculation
 The checksum at index 4 is calculated using the formula: `0xFF - buffer[3]`.
 
+## Complete Packet Payloads
+
+Stock FA61/X3 wired captures match this layout. Full 9-byte payloads for each rate:
+
+| Rate (Hz) | Payload (hex)                       |
+|-----------|-------------------------------------|
+| 125 Hz    | `06090108f700000000`                |
+| 250 Hz    | `06090104fb00000000`                |
+| 500 Hz    | `06090102fd00000000`                |
+| 1000 Hz   | `06090101fe00000000`                |
+
+Byte 3 is the encoded rate, byte 4 is `0xFF - Byte[3]`, bytes 5-8 are zero-pad.
+
 ## Wireshark Analysis Example
 
 To observe this protocol in action using Wireshark with USBPcap:
@@ -91,4 +104,4 @@ await device.controlTransfer(
 -   **Interface**: 2
 -   **Payload Length**: 9 bytes
 -   **Checksum**: `0xFF - RateValue`
--   **Compatibility**: Wired and Wireless (Dongle)
+-   **Compatibility**: Wired, Wireless (Dongle), and X3 Wired / FA61

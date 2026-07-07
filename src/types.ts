@@ -6,6 +6,15 @@ export enum ConnectionMode {
 	Adapter = 0xfa60,
 	/** Wired mode via USB cable */
 	Wired = 0xfa55,
+	/** Wired mode for X3 variant (different PID) */
+	X3Wired = 0xfa61,
+}
+
+/**
+ * Returns true if the connection mode is any wired variant (including X3Wired).
+ */
+export function isConnectionModeWired(mode: ConnectionMode): boolean {
+	return mode === ConnectionMode.Wired || mode === ConnectionMode.X3Wired;
 }
 
 /**

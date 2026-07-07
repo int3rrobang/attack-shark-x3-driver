@@ -58,7 +58,8 @@ This report **must** be followed by the reapplication of:
 
 ## Implementation Workflow
 
-The following sequence reflects the logic used in the `AttackSharkX11.reset()` method:
+The following sequence reflects the logic used in the `AttackSharkX11.reset()` method. Packets are spaced by the driver's
+`delayMs` option; FA61/X3 stock captures use roughly 500 ms between reset reports.
 
 ```typescript
 // 1. Initialize Reset
@@ -69,8 +70,14 @@ await driver.resetDpi();            // Sends DPI configuration
 await driver.resetUserPreferences(); // Sends LED and Key Response settings
 await driver.resetPollingRate();     // Sends Polling Rate configuration
 await driver.resetMacro();           // Clears/Resets standard buttons
-await driver.resetCustomMacro();     // Clears/Resets advanced macros
+if (driver.connectionMode !== ConnectionMode.X3Wired) {
+    await driver.resetCustomMacro(); // Clears/Resets advanced macros on X11 modes
+}
 ```
+
+For `ConnectionMode.X3Wired` / FA61, stock reset/new-profile captures send only `0c`, `04`, `05`, `06`, and `08` reports.
+They do not send `09` custom-macro definition pages unless macro contents were explicitly modified. The driver therefore
+skips the legacy custom-macro reset for X3; sending an empty BACKWARD custom macro was observed to break the back button.
 
 ## Summary
 - **Report ID**: 0x0C

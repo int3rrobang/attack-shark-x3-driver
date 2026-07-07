@@ -12,7 +12,7 @@ import { PollingRateBuilder, type Rate } from '../protocols/PollingRateBuilder.j
 import { UserPreferencesBuilder, type UserPreferencesBuilderOptions } from '../protocols/UserPreferencesBuilder.js';
 import type { PacketLength, ReportId, Logger } from '../types.js';
 // eslint-disable-next-line no-duplicate-imports
-import { ConnectionMode, Button } from '../types.js';
+import { ConnectionMode, Button, isConnectionModeWired } from '../types.js';
 import { bufferStartsWith } from '../utils/bufferUtils.js';
 import { ConsoleLogger } from '../logger/index.js';
 import { delay } from '../utils/delay.js';
@@ -95,19 +95,40 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 	async open(): Promise<void> {
 		try {
 			const devices = await HID.devicesAsync();
-			const deviceInfo = devices.find(
-				(d) => d.vendorId === VID && d.productId === this.connectionMode && d.interface === DEVICE_INTERFACE,
-			);
+			const candidates = devices.filter((d) => d.vendorId === VID && d.productId === this.connectionMode);
+
+			let deviceInfo: HID.Device | undefined;
+
+			if (this.connectionMode === ConnectionMode.X3Wired) {
+				// X3 has multiple interface 2 collections (Col01-Col04).
+				// Feature reports work on Col04 — prefer that path first.
+				deviceInfo = candidates.find((d) => d.interface === DEVICE_INTERFACE && /col04/i.test(d.path ?? ''));
+				// Fallback: any interface 2 path
+				if (!deviceInfo) {
+					deviceInfo = candidates.find((d) => d.interface === DEVICE_INTERFACE);
+				}
+				// Fallback: any candidate with a Col04 path (regardless of interface)
+				if (!deviceInfo) {
+					deviceInfo = candidates.find((d) => /col04/i.test(d.path ?? ''));
+				}
+				// Last resort: first candidate with a valid path
+				if (!deviceInfo) {
+					deviceInfo = candidates.find((d) => d.path !== null && d.path !== undefined && d.path !== '');
+				}
+			} else {
+				// Other modes: prefer interface === DEVICE_INTERFACE with any path
+				deviceInfo = candidates.find((d) => d.interface === DEVICE_INTERFACE);
+			}
 
 			if (!deviceInfo || !deviceInfo.path) {
-				// noinspection ExceptionCaughtLocallyJS
 				throw new DriverError(`Device with idProduct ${this.connectionMode} not found`);
 			}
 
 			this.devicePath = deviceInfo.path;
 			this.hidDevice = await HIDAsync.open(this.devicePath);
 		} catch (e: unknown) {
-			new DeviceError(`An unexpected error occurred while trying to open device ${this.connectionMode}`, {
+			if (e instanceof DriverError) throw e;
+			throw new DeviceError(`An unexpected error occurred while trying to open device ${this.connectionMode}`, {
 				cause: e,
 			});
 		}
@@ -263,7 +284,7 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 		this.checkIsOpen();
 
 		return new Promise((resolve, reject) => {
-			if (this.connectionMode === ConnectionMode.Wired) {
+			if (isConnectionModeWired(this.connectionMode)) {
 				return resolve(-1); // -1 indicates that it was not possible to get the exact battery status value
 			}
 
@@ -433,14 +454,27 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 	 */
 	setDpi(options: DpiBuilder | DpiBuilderOptions): Promise<number | undefined> {
 		this.checkIsOpen();
-		const builder = options instanceof DpiBuilder ? options : new DpiBuilder(options);
+		let builder: DpiBuilder;
+		if (options instanceof DpiBuilder) {
+			builder = options;
+		} else {
+			// For X3Wired, use captured X3 defaults unless caller overrides them.
+			const merged =
+				this.connectionMode === ConnectionMode.X3Wired
+					? { ...DpiBuilder.X3_DEFAULT_OPTIONS, ...options }
+					: options;
+			builder = new DpiBuilder(merged);
+		}
 
 		return this.sendFeatureReport(builder.build(this.connectionMode));
 	}
 
 	resetDpi(): Promise<number | undefined> {
 		this.checkIsOpen();
-		const builder = new DpiBuilder();
+		const builder =
+			this.connectionMode === ConnectionMode.X3Wired
+				? new DpiBuilder(DpiBuilder.X3_DEFAULT_OPTIONS)
+				: new DpiBuilder();
 
 		return this.sendFeatureReport(builder.build(this.connectionMode));
 	}
@@ -468,7 +502,11 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 
 	resetUserPreferences(): Promise<number | undefined> {
 		this.checkIsOpen();
-		const builder = new UserPreferencesBuilder().setKeyResponse(8);
+		// X3 stock reset defaults use blue RGB (0,0,255); X11 uses DEFAULT_OPTIONS green (0,255,0)
+		const builder =
+			this.connectionMode === ConnectionMode.X3Wired
+				? new UserPreferencesBuilder({ rgb: { r: 0, g: 0, b: 255 } }).setKeyResponse(8)
+				: new UserPreferencesBuilder().setKeyResponse(8);
 
 		return this.sendFeatureReport(builder.build(this.connectionMode));
 	}
@@ -476,16 +514,34 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 	/**
 	 * Resets the mouse to factory settings (all profiles and definitions).
 	 *
+	 * Packets are sent with `delayMs` spacing so the device has time to process each
+	 * report before the next one arrives. Stock FA61/X3 captures show ~500 ms between
+	 * reset packets; sending them back-to-back can cause incomplete resets that require
+	 * running the sequence twice. The public `delayMs` option is now meaningful for
+	 * reset timing as well.
+	 *
 	 * @returns A promise that resolves when the reset is complete.
 	 */
 	async reset(): Promise<void> {
 		this.checkIsOpen();
 		await this.sendInternalStateResetReportBuilder();
+		await delay(this.delayMs);
 		await this.resetDpi();
+		await delay(this.delayMs);
 		await this.resetUserPreferences();
+		await delay(this.delayMs);
 		await this.resetPollingRate();
+		await delay(this.delayMs);
 		await this.resetMacro();
-		await this.resetCustomMacro();
+
+		// FA61/X3 stock reset / new-profile captures do not send custom-macro definition
+		// pages (09). Sending the legacy empty BACKWARD custom macro (report 08 +
+		// empty 09 pages with backward bound to custom macro) breaks the back button on X3
+		// hardware. Skip only for X3 to preserve X11 behavior.
+		if (this.connectionMode !== ConnectionMode.X3Wired) {
+			await delay(this.delayMs);
+			await this.resetCustomMacro();
+		}
 	}
 }
 

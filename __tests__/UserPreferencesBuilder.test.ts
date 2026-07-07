@@ -304,6 +304,16 @@ describe('UserPreferencesBuilder', () => {
 			expect(adapterBuffer.subarray(0, 13)).toEqual(wiredBuffer);
 		});
 
+		it('should produce the stock X3 reset preferences packet', () => {
+			// Stock X3 wired reset uses blue RGB (0,0,255), not the DEFAULT_OPTIONS green (0,255,0).
+			// Off light mode, ledSpeed 3, deepSleep 10 min, sleep 0.5 min, keyResponse 8 ms, checksum 0xaf.
+			const builder = new UserPreferencesBuilder({ rgb: { r: 0, g: 0, b: 255 } }).setKeyResponse(8);
+			const buffer = builder.build(ConnectionMode.X3Wired);
+
+			expect(buffer.toString('hex')).toBe('050f010003a80000ff010401af');
+			expect(buffer.length).toBe(13);
+		});
+
 		it('should have consistent toString output', () => {
 			const builder = new UserPreferencesBuilder()
 				.setLightMode(LightMode.Off)

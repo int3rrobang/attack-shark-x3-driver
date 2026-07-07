@@ -1,6 +1,6 @@
 import type { BaseProtocolBuilder } from '../core/BaseProtocolBuilder.js';
 import { ParamsError } from '../errors.js';
-import { Button, type ConnectionMode } from '../types.js';
+import { Button, ConnectionMode } from '../types.js';
 
 export type MacroTuple = readonly [FirmwareAction, Modifiers, KeyCode | number];
 
@@ -355,6 +355,11 @@ const BUTTON_OFFSET: Record<InternalButtons, number> = {
 	[InternalButtons.SCROLL_DOWN]: 54,
 };
 
+const X3_WIRED_DEFAULT_PACKET = Buffer.from(
+	'083b010200000300000400000d00003c00000f00000600000500003c00000100000100000100000100000100000100000100000a000009000000c2',
+	'hex',
+);
+
 export interface MacroBuilderOptions {
 	left?: MacroTuple;
 	right?: MacroTuple;
@@ -385,6 +390,8 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 	};
 
 	readonly buffer: Buffer;
+	private readonly macroOverrides = new Map<Button, MacroTuple>();
+	private modeDefaults: ConnectionMode | undefined;
 	public readonly bmRequestType: number = MacrosBuilder.BM_REQUEST_TYPE;
 	public readonly bRequest: number = MacrosBuilder.B_REQUEST;
 	public readonly wValue: number = MacrosBuilder.W_VALUE;
@@ -398,6 +405,20 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 	 */
 	constructor(options?: MacroBuilderOptions) {
 		this.buffer = Buffer.alloc(59);
+		this.applyX11Defaults();
+
+		if (options?.left !== undefined) this.setMacro(Button.LEFT, options.left);
+		if (options?.right !== undefined) this.setMacro(Button.RIGHT, options.right);
+		if (options?.middle !== undefined) this.setMacro(Button.MIDDLE, options.middle);
+		if (options?.forward !== undefined) this.setMacro(Button.FORWARD, options.forward);
+		if (options?.backward !== undefined) this.setMacro(Button.BACKWARD, options.backward);
+		if (options?.dpi !== undefined) this.setMacro(Button.DPI, options.dpi);
+		if (options?.scrollUp !== undefined) this.setMacro(Button.SCROLL_UP, options.scrollUp);
+		if (options?.scrollDown !== undefined) this.setMacro(Button.SCROLL_DOWN, options.scrollDown);
+	}
+
+	private applyX11Defaults(): void {
+		this.buffer.fill(0x00);
 
 		// Header: Report ID 0x08, Length 0x3b (59), Protocol version 0x01
 		this.buffer[0] = 0x08;
@@ -417,16 +438,24 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 		this.buffer[51] = 0x09; // Slot 17 (Scroll Up)
 		this.buffer[54] = 0x0a; // Slot 18 (Scroll Down)
 
-		const config = { ...MacrosBuilder.DEFAULT_MACROS, ...options };
+		if (MacrosBuilder.DEFAULT_MACROS.left !== undefined)
+			this.writeMacro(Button.LEFT, MacrosBuilder.DEFAULT_MACROS.left);
+		if (MacrosBuilder.DEFAULT_MACROS.right !== undefined)
+			this.writeMacro(Button.RIGHT, MacrosBuilder.DEFAULT_MACROS.right);
+		if (MacrosBuilder.DEFAULT_MACROS.middle !== undefined)
+			this.writeMacro(Button.MIDDLE, MacrosBuilder.DEFAULT_MACROS.middle);
+		if (MacrosBuilder.DEFAULT_MACROS.forward !== undefined)
+			this.writeMacro(Button.FORWARD, MacrosBuilder.DEFAULT_MACROS.forward);
+		if (MacrosBuilder.DEFAULT_MACROS.backward !== undefined)
+			this.writeMacro(Button.BACKWARD, MacrosBuilder.DEFAULT_MACROS.backward);
 
-		if (config.left !== undefined) this.setMacro(Button.LEFT, config.left);
-		if (config.right !== undefined) this.setMacro(Button.RIGHT, config.right);
-		if (config.middle !== undefined) this.setMacro(Button.MIDDLE, config.middle);
-		if (config.forward !== undefined) this.setMacro(Button.FORWARD, config.forward);
-		if (config.backward !== undefined) this.setMacro(Button.BACKWARD, config.backward);
-		if (config.dpi !== undefined) this.setMacro(Button.DPI, config.dpi);
-		if (config.scrollUp !== undefined) this.setMacro(Button.SCROLL_UP, config.scrollUp);
-		if (config.scrollDown !== undefined) this.setMacro(Button.SCROLL_DOWN, config.scrollDown);
+		this.modeDefaults = ConnectionMode.Wired;
+	}
+
+	private applyMacroOverrides(): void {
+		for (const [button, macro] of this.macroOverrides) {
+			this.writeMacro(button, macro);
+		}
 	}
 
 	/**
@@ -441,12 +470,18 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 	 * ```
 	 */
 	setMacro(button: Button, macro: MacroTuple): this {
+		this.writeMacro(button, macro);
+		this.macroOverrides.set(button, macro);
+
+		return this;
+	}
+
+	private writeMacro(button: Button, macro: MacroTuple): void {
 		const [firmwareAction = FirmwareAction.DISABLE_BUTTON, modifier = Modifiers.NONE, keyCode = KeyCode.NONE] =
 			macro;
 
 		const internalButton = internalButtonsMap[button];
-
-		const offset = BUTTON_OFFSET[internalButton];
+		const offset = this.getButtonOffset(internalButton);
 		if (offset === undefined) {
 			throw new ParamsError('button', `Invalid button identifier: ${button}`);
 		}
@@ -454,8 +489,15 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 		this.buffer[offset] = firmwareAction;
 		this.buffer[offset + 1] = modifier;
 		this.buffer[offset + 2] = keyCode;
+	}
 
-		return this;
+	private getButtonOffset(internalButton: InternalButtons): number | undefined {
+		if (this.modeDefaults === ConnectionMode.X3Wired) {
+			if (internalButton === InternalButtons.SCROLL_UP) return BUTTON_OFFSET[InternalButtons.SCROLL_DOWN];
+			if (internalButton === InternalButtons.SCROLL_DOWN) return BUTTON_OFFSET[InternalButtons.SCROLL_UP];
+		}
+
+		return BUTTON_OFFSET[internalButton];
 	}
 
 	/**
@@ -477,10 +519,19 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 	/**
 	 * Finalizes the buffer by calculating the checksum.
 	 *
-	 * @param _mode Connection mode (currently ignored as macros are identical).
+	 * @param mode Connection mode used to select model-specific defaults.
 	 * @return {Buffer} The built macro configuration buffer.
 	 */
-	build(_mode: ConnectionMode): Buffer {
+	build(mode: ConnectionMode): Buffer {
+		if (mode === ConnectionMode.X3Wired) {
+			X3_WIRED_DEFAULT_PACKET.copy(this.buffer);
+			this.modeDefaults = ConnectionMode.X3Wired;
+			this.applyMacroOverrides();
+		} else if (this.modeDefaults === ConnectionMode.X3Wired) {
+			this.applyX11Defaults();
+			this.applyMacroOverrides();
+		}
+
 		this.buffer[58] = this.calculateChecksum();
 		return this.buffer;
 	}

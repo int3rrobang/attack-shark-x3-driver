@@ -1,5 +1,5 @@
 import type { BaseProtocolBuilder } from '../core/BaseProtocolBuilder.js';
-import { ConnectionMode } from '../types.js';
+import { isConnectionModeWired, type ConnectionMode } from '../types.js';
 
 /**
  * ⚠️ CRITICAL: INTERNAL STATE RESET REPORT
@@ -71,7 +71,7 @@ export class InternalStateResetReportBuilder implements BaseProtocolBuilder {
 
 	build(mode: ConnectionMode): Buffer {
 		// Wired mode uses a truncated version (6 bytes observed)
-		if (mode === ConnectionMode.Wired) {
+		if (isConnectionModeWired(mode)) {
 			return this.buffer.subarray(0, 6);
 		}
 

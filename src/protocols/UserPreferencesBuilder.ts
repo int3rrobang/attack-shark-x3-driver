@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import type { BaseProtocolBuilder } from '../core/BaseProtocolBuilder.js';
 import { ParamsError } from '../errors.js';
-import { ConnectionMode } from '../types.js';
+import { isConnectionModeWired, type ConnectionMode } from '../types.js';
 
 /**
  * Enum representing different light modes for a device or application.
@@ -393,7 +393,7 @@ export class UserPreferencesBuilder implements BaseProtocolBuilder {
 
 	build(mode: ConnectionMode): Buffer {
 		this.buffer[12] = this.calculateChecksum();
-		if (mode === ConnectionMode.Wired) return this.buffer.subarray(0, 13);
+		if (isConnectionModeWired(mode)) return this.buffer.subarray(0, 13);
 		else return this.buffer;
 	}
 

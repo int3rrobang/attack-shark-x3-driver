@@ -16,6 +16,8 @@ dist
 parse.ts
 tests.ts
 scratch.txt
+debug_test.ts
+webhid-probe/
 
 .eslintcache
 dist/

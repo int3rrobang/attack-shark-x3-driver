@@ -60,6 +60,117 @@ try {
 }
 ```
 
+## CLI
+
+A basic command-line interface is included. Run it directly with Bun or after building:
+
+```bash
+# via bun (no build needed)
+bun run cli --help
+
+# after build
+bun run build
+node dist/cli.js --help
+```
+
+If installed globally, the `attack-shark-x11` binary is available:
+
+```bash
+attack-shark-x11 --help
+```
+
+### Global options
+
+| Option          | Default     | Description                          |
+|-----------------|-------------|--------------------------------------|
+| `--mode`        | `x3-wired`  | `x3-wired` / `x3` / `wired` / `adapter` |
+| `--delay-ms`    | `500`       | Delay between packets in ms          |
+| `--help`, `-h`  | —           | Show help                            |
+
+### Commands
+
+**List devices** (no device open):
+```bash
+attack-shark-x11 list
+```
+
+**Verify connectivity:**
+```bash
+attack-shark-x11 --mode wired open
+```
+
+**Battery level** (wired modes print `-1` / unavailable):
+```bash
+attack-shark-x11 --mode adapter battery
+```
+
+**Factory reset:**
+```bash
+attack-shark-x11 reset
+```
+
+**Configure DPI:**
+```bash
+attack-shark-x11 set-dpi --stages 400,800,1600 --active 3
+attack-shark-x11 set-dpi --stages 800,1600,2400,3200,5000,26000 --lod 2 --motion-sync on
+attack-shark-x11 set-dpi --stages 400,800,1600,2400,3200,5000,20400,26000 --active 8
+attack-shark-x11 --mode wired set-dpi --stages 800,1600,2400,3200,5000,22000 --active 2
+```
+
+X3 wired accepts 1-8 DPI stages, maxes out at 26000 DPI, and supports `--lod 1|2`, `--ripple on|off`, `--angle-snap on|off`, and `--motion-sync on|off` in the DPI packet. X11 wired/adapter modes require exactly 6 stages and max out at 22000 DPI.
+
+**Set polling rate:**
+```bash
+attack-shark-x11 set-rate --rate 1000
+```
+
+**Set preferences** (packet is built from driver defaults; unspecified fields use builder defaults — current device state is not read):
+```bash
+attack-shark-x11 set-prefs --light breathing --speed 5 --rgb 255,0,0 --key-response 4
+```
+
+**Bind buttons:**
+```bash
+attack-shark-x11 bind --button forward --action shortcut-copy
+attack-shark-x11 bind --list-actions
+attack-shark-x11 bind --list-buttons
+```
+`bind` sends a full model-default mapping packet; unspecified buttons reset to model defaults, not the current device state.
+
+On `x3-wired`/FA61, DPI binds appear ignored by stock firmware. Scroll binds are experimental/unsafe and may repeat actions indefinitely until unplug/reboot.
+
+### Hex previews (no device open)
+
+Build packets and print hex — useful for debugging or scripting:
+
+```bash
+# DPI packet for X3 variant (default mode), 3 stages
+attack-shark-x11 hex dpi --stages 400,800,1600 --active 3
+
+# X3 sensor flags in the DPI packet
+attack-shark-x11 hex dpi --stages 800,1600,2400,3200,5000,26000 --lod 2 --ripple off --angle-snap off --motion-sync on
+
+# DPI packet for X3 variant, all 8 stages
+attack-shark-x11 hex dpi --stages 400,800,1600,2400,3200,5000,20400,26000 --active 8
+
+# X11 Wired mode requires exactly 6 stages
+attack-shark-x11 hex dpi --stages 800,1600,2400,3200,5000,22000 --mode wired
+
+# Polling rate hex
+attack-shark-x11 hex rate --rate 1000
+
+# Preferences hex
+attack-shark-x11 hex prefs --light static --rgb 0,255,0 --mode adapter
+
+# Button bind hex
+attack-shark-x11 hex bind --button dpi --action shortcut-swap-window --mode x3-wired
+
+# Internal state reset hex
+attack-shark-x11 hex reset --mode adapter
+```
+
+The default mode for all commands is `x3-wired`. Use `--mode` to override.
+
 ## Linux Setup (udev)
 
 To access the device without root permissions on Linux, you need to create an udev rule:
@@ -72,6 +183,7 @@ To access the device without root permissions on Linux, you need to create an ud
     ```udev
     SUBSYSTEM=="usb", ATTR{idVendor}=="1d57", ATTR{idProduct}=="fa60", MODE="0660", GROUP="plugdev"
     SUBSYSTEM=="usb", ATTR{idVendor}=="1d57", ATTR{idProduct}=="fa55", MODE="0660", GROUP="plugdev"
+    SUBSYSTEM=="usb", ATTR{idVendor}=="1d57", ATTR{idProduct}=="fa61", MODE="0660", GROUP="plugdev"
     ```
 3. Reload rules:
     ```bash
@@ -86,6 +198,7 @@ To access the device without root permissions on Linux, you need to create an ud
 | Attack Shark X11 | Wired           | Supported  |
 | Attack Shark X11 | 2.4GHz wireless | Supported  |
 | Attack Shark X11 | Bluetooth       | Not tested |
+| FA61 / Kysona M600 / X3-family | Wired (`x3-wired`) | Partial; see [`docs/x3-fa61-quirks.md`](docs/x3-fa61-quirks.md) |
 
 _Note: Attack Shark R1 might be compatible but hasn't been verified yet._
 

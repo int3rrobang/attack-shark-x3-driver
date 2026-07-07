@@ -1,6 +1,6 @@
 import type { BaseProtocolBuilder } from '../core/BaseProtocolBuilder.js';
 import { ParamsError } from '../errors.js';
-import { Button, type ConnectionMode } from '../types.js';
+import { Button, ConnectionMode } from '../types.js';
 import {
 	type KeyCode,
 	type MacroBuilderOptions,
@@ -260,6 +260,9 @@ export class CustomMacroBuilder implements BaseProtocolBuilder {
 		for (let i = 4; i < 64 && eventByteIndex < this.macroEvents.length; i++) {
 			this.thirdPacket[i] = this.macroEvents[eventByteIndex++] ?? 0x00;
 		}
+
+		// Page 2 header byte 1: X3 wired hardware uses 0x40; non-X3 uses 0x0c.
+		this.fourthPacket[1] = mode === ConnectionMode.X3Wired ? 0x40 : 0x0c;
 
 		const checksum = this.calculateChecksum();
 

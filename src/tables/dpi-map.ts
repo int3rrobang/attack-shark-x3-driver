@@ -319,4 +319,5 @@ export const DPI_STEP_MAP: Record<number, number> = {
 	21800: 0x80,
 	21900: 0x80,
 	22000: 0x81,
+	26000: 0x81,
 };

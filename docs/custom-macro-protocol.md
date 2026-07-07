@@ -42,8 +42,8 @@ This packet contains the macro configuration, playback options, and the first se
 | 1      | Header 2           | `uint8` | Fixed value `0x40`                                                          |
 | 2      | Button ID          | `uint8` | Target button (e.g., `0x08` for Extra Button 5)                             |
 | 3      | Page Index         | `uint8` | Fixed value `0x00` (Page 0)                                                 |
-| 4      | Repeat Count       | `uint8` | Number of times to repeat (used if Play Mode is 0x00)                       |
-| 8      | Play Mode Flag     | `uint8` | Playback mode: `0x00` (Times), `0x01` (Toggle), `0x02` (Hold), `0xFF` (Loop)|
+| 4      | Play Mode          | `uint8` | Playback mode: `0x00` (Times), `0x01` (Toggle), `0x02` (Hold), `0xFF` (Loop)|
+| 8      | Repeat Count       | `uint8` | Number of times to repeat (used if Play Mode is `0x00`; `0x01`–`0xFF`)      |
 | 29     | Event Count        | `uint8` | Total number of macro events (2 bytes per event)                            |
 | 30-63  | Macro Events (P0)  | `uint8` | Up to 17 macro events (34 bytes)                                            |
 
@@ -83,7 +83,7 @@ This packet serves as the termination of the macro configuration and includes a 
 | Offset | Field              | Type    | Description                                                                 |
 |:-------|:-------------------|:--------|:----------------------------------------------------------------------------|
 | 0      | Header 1           | `uint8` | Fixed value `0x09`                                                          |
-| 1      | Header 2           | `uint8` | Fixed value `0x0C`                                                          |
+| 1      | Header 2           | `uint8` | `0x0C` on X11/non-X3 devices; `0x40` on FA61/X3 wired hardware             |
 | 2      | Button ID          | `uint8` | Target button ID                                                            |
 | 3      | Page Index         | `uint8` | Fixed value `0x02` (Page 2)                                                 |
 | 10     | Checksum High      | `uint8` | High byte of the 16-bit checksum (Big Endian)                               |
@@ -165,3 +165,42 @@ function calculateChecksum(packet2: Buffer, packet3: Buffer): number {
 ```
 
 The result is stored in Big Endian format in **Packet 4** at indices 10 and 11.
+
+---
+
+## Live Capture Example: FA61/X3 Wired – Forward Button → "Press A", Loop 1
+
+This is a minimal confirmed macro captured from an FA61/PID `fa61` device in `x3-wired` mode.
+- Target button: Forward (button ID `0x07`, `CUSTOM_MACRO_BUTTONS.EXTRA_BUTTON_4`)
+- Mode: Play N times, N = 1
+- Events: press `A` (KeyCode `0x04`), release `A` (KeyCode `0x04`)
+
+**Bind packet** (wValue `0x0308`):
+```
+083b010200000300000400000d00003c00000f00001200070500003c00
+000100000100000100000100000100000100000100000a000009000000d5
+```
+
+**Page 0** (wValue `0x0309`):
+```
+09 40 07 00  00 00 00 00  01 00 00 00  00 00 00 00
+00 00 00 00  00 00 00 00  00 00 00 00  00 02
+01 04  81 04  00 00 ... (zeros to byte 63)
+```
+
+- Offset 4 (play mode): `0x00` (THE_NUMBER_OF_TIME_TO_PLAY)
+- Offset 8 (repeat count): `0x01`
+- Offset 29 (event count): `0x02`
+- Events: `[01, 04]` press A (10 ms delay), `[81, 04]` release A (10 ms delay)
+
+**Page 1** (wValue `0x0309`): all zeros after header (all events fit in page 0).
+
+**Page 2** (wValue `0x0309`):
+```
+09 40 07 02  00 00 00 00  00 00 8d 00  00 00 00 00 ... (zeros to byte 63)
+```
+
+- Header byte 1 is `0x40` on FA61 (not `0x0C` as on X11/non-X3).
+- Checksum: `0x008D` = `0x01` (repeat) + `0x02` (count) + `0x01` + `0x04` + `0x81` + `0x04` (events).
+
+**Loop 2** changes only offset 8 to `0x02` and checksum to `0x008E`:

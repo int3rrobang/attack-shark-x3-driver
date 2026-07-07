@@ -30,6 +30,9 @@
 	"module": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"type": "module",
+	"bin": {
+		"attack-shark-x11": "./dist/cli.js"
+	},
 	"exports": {
 		".": {
 			"import": "./dist/index.js",
@@ -44,6 +47,8 @@
 	"scripts": {
 		"prepublishOnly": "bun run build",
 		"build": "bunx tsc",
+		"cli": "bun src/cli.ts",
+		"test": "bun test",
 		"lint": "bunx eslint . --ext .ts --cache --cache-strategy content",
 		"lint:fix": "bunx eslint . --ext .ts --fix --cache --cache-strategy content",
 		"format": "bunx prettier --check . --cache --cache-strategy content",

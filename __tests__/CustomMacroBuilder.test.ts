@@ -1,5 +1,5 @@
 import { expect, test, describe } from 'bun:test';
-import { CustomMacroBuilder, MouseMacroEvent } from '../src/protocols/CustomMacroBuilder.js';
+import { CustomMacroBuilder, MacroMode, MouseMacroEvent } from '../src/protocols/CustomMacroBuilder.js';
 import { KeyCode, MacrosBuilder, FirmwareAction } from '../src/protocols/MacrosBuilder.js';
 import { Button, ConnectionMode } from '../src/types.js';
 
@@ -126,5 +126,166 @@ describe('CustomMacroBuilder Configuration', () => {
 
 		// Capacity is 47, so the counter at index 29 should be 47
 		expect(secondPacket[29]).toBe(47);
+	});
+});
+
+describe('CustomMacroBuilder X3Wired forward button macro (live FA61 captures)', () => {
+	test('loop 1 press A then release A matches live capture exactly', () => {
+		const builder = new CustomMacroBuilder({
+			targetButton: Button.FORWARD,
+			playOptions: { mode: MacroMode.THE_NUMBER_OF_TIME_TO_PLAY, times: 1 },
+		});
+		builder.addEvent(KeyCode.A, 10);
+		builder.addEvent(KeyCode.A, 10, true);
+
+		const [bindPacket, page0, page1, page2] = builder.build(ConnectionMode.X3Wired);
+
+		// Bind packet (wValue 0x0308) – X3 default with FORWARD = custom macro
+		expect(bindPacket.toString('hex')).toBe(
+			'083b010200000300000400000d00003c00000f00001200070500003c00' +
+				'000100000100000100000100000100000100000100000a000009000000d5',
+		);
+
+		// Page 0 (wValue 0x0309) – header 09 40, button 07, page 00,
+		//   mode=00, times=01, event count=02, events: press A [01,04] release A [81,04]
+		expect(page0.toString('hex')).toBe(
+			'0940070000000000010000000000000000000000000000000000000000' +
+				'0201048104000000000000000000000000000000000000000000000000000000000000',
+		);
+
+		// Page 1 (wValue 0x0309) – all events fit in page 0
+		expect(page1.toString('hex')).toBe(
+			'0940070100000000000000000000000000000000000000000000000000' +
+				'0000000000000000000000000000000000000000000000000000000000000000000000',
+		);
+
+		// Page 2 (wValue 0x0309) – header 09 40 (X3 uses 40), checksum 0x008d
+		expect(page2.toString('hex')).toBe(
+			'09400702000000000000008d0000000000000000000000000000000000' +
+				'0000000000000000000000000000000000000000000000000000000000000000000000',
+		);
+	});
+
+	test('loop 2 page 0 times=2 and page 2 checksum=0x008e match live capture', () => {
+		const builder = new CustomMacroBuilder({
+			targetButton: Button.FORWARD,
+			playOptions: { mode: MacroMode.THE_NUMBER_OF_TIME_TO_PLAY, times: 2 },
+		});
+		builder.addEvent(KeyCode.A, 10);
+		builder.addEvent(KeyCode.A, 10, true);
+
+		const [, page0, , page2] = builder.build(ConnectionMode.X3Wired);
+
+		// Page 0 – offset 8 = 0x02 (loop 2)
+		expect(page0.toString('hex')).toBe(
+			'0940070000000000020000000000000000000000000000000000000000' +
+				'0201048104000000000000000000000000000000000000000000000000000000000000',
+		);
+
+		// Page 2 – checksum = 0x008e
+		expect(page2.toString('hex')).toBe(
+			'09400702000000000000008e0000000000000000000000000000000000' +
+				'0000000000000000000000000000000000000000000000000000000000000000000000',
+		);
+	});
+
+	test('non-X3 mode (Adapter) still uses page 2 header byte 1 = 0x0c', () => {
+		const builder = new CustomMacroBuilder({
+			targetButton: Button.FORWARD,
+			playOptions: { mode: MacroMode.THE_NUMBER_OF_TIME_TO_PLAY, times: 1 },
+		});
+		builder.addEvent(KeyCode.A, 10);
+		builder.addEvent(KeyCode.A, 10, true);
+
+		const [, , , page2] = builder.build(ConnectionMode.Adapter);
+
+		// Page 2 should start with 09 0c ...
+		expect(page2.toString('hex').startsWith('090c')).toBe(true);
+	});
+
+	test('long capture with 46 events spills to page 1 and page 2 checksum 0x0e06', () => {
+		const builder = new CustomMacroBuilder({
+			targetButton: Button.FORWARD,
+			playOptions: { mode: MacroMode.THE_NUMBER_OF_TIME_TO_PLAY, times: 1 },
+		});
+
+		// Page 0 events (17) — release A, press A, release A
+		builder.addEvent(KeyCode.A, 10, true);
+		builder.addEvent(KeyCode.A, 10, false);
+		builder.addEvent(KeyCode.A, 10, true);
+		// press S, release S, press S, release S
+		builder.addEvent(KeyCode.S, 10, false);
+		builder.addEvent(KeyCode.S, 10, true);
+		builder.addEvent(KeyCode.S, 10, false);
+		builder.addEvent(KeyCode.S, 10, true);
+		// press D, release D, press D, release D
+		builder.addEvent(KeyCode.D, 10, false);
+		builder.addEvent(KeyCode.D, 10, true);
+		builder.addEvent(KeyCode.D, 10, false);
+		builder.addEvent(KeyCode.D, 10, true);
+		// press F, release F, press F, release F, press F, release F
+		builder.addEvent(KeyCode.F, 10, false);
+		builder.addEvent(KeyCode.F, 10, true);
+		builder.addEvent(KeyCode.F, 10, false);
+		builder.addEvent(KeyCode.F, 10, true);
+		builder.addEvent(KeyCode.F, 10, false);
+		builder.addEvent(KeyCode.F, 10, true);
+
+		// Page 1 events (29) — G: 3 pairs
+		builder.addEvent(KeyCode.G, 10, false);
+		builder.addEvent(KeyCode.G, 10, true);
+		builder.addEvent(KeyCode.G, 10, false);
+		builder.addEvent(KeyCode.G, 10, true);
+		builder.addEvent(KeyCode.G, 10, false);
+		builder.addEvent(KeyCode.G, 10, true);
+		// H: 2 pairs
+		builder.addEvent(KeyCode.H, 10, false);
+		builder.addEvent(KeyCode.H, 10, true);
+		builder.addEvent(KeyCode.H, 10, false);
+		builder.addEvent(KeyCode.H, 10, true);
+		// J: 3 pairs
+		builder.addEvent(KeyCode.J, 10, false);
+		builder.addEvent(KeyCode.J, 10, true);
+		builder.addEvent(KeyCode.J, 10, false);
+		builder.addEvent(KeyCode.J, 10, true);
+		builder.addEvent(KeyCode.J, 10, false);
+		builder.addEvent(KeyCode.J, 10, true);
+		// K: 3 pairs
+		builder.addEvent(KeyCode.K, 10, false);
+		builder.addEvent(KeyCode.K, 10, true);
+		builder.addEvent(KeyCode.K, 10, false);
+		builder.addEvent(KeyCode.K, 10, true);
+		builder.addEvent(KeyCode.K, 10, false);
+		builder.addEvent(KeyCode.K, 10, true);
+		// L: 3 pairs + 1 extra press
+		builder.addEvent(KeyCode.L, 10, false);
+		builder.addEvent(KeyCode.L, 10, true);
+		builder.addEvent(KeyCode.L, 10, false);
+		builder.addEvent(KeyCode.L, 10, true);
+		builder.addEvent(KeyCode.L, 10, false);
+		builder.addEvent(KeyCode.L, 10, true);
+		builder.addEvent(KeyCode.L, 10, false);
+
+		const [bindPacket, page0, page1, page2] = builder.build(ConnectionMode.X3Wired);
+
+		// Bind packet (wValue 0x0308) – X3 default with FORWARD = custom macro
+		expect(bindPacket.toString('hex')).toBe(
+			'083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5',
+		);
+
+		// Page 0 (wValue 0x0309) – header, mode=00, times=01, event count=46 (0x2e), 17 events
+		expect(page0.toString('hex')).toBe(
+			'09400700000000000100000000000000000000000000000000000000002e81040104810401168116011681160107810701078107010981090109810901098109',
+		);
+
+		// Page 1 (wValue 0x0309) – 29 events + trailing zeros
+		expect(page1.toString('hex')).toBe(
+			'09400701010a810a010a810a010a810a010b810b010b810b010d810d010d810d010d810d010e810e010e810e010e810e010f810f010f810f010f810f010f0000',
+		);
+
+		// Page 2 (wValue 0x0309) – header 09 40, checksum 0x0e06
+		expect(page2.toString('hex')).toBe(
+			'094007020000000000000e0600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
+		);
 	});
 });

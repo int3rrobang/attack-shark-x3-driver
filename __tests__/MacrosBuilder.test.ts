@@ -9,6 +9,12 @@ import {
 	macroTemplates,
 } from '../src/index.js';
 
+const X3_WIRED_STOCK_DEFAULT_PACKET =
+	'083b010200000300000400000d00003c00000f00000600000500003c00000100000100000100000100000100000100000100000a000009000000c2';
+
+const x3WiredStockDefaultBytes =
+	X3_WIRED_STOCK_DEFAULT_PACKET.match(/../g)?.map((byte) => Number.parseInt(byte, 16)) ?? [];
+
 describe('MacrosBuilder', () => {
 	it('should initialize with default buffer', () => {
 		const builder = new MacrosBuilder();
@@ -53,6 +59,71 @@ describe('MacrosBuilder', () => {
 		// ... (all other bytes)
 		// Default sum results in 0x3e as per previous test
 		expect(builder.calculateChecksum()).toBe(0x3e);
+	});
+
+	it('should build stock X3 wired defaults', () => {
+		const buffer = new MacrosBuilder().build(ConnectionMode.X3Wired);
+
+		expect(buffer.toString('hex')).toBe(X3_WIRED_STOCK_DEFAULT_PACKET);
+		expect(buffer[51]).toBe(0x0a);
+		expect(buffer[54]).toBe(0x09);
+		expect(buffer[58]).toBe(0xc2);
+	});
+
+	it('should preserve X3 wired scroll defaults when disabling forward', () => {
+		const buffer = new MacrosBuilder()
+			.setMacro(Button.FORWARD, macroTemplates[MacroName.GLOBAL_DISABLE_BUTTON])
+			.build(ConnectionMode.X3Wired);
+		const changedOffsets = [...buffer.entries()]
+			.filter(([offset, value]) => x3WiredStockDefaultBytes[offset] !== value)
+			.map(([offset]) => offset);
+
+		expect(changedOffsets).toEqual([21, 58]);
+		expect(buffer[21]).toBe(0x01);
+		expect(buffer[22]).toBe(0x00);
+		expect(buffer[23]).toBe(0x00);
+		expect(buffer[51]).toBe(0x0a);
+		expect(buffer[54]).toBe(0x09);
+		expect(buffer[58]).toBe(0xbd);
+	});
+
+	it('should map logical X3 wired scroll-up overrides to offset 54', () => {
+		const buffer = new MacrosBuilder()
+			.setMacro(Button.SCROLL_UP, macroTemplates[MacroName.SHORTCUT_SWAP_WINDOW])
+			.build(ConnectionMode.X3Wired);
+
+		expect(buffer[51]).toBe(0x0a);
+		expect(buffer[52]).toBe(0x00);
+		expect(buffer[53]).toBe(0x00);
+		expect(buffer[54]).toBe(FirmwareAction.KEYBOARD);
+		expect(buffer[55]).toBe(0x04);
+		expect(buffer[56]).toBe(0x2b);
+		expect(buffer[58]).toBe(0xf9);
+	});
+
+	it('should map logical X3 wired scroll-down overrides to offset 51', () => {
+		const buffer = new MacrosBuilder()
+			.setMacro(Button.SCROLL_DOWN, macroTemplates[MacroName.GLOBAL_DISABLE_BUTTON])
+			.build(ConnectionMode.X3Wired);
+
+		expect(buffer[51]).toBe(FirmwareAction.DISABLE_BUTTON);
+		expect(buffer[52]).toBe(0x00);
+		expect(buffer[53]).toBe(0x00);
+		expect(buffer[54]).toBe(0x09);
+		expect(buffer[55]).toBe(0x00);
+		expect(buffer[56]).toBe(0x00);
+		expect(buffer[58]).toBe(0xb9);
+	});
+
+	it('should keep X11 scroll override offsets unchanged', () => {
+		const buffer = new MacrosBuilder()
+			.setMacro(Button.SCROLL_UP, macroTemplates[MacroName.MULTIMEDIA_VOLUME_PLUS])
+			.setMacro(Button.SCROLL_DOWN, macroTemplates[MacroName.MULTIMEDIA_VOLUME_MINUS])
+			.build(ConnectionMode.Wired);
+
+		expect(buffer[51]).toBe(FirmwareAction.VOL_PLUS);
+		expect(buffer[54]).toBe(FirmwareAction.VOL_MINUS);
+		expect(buffer[58]).toBe(0x62);
 	});
 
 	it('should support method chaining', () => {
