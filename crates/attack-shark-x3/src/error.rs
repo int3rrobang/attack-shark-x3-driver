@@ -11,6 +11,22 @@ pub enum ProtocolError {
     InvalidProfile { value: u8 },
 
     #[error(
+        "invalid profile metadata: expected 1 <= current <= maximum <= {}, got {current}/{maximum}",
+        crate::model::ProfileId::MAX
+    )]
+    InvalidProfileRange { current: u8, maximum: u8 },
+
+    #[error("invalid complement for {field}: value 0x{value:02x}, complement 0x{complement:02x}")]
+    InvalidComplement {
+        field: &'static str,
+        value: u8,
+        complement: u8,
+    },
+
+    #[error("invalid readiness status 0x{value:02x}; expected 0x00 or 0x01")]
+    InvalidReadinessStatus { value: u8 },
+
+    #[error(
         "invalid stage {value}; expected {}..={}",
         crate::model::StageIndex::MIN,
         crate::model::StageIndex::MAX

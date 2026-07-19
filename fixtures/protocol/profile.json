@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "profileControls": [
+    {
+      "name": "profile-1-max-5-control",
+      "evidence": "inference",
+      "source": "__tests__/Fa61ProfileProbe.test.ts",
+      "packetHex": "0c0a01fe05fa",
+      "decoded": {
+        "current": 1,
+        "maximum": 5,
+        "framing": "compact"
+      }
+    },
+    {
+      "name": "profile-2-max-5-control",
+      "evidence": "inference",
+      "source": "__tests__/Fa61ProfileProbe.test.ts",
+      "packetHex": "0c0a02fd05fa",
+      "decoded": {
+        "current": 2,
+        "maximum": 5,
+        "framing": "compact"
+      }
+    },
+    {
+      "name": "profile-1-max-1-reset-write",
+      "evidence": "capture-confirmed",
+      "source": "docs/evidence/x3-fa61/reset-packets.json",
+      "packetHex": "0c0a01fe01fe",
+      "decoded": {
+        "current": 1,
+        "maximum": 1,
+        "framing": "compact"
+      }
+    }
+  ],
+  "metadataReadbacks": [
+    {
+      "name": "profile-1-metadata-max-5-readback",
+      "evidence": "live-confirmed",
+      "source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
+      "packetHex": "0c0a0101fe05fa000000",
+      "decoded": {
+        "current": 1,
+        "maximum": 5
+      }
+    },
+    {
+      "name": "profile-2-metadata-max-5-readback",
+      "evidence": "live-confirmed",
+      "source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
+      "packetHex": "0c0a0102fd05fa000000",
+      "decoded": {
+        "current": 2,
+        "maximum": 5
+      }
+    },
+    {
+      "name": "profile-1-metadata-max-1-readback-m600",
+      "evidence": "live-confirmed",
+      "source": "docs/evidence/x3-fa61/2026-07-17-m600-profile-targeted.json",
+      "packetHex": "0c0a0101fe01fe000000",
+      "decoded": {
+        "current": 1,
+        "maximum": 1
+      }
+    }
+  ],
+  "readSelectors": [
+    {
+      "name": "dpi-profile-1-read-selector",
+      "evidence": "inference",
+      "source": "__tests__/Fa61ProfileProbe.test.ts",
+      "packetHex": "a004380001000000",
+      "decoded": {
+        "report": "dpi",
+        "profile": 1
+      }
+    },
+    {
+      "name": "dpi-profile-2-read-selector",
+      "evidence": "inference",
+      "source": "__tests__/Fa61ProfileProbe.test.ts",
+      "packetHex": "a004380002000000",
+      "decoded": {
+        "report": "dpi",
+        "profile": 2
+      }
+    },
+    {
+      "name": "metadata-profile-1-read-selector",
+      "evidence": "inference",
+      "source": "scripts/fa61-profile-ab.ts",
+      "packetHex": "a00c0a0001000000",
+      "decoded": {
+        "report": "profileMetadata",
+        "profile": null
+      }
+    }
+  ],
+  "readinessStatuses": [
+    {
+      "name": "mailbox-not-ready",
+      "evidence": "live-confirmed",
+      "source": "docs/evidence/x3-fa61/2026-07-17-x3-readback-benchmark.json",
+      "packetHex": "a000000000000000",
+      "decoded": {
+        "status": "notReady"
+      }
+    },
+    {
+      "name": "mailbox-ready",
+      "evidence": "live-confirmed",
+      "source": "docs/evidence/x3-fa61/2026-07-17-x3-readback-benchmark.json",
+      "packetHex": "a001000000000000",
+      "decoded": {
+        "status": "ready"
+      }
+    }
+  ]
+}

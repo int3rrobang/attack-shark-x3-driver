@@ -39,6 +39,23 @@ The FA61 `0xa0` readback sequence returns a ten-byte normalized metadata image:
 The tested device returned `0c 0a 01 02 fd 05 fa 00 00 00` after the six-byte profile-2
 write. This proves the metadata update, not completion of a live profile load.
 
+### Rust codec status
+
+The reusable Rust crate implements the pure packet boundary for profile work:
+
+- `ProfileMetadata::new` enforces `1 <= current <= maximum <= 5`;
+- `ProfileControlReport` emits the six-byte compact write or an explicitly requested
+  ten-byte padded image;
+- `ProfileMetadataReport` validates the normalized readback header, subtype, complement
+  pairs, profile relationship, and reserved bytes;
+- `ReadSelector` requires an explicit `ProfileId` for DPI, preferences, and button reads;
+- `ReadinessStatus` validates the one-shot `0xa0` mailbox image.
+
+The padded framing option is a wire-shape codec, not a claim of live-confirmed FA60
+behavior. Device opening, selector/read serialization, bounded retries, and edge-triggered
+switch sequencing remain transport-layer work; the codec does not expose an unsafe
+standalone reset operation.
+
 ### Edge-triggered load semantics
 
 The immediate handler writes new current/maximum values but deliberately leaves their old

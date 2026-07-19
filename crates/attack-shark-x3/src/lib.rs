@@ -7,3 +7,7 @@ pub mod protocol;
 pub use error::ProtocolError;
 pub use model::{DpiValue, ProfileId, StageIndex, TransportKind};
 pub use protocol::dpi::{DecodedDpiReport, DpiFraming, DpiReport, DpiState, SensorOptions};
+pub use protocol::profile::{
+    ProfileControlFraming, ProfileControlReport, ProfileMetadata, ProfileMetadataReport,
+    ReadSelector, ReadbackRequest, ReadinessStatus,
+};
