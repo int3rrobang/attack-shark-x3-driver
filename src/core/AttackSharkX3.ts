@@ -10,9 +10,7 @@ import { InternalStateResetReportBuilder } from '../protocols/InternalStateReset
 import { type MacroBuilderOptions, MacrosBuilder } from '../protocols/MacrosBuilder.js';
 import { PollingRateBuilder, type Rate } from '../protocols/PollingRateBuilder.js';
 import { UserPreferencesBuilder, type UserPreferencesBuilderOptions } from '../protocols/UserPreferencesBuilder.js';
-import type { PacketLength, ReportId, Logger } from '../types.js';
-// eslint-disable-next-line no-duplicate-imports
-import { ConnectionMode, Button, isConnectionModeWired } from '../types.js';
+import { Button, TransportKind, type Logger, type TransportOptions } from '../types.js';
 import { bufferStartsWith } from '../utils/bufferUtils.js';
 import { ConsoleLogger } from '../logger/index.js';
 import { delay } from '../utils/delay.js';
@@ -21,9 +19,9 @@ const VID = 0x1d57;
 const DEVICE_INTERFACE = 2;
 
 /**
- * Events emitted by the AttackSharkX11 class.
+ * Events emitted by the AttackSharkX3 class.
  */
-export interface AttackSharkX11Events {
+export interface AttackSharkX3Events {
 	/** Emitted when the battery level changes */
 	batteryChange: [battery: number];
 	/** Emitted when a data monitoring error occurs */
@@ -31,21 +29,22 @@ export interface AttackSharkX11Events {
 }
 
 /**
- * Main driver for the Attack Shark X11 mouse.
+ * Main driver for the Attack Shark X3/M600 mouse.
  * This class manages the USB connection, DPI settings, polling rate, macros, and user preferences.
  *
  * @example
  * ```TypeScript
- * const driver = new AttackSharkX11({ connectionMode: ConnectionMode.Adapter });
+ * const driver = new AttackSharkX3({ transport: { kind: TransportKind.Receiver } });
  * await driver.open();
  * const battery = await driver.getBatteryLevel();
  * console.log(`Battery: ${battery}%`);
  * await driver.close();
  * ```
  */
-export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
-	public readonly productId: number;
-	private devicePath?: string;
+export class AttackSharkX3 extends EventEmitter<AttackSharkX3Events> {
+	private readonly productId: number;
+	public readonly transport: TransportKind;
+	private devicePath: string | undefined;
 	private hidDevice?: HIDAsync;
 	/**
 	 * Delay in milliseconds between packets to prevent the device from locking up.
@@ -57,78 +56,62 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 
 	/**
 	 * @param options Configuration options for the driver
-	 * @param options.connectionMode Connection mode (Wired or Adapter)
+	 * @param options.transport Transport kind and optional HID path
 	 * @param options.logger Optional custom logger
 	 * @param options.delayMs Optional delay in milliseconds between packets to prevent lock-up (default: 250)
 	 */
-	constructor(options: { connectionMode: ConnectionMode; logger?: Logger; delayMs?: number }) {
+	constructor(options: { transport: TransportOptions; logger?: Logger; delayMs?: number }) {
 		super();
-		if (!options.connectionMode) {
-			throw new DriverError('The type of connection was not specified');
+		if (!options.transport?.kind) {
+			throw new DriverError('The transport was not specified');
 		}
 
+		this.transport = options.transport.kind;
+		this.productId = this.transport === TransportKind.Wired ? 0xfa61 : 0xfa60;
+		this.devicePath = options.transport.path;
 		this.logger = options.logger ?? new ConsoleLogger();
 		this.delayMs = options.delayMs ?? 250;
-
-		// const devices = HID.devices();
-		// const deviceInfo = devices.find(
-		// 	(d) => d.vendorId === VID && d.productId === options.connectionMode && d.interface === DEVICE_INTERFACE,
-		// );
-		//
-		// if (!deviceInfo || !deviceInfo.path) {
-		// 	throw new DeviceError(
-		// 		`Device with idProduct ${options.connectionMode} and interface ${DEVICE_INTERFACE} not found`,
-		// 	);
-		// }
-		//
-		// this.devicePath = deviceInfo.path;
-		this.productId = options.connectionMode;
-	}
-
-	/**
-	 * Returns to the current connection mode.
-	 */
-	get connectionMode(): ConnectionMode {
-		return this.productId as ConnectionMode;
 	}
 
 	async open(): Promise<void> {
 		try {
-			const devices = await HID.devicesAsync();
-			const candidates = devices.filter((d) => d.vendorId === VID && d.productId === this.connectionMode);
+			if (!this.devicePath) {
+				const devices = await HID.devicesAsync();
+				const candidates = devices.filter((d) => d.vendorId === VID && d.productId === this.productId);
+				let deviceInfo: HID.Device | undefined;
 
-			let deviceInfo: HID.Device | undefined;
-
-			if (this.connectionMode === ConnectionMode.X3Wired) {
-				// X3 has multiple interface 2 collections (Col01-Col04).
-				// Feature reports work on Col04 — prefer that path first.
-				deviceInfo = candidates.find((d) => d.interface === DEVICE_INTERFACE && /col04/i.test(d.path ?? ''));
-				// Fallback: any interface 2 path
-				if (!deviceInfo) {
+				if (this.transport === TransportKind.Wired) {
+					// FA61 exposes multiple interface 2 collections (Col01-Col04).
+					// Feature reports work on Col04 — prefer that path first.
+					deviceInfo = candidates.find(
+						(d) => d.interface === DEVICE_INTERFACE && /col04/i.test(d.path ?? ''),
+					);
+					if (!deviceInfo) {
+						deviceInfo = candidates.find((d) => d.interface === DEVICE_INTERFACE);
+					}
+					if (!deviceInfo) {
+						deviceInfo = candidates.find((d) => /col04/i.test(d.path ?? ''));
+					}
+					if (!deviceInfo) {
+						deviceInfo = candidates.find((d) => d.path !== null && d.path !== undefined && d.path !== '');
+					}
+				} else {
+					// FA60 receiver feature reports use interface 2.
 					deviceInfo = candidates.find((d) => d.interface === DEVICE_INTERFACE);
 				}
-				// Fallback: any candidate with a Col04 path (regardless of interface)
-				if (!deviceInfo) {
-					deviceInfo = candidates.find((d) => /col04/i.test(d.path ?? ''));
+
+				if (!deviceInfo?.path) {
+					throw new DriverError(`Device for ${this.transport} transport not found`);
 				}
-				// Last resort: first candidate with a valid path
-				if (!deviceInfo) {
-					deviceInfo = candidates.find((d) => d.path !== null && d.path !== undefined && d.path !== '');
-				}
-			} else {
-				// Other modes: prefer interface === DEVICE_INTERFACE with any path
-				deviceInfo = candidates.find((d) => d.interface === DEVICE_INTERFACE);
+				this.devicePath = deviceInfo.path;
 			}
 
-			if (!deviceInfo || !deviceInfo.path) {
-				throw new DriverError(`Device with idProduct ${this.connectionMode} not found`);
-			}
-
-			this.devicePath = deviceInfo.path;
-			this.hidDevice = await HIDAsync.open(this.devicePath);
+			const devicePath = this.devicePath;
+			if (!devicePath) throw new DriverError(`Device for ${this.transport} transport not found`);
+			this.hidDevice = await HIDAsync.open(devicePath);
 		} catch (e: unknown) {
 			if (e instanceof DriverError) throw e;
-			throw new DeviceError(`An unexpected error occurred while trying to open device ${this.connectionMode}`, {
+			throw new DeviceError(`An unexpected error occurred while trying to open ${this.transport} device`, {
 				cause: e,
 			});
 		}
@@ -150,7 +133,11 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 		});
 
 		this.on('newListener', (event) => {
-			if (event === 'batteryChange' && this.listenerCount('batteryChange') === 0) {
+			if (
+				this.transport === TransportKind.Receiver &&
+				event === 'batteryChange' &&
+				this.listenerCount('batteryChange') === 0
+			) {
 				this.hidDevice?.on('data', this.handleData);
 				this.startPolling();
 			}
@@ -211,11 +198,11 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 		this.isOpen = false;
 	}
 
-	checkIsOpen(): void {
+	private checkIsOpen(): void {
 		if (!this.isOpen || !this.hidDevice) throw new DriverError('You have to open the device first');
 	}
 
-	async sendFeatureReport(buffer: Buffer): Promise<number | undefined> {
+	private async sendFeatureReport(buffer: Buffer): Promise<number | undefined> {
 		this.checkIsOpen();
 
 		try {
@@ -225,103 +212,46 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 		}
 	}
 
-	async getFeatureReport(
-		report_id: ReportId,
-		report_length: PacketLength,
-	): Promise<Buffer<ArrayBufferLike> | number> {
-		this.checkIsOpen();
-
-		try {
-			// We add 1 to the size because node-hid includes the report ID in the returned buffer
-			const res: Buffer | undefined = await this.hidDevice?.getFeatureReport(report_id, report_length + 1);
-			if (res) return Buffer.from(res).subarray(1);
-			else return -1;
-		} catch (err) {
-			throw new ControlTransferError('Control transfer (sendFeatureReport) failed', { cause: err });
-		}
-	}
-
-	// async controlTransfer(options: ControlTransferOptions): Promise<number | Buffer> {
-	// 	this.checkIsOpen();
-	//
-	// 	const reportId = options.wValue & 0xff;
-	//
-	// 	if (Buffer.isBuffer(options.data)) {
-	// 		// Output Transfer (Feature Report)
-	// 		const dataWithReportId = Buffer.concat([Buffer.from([reportId]), options.data]);
-	//
-	// 		try {
-	// 			await this.hidDevice?.sendFeatureReport(dataWithReportId);
-	// 		} catch (err) {
-	// 			throw new ControlTransferError('Control transfer (sendFeatureReport) failed', { cause: err });
-	// 		}
-	//
-	// 		await delay(this.delayMs);
-	// 		return dataWithReportId.length;
-	// 	} else {
-	// 		// Input Transfer (Feature Report)
-	// 		try {
-	// 			// We add 1 to the size because node-hid includes the report ID in the returned buffer
-	// 			const res: Buffer | undefined = await this.hidDevice?.getFeatureReport(reportId, options.data + 1);
-	// 			if (res) return Buffer.from(res).subarray(1);
-	// 			else return -1;
-	// 		} catch (err) {
-	// 			throw new ControlTransferError('Control transfer (getFeatureReport) failed', { cause: err });
-	// 		}
-	// 	}
-	// }
-
 	/**
-	 * Gets the current battery level of the mouse.
-	 * Note that the value is only returned if the mouse is in wireless mode (Adapter).
-	 * In Wired mode, it returns -1.
-	 *
-	 * @param timeoutMs Maximum time to wait for the device response (default: 1000ms).
-	 * @throws {TimeoutError} If the device does not respond within the specified time.
-	 * @returns The battery level in percentage (0-100) or -1 if unavailable.
+	 * Reads battery telemetry from the FA60 receiver transport.
+	 * FA61 wired mode does not expose a battery level.
 	 */
 	getBatteryLevel(timeoutMs = 1000): Promise<number> {
 		this.checkIsOpen();
+		if (this.transport === TransportKind.Wired) return Promise.resolve(-1);
 
-		return new Promise((resolve, reject) => {
-			if (isConnectionModeWired(this.connectionMode)) {
-				return resolve(-1); // -1 indicates that it was not possible to get the exact battery status value
-			}
+		const { promise, resolve, reject } = Promise.withResolvers<number>();
+		let finished = false;
+		const cleanup = (): void => {
+			if (finished) return;
+			finished = true;
+			clearTimeout(timeout);
+			this.removeListener('batteryChange', handleBattery);
+		};
 
-			let finished = false;
+		const handleBattery = (battery: number): void => {
+			if (finished || battery > 100) return;
+			cleanup();
+			resolve(battery);
+		};
 
-			const cleanup = (): void => {
-				if (finished) return;
-				finished = true;
+		const timeout = setTimeout(() => {
+			cleanup();
+			reject(new TimeoutError('Timeout waiting for battery report'));
+		}, timeoutMs);
+		this.on('batteryChange', handleBattery);
 
-				clearTimeout(timeout);
-				this.removeListener('batteryChange', handleBattery);
-			};
+		if (this.lastBattery !== -1 && this.lastBattery <= 100) {
+			cleanup();
+			resolve(this.lastBattery);
+		}
 
-			const handleBattery = (battery: number): void => {
-				if (finished) return;
-				if (battery <= 100) {
-					cleanup();
-					resolve(battery);
-				}
-			};
-
-			const timeout = setTimeout(() => {
-				cleanup();
-				reject(new TimeoutError('Timeout waiting for battery report'));
-			}, timeoutMs);
-
-			this.on('batteryChange', handleBattery);
-
-			if (this.lastBattery !== -1 && this.lastBattery <= 100) {
-				cleanup();
-				resolve(this.lastBattery);
-			}
-		});
+		return promise;
 	}
 
 	onBatteryChange(listener: (battery: number) => void): () => void {
 		this.checkIsOpen();
+		if (this.transport !== TransportKind.Receiver) return () => undefined;
 
 		this.on('batteryChange', listener);
 
@@ -345,7 +275,7 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 		this.checkIsOpen();
 		const builder = rate instanceof PollingRateBuilder ? rate : new PollingRateBuilder().setRate(rate);
 
-		return this.sendFeatureReport(builder.build(this.connectionMode));
+		return this.sendFeatureReport(builder.build(this.transport));
 	}
 
 	/**
@@ -368,7 +298,7 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 	): Promise<[number | undefined, number | undefined, number | undefined, number | undefined]> {
 		this.checkIsOpen();
 		const builder = options instanceof CustomMacroBuilder ? options : new CustomMacroBuilder(options);
-		const [setMacroBuffer, secondPacket, thirdPacket, fourthPacket] = builder.build(this.connectionMode);
+		const [setMacroBuffer, secondPacket, thirdPacket, fourthPacket] = builder.build(this.transport);
 
 		const responseMacros = await this.sendFeatureReport(setMacroBuffer);
 		await delay(this.delayMs);
@@ -399,7 +329,7 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 		this.checkIsOpen();
 		const builder = config instanceof MacrosBuilder ? config : new MacrosBuilder(config);
 
-		return this.sendFeatureReport(builder.build(this.connectionMode));
+		return this.sendFeatureReport(builder.build(this.transport));
 	}
 
 	/**
@@ -420,21 +350,21 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 		this.checkIsOpen();
 		const builder = options instanceof UserPreferencesBuilder ? options : new UserPreferencesBuilder(options);
 
-		return this.sendFeatureReport(builder.build(this.connectionMode));
+		return this.sendFeatureReport(builder.build(this.transport));
 	}
 
 	sendInternalStateResetReportBuilder(): Promise<number | undefined> {
 		this.checkIsOpen();
 		const builder = new InternalStateResetReportBuilder();
 
-		return this.sendFeatureReport(builder.build(this.connectionMode));
+		return this.sendFeatureReport(builder.build(this.transport));
 	}
 
 	resetPollingRate(): Promise<number | undefined> {
 		this.checkIsOpen();
 		const builder = new PollingRateBuilder();
 
-		return this.sendFeatureReport(builder.build(this.connectionMode));
+		return this.sendFeatureReport(builder.build(this.transport));
 	}
 
 	/**
@@ -458,32 +388,25 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 		if (options instanceof DpiBuilder) {
 			builder = options;
 		} else {
-			// For X3Wired, use captured X3 defaults unless caller overrides them.
-			const merged =
-				this.connectionMode === ConnectionMode.X3Wired
-					? { ...DpiBuilder.X3_DEFAULT_OPTIONS, ...options }
-					: options;
+			const merged = { ...DpiBuilder.X3_DEFAULT_OPTIONS, ...options };
 			builder = new DpiBuilder(merged);
 		}
 
-		return this.sendFeatureReport(builder.build(this.connectionMode));
+		return this.sendFeatureReport(builder.build(this.transport));
 	}
 
 	resetDpi(): Promise<number | undefined> {
 		this.checkIsOpen();
-		const builder =
-			this.connectionMode === ConnectionMode.X3Wired
-				? new DpiBuilder(DpiBuilder.X3_DEFAULT_OPTIONS)
-				: new DpiBuilder();
+		const builder = new DpiBuilder(DpiBuilder.X3_DEFAULT_OPTIONS);
 
-		return this.sendFeatureReport(builder.build(this.connectionMode));
+		return this.sendFeatureReport(builder.build(this.transport));
 	}
 
 	resetMacro(): Promise<number | undefined> {
 		this.checkIsOpen();
 		const builder = new MacrosBuilder();
 
-		return this.sendFeatureReport(builder.build(this.connectionMode));
+		return this.sendFeatureReport(builder.build(this.transport));
 	}
 
 	resetCustomMacro(): Promise<[number | undefined, number | undefined, number | undefined, number | undefined]> {
@@ -502,13 +425,9 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 
 	resetUserPreferences(): Promise<number | undefined> {
 		this.checkIsOpen();
-		// X3 stock reset defaults use blue RGB (0,0,255); X11 uses DEFAULT_OPTIONS green (0,255,0)
-		const builder =
-			this.connectionMode === ConnectionMode.X3Wired
-				? new UserPreferencesBuilder({ rgb: { r: 0, g: 0, b: 255 } }).setKeyResponse(8)
-				: new UserPreferencesBuilder().setKeyResponse(8);
+		const builder = new UserPreferencesBuilder({ rgb: { r: 0, g: 0, b: 255 } }).setKeyResponse(8);
 
-		return this.sendFeatureReport(builder.build(this.connectionMode));
+		return this.sendFeatureReport(builder.build(this.transport));
 	}
 
 	/**
@@ -534,15 +453,10 @@ export class AttackSharkX11 extends EventEmitter<AttackSharkX11Events> {
 		await delay(this.delayMs);
 		await this.resetMacro();
 
-		// FA61/X3 stock reset / new-profile captures do not send custom-macro definition
-		// pages (09). Sending the legacy empty BACKWARD custom macro (report 08 +
-		// empty 09 pages with backward bound to custom macro) breaks the back button on X3
-		// hardware. Skip only for X3 to preserve X11 behavior.
-		if (this.connectionMode !== ConnectionMode.X3Wired) {
-			await delay(this.delayMs);
-			await this.resetCustomMacro();
-		}
+		// FA61/X3 stock reset and new-profile captures do not send custom-macro definition pages (09).
+		// Sending the legacy empty custom macro breaks the back button on X3 hardware, so reset
+		// intentionally stops after the standard macro report.
 	}
 }
 
-export default AttackSharkX11;
+export default AttackSharkX3;

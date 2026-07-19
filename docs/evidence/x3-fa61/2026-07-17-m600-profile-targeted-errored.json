@@ -1,0 +1,163 @@
+{
+  "startedAt": "2026-07-17T09:49:11.757Z",
+  "label": "M600-targeted-cycle",
+  "settings": {
+    "delayMs": 500,
+    "pollCount": 10,
+    "primaryDpi": 800,
+    "secondaryDpi": 3200,
+    "withCycle": true,
+    "keep": false
+  },
+  "events": [
+    {
+      "at": "2026-07-17T09:49:14.471Z",
+      "step": "baseline",
+      "data": {
+        "capturedAt": "2026-07-17T09:49:14.471Z",
+        "device": {
+          "path": "\\\\?\\HID#VID_1D57&PID_FA61&MI_02&Col04#8&219d702f&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+          "product": "USB Gaming Mouse",
+          "serialNumber": "",
+          "vendorId": 7511,
+          "productId": 64097,
+          "interface": 2
+        },
+        "version": "0b08011010830101",
+        "profileMetadata": "0c0a0101fe01fe000000",
+        "dpi": "04380100000100001f00000000000000000000000000000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010d5500000000",
+        "preferences": "050f011003a80000ff010401bf0000",
+        "buttons": "083b010200000300000400000d00003c00000f00000600000500003c00000100000100000100000100000100000100000100000a000009000000c2",
+        "decodedProfile": {
+          "current": 1,
+          "maximum": 1
+        },
+        "firstDpi": 1600
+      }
+    },
+    {
+      "at": "2026-07-17T09:49:21.456Z",
+      "step": "profile-1-metadata",
+      "data": {
+        "matched": true,
+        "observations": [
+          {
+            "metadata": {
+              "current": 1,
+              "maximum": 5
+            },
+            "profileMetadataHex": "0c0a0101fe05fa000000",
+            "dpiHex": "04380100000100001f00000000000000000000000000000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010d5500000000"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-07-17T09:49:23.029Z",
+      "step": "profile-1-seeded",
+      "data": {
+        "expected": "04380100000100000f00000000000000000000000000000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010d4500000000",
+        "readback": "04380100000100000f00000000000000000000000000000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010d4500000000",
+        "matches": true
+      }
+    },
+    {
+      "at": "2026-07-17T09:49:32.813Z",
+      "step": "profile-1-reboot-verification",
+      "data": {
+        "matched": true,
+        "observations": [
+          {
+            "metadata": {
+              "current": 1,
+              "maximum": 5
+            },
+            "profileMetadataHex": "0c0a0101fe05fa000000",
+            "dpiHex": "04380100000100000f00000000000000000000000000000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010d4500000000"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-07-17T09:49:34.378Z",
+      "step": "profile-2-load-barrier",
+      "data": {
+        "matched": true,
+        "observations": [
+          {
+            "metadata": {
+              "current": 2,
+              "maximum": 5
+            },
+            "profileMetadataHex": "0c0a0102fd05fa000000",
+            "dpiHex": "04380200003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff030e7e00000000"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-07-17T09:49:37.528Z",
+      "step": "profile-2-seeded",
+      "data": {
+        "expected": "04380200000100003f00000000000000000000000000000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff030d7700000000",
+        "readback": "04380200000100003f00000000000000000000000000000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff030d7700000000",
+        "matches": true
+      }
+    },
+    {
+      "at": "2026-07-17T09:49:39.105Z",
+      "step": "software-switch-to-profile-1",
+      "data": {
+        "matched": true,
+        "observations": [
+          {
+            "metadata": {
+              "current": 1,
+              "maximum": 5
+            },
+            "profileMetadataHex": "0c0a0101fe05fa000000",
+            "dpiHex": "04380100000100000f00000000000000000000000000000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010d4500000000"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-07-17T09:49:40.668Z",
+      "step": "error",
+      "data": "error: Expected profile metadata subtype 0x01, got 0x2"
+    }
+  ],
+  "baseline": {
+    "capturedAt": "2026-07-17T09:49:14.471Z",
+    "device": {
+      "path": "\\\\?\\HID#VID_1D57&PID_FA61&MI_02&Col04#8&219d702f&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+      "product": "USB Gaming Mouse",
+      "serialNumber": "",
+      "vendorId": 7511,
+      "productId": 64097,
+      "interface": 2
+    },
+    "version": "0b08011010830101",
+    "profileMetadata": "0c0a0101fe01fe000000",
+    "dpi": "04380100000100001f00000000000000000000000000000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010d5500000000",
+    "preferences": "050f011003a80000ff010401bf0000",
+    "buttons": "083b010200000300000400000d00003c00000f00000600000500003c00000100000100000100000100000100000100000100000a000009000000c2"
+  },
+  "secondaryBaseline": {
+    "capturedAt": "2026-07-17T09:49:36.484Z",
+    "device": {
+      "path": "\\\\?\\HID#VID_1D57&PID_FA61&MI_02&Col04#8&219d702f&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+      "product": "USB Gaming Mouse",
+      "serialNumber": "",
+      "vendorId": 7511,
+      "productId": 64097,
+      "interface": 2
+    },
+    "version": "0b08011010830205",
+    "profileMetadata": "0c0a0102fd05fa000000",
+    "dpi": "04380200003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff030e7e00000000",
+    "preferences": "050f0270030800ff000104017f0000",
+    "buttons": "083b020200000300000400000d00003c00000f00000600000500003c00000000000000000000000000000000000000000000000a000009000000bb"
+  },
+  "outcome": "error: Expected profile metadata subtype 0x01, got 0x2"
+}

@@ -1,4 +1,5 @@
-import { AttackSharkX11, ConnectionMode, type DpiBuilderOptions, type DpiStages, type StageIndex } from '../index.js';
+import { AttackSharkX3, type DpiBuilderOptions, type DpiStages, type StageIndex } from '../index.js';
+import type { TransportKind } from '../types.js';
 import {
 	LightMode,
 	type UserPreferencesBuilderOptions,
@@ -9,11 +10,11 @@ import {
 } from '../protocols/UserPreferencesBuilder.js';
 
 export async function withDriver(
-	mode: ConnectionMode,
+	transport: TransportKind,
 	delayMs: number,
-	fn: (driver: AttackSharkX11) => Promise<void>,
+	fn: (driver: AttackSharkX3) => Promise<void>,
 ): Promise<void> {
-	const driver = new AttackSharkX11({ connectionMode: mode, delayMs });
+	const driver = new AttackSharkX3({ transport: { kind: transport }, delayMs });
 	await driver.open();
 	try {
 		await fn(driver);
@@ -24,10 +25,9 @@ export async function withDriver(
 
 /**
  * Parse and validate the --stages flag value into positive finite integers.
- * Rejects trailing commas, empty entries, NaN, non-finite, zero, and negative values.
- * Mode-specific max validation is left to DpiBuilder.build.
+ * X3 supports one to eight DPI stages on both transports.
  */
-export function parseDpiStages(raw: unknown, mode: ConnectionMode = ConnectionMode.Wired): DpiStages {
+export function parseDpiStages(raw: unknown): DpiStages {
 	if (typeof raw !== 'string' || raw.trim() === '') {
 		throw new Error('--stages is required (comma-separated list of DPI values)');
 	}
@@ -35,12 +35,8 @@ export function parseDpiStages(raw: unknown, mode: ConnectionMode = ConnectionMo
 		throw new Error('--stages must not have a trailing comma');
 	}
 	const parts = raw.split(',');
-	if (mode === ConnectionMode.X3Wired) {
-		if (parts.length < 1 || parts.length > 8) {
-			throw new Error('--stages must have 1 to 8 comma-separated values for X3 wired mode');
-		}
-	} else if (parts.length !== 6) {
-		throw new Error('--stages must have exactly 6 comma-separated values');
+	if (parts.length < 1 || parts.length > 8) {
+		throw new Error('--stages must have 1 to 8 comma-separated values');
 	}
 	const values: number[] = [];
 	for (let i = 0; i < parts.length; i++) {
@@ -68,7 +64,7 @@ export function parseDpiStages(raw: unknown, mode: ConnectionMode = ConnectionMo
  * Returns undefined when omitted (DpiBuilder defaults to stage 2).
  * Rejects boolean flags, missing values, NaN, non-integer, and out-of-range values.
  */
-export function parseActiveStage(raw: unknown, maxStage: StageIndex = 6): StageIndex | undefined {
+export function parseActiveStage(raw: unknown, maxStage: StageIndex = 8): StageIndex | undefined {
 	if (raw === undefined) {
 		return undefined;
 	}
@@ -92,7 +88,6 @@ export function parseActiveStage(raw: unknown, maxStage: StageIndex = 6): StageI
 
 export function parseDpiSensorOptions(
 	flags: Record<string, string | boolean>,
-	mode: ConnectionMode,
 ): Pick<DpiBuilderOptions, 'angleSnap' | 'ripplerControl' | 'lod' | 'motionSync'> {
 	const options: Pick<DpiBuilderOptions, 'angleSnap' | 'ripplerControl' | 'lod' | 'motionSync'> = {};
 
@@ -103,15 +98,9 @@ export function parseDpiSensorOptions(
 		options.ripplerControl = parseOnOffFlag(flags['ripple'], '--ripple');
 	}
 	if (flags['lod'] !== undefined) {
-		if (mode !== ConnectionMode.X3Wired) {
-			throw new Error('--lod is only supported in x3-wired mode');
-		}
 		options.lod = parseLodFlag(flags['lod']);
 	}
 	if (flags['motion-sync'] !== undefined) {
-		if (mode !== ConnectionMode.X3Wired) {
-			throw new Error('--motion-sync is only supported in x3-wired mode');
-		}
 		options.motionSync = parseOnOffFlag(flags['motion-sync'], '--motion-sync');
 	}
 

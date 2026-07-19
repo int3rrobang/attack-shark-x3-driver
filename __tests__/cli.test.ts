@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { parseArgs } from '../src/cli/args.js';
-import { parseMode } from '../src/cli/types.js';
+import { parseTransport } from '../src/cli/types.js';
 import {
 	parseActiveStage,
 	parseDpiSensorOptions,
@@ -8,33 +8,32 @@ import {
 	parseUserPreferencesOptions,
 } from '../src/cli/helpers.js';
 import { parseRate } from '../src/cli/commands/set-rate.js';
-import { ConnectionMode, DpiBuilder, ParamsError, PollingRateBuilder, Rate } from '../src/index.js';
+import { DpiBuilder, PollingRateBuilder, Rate } from '../src/index.js';
+import { TransportKind } from '../src/types.js';
 import { LightMode } from '../src/protocols/UserPreferencesBuilder.js';
 import { InternalStateResetReportBuilder } from '../src/protocols/InternalStateResetReportBuilder.js';
 
 describe('CLI args parser', () => {
-	it('defaults mode to x3-wired when no --mode flag given', () => {
-		expect(parseMode(undefined)).toBe(ConnectionMode.X3Wired);
+	it('defaults transport to wired when no --transport flag given', () => {
+		expect(parseTransport(undefined)).toBe(TransportKind.Wired);
 	});
 
-	it('parses --mode x3-wired', () => {
-		expect(parseMode('x3-wired')).toBe(ConnectionMode.X3Wired);
+	it('parses --transport wired', () => {
+		expect(parseTransport('wired')).toBe(TransportKind.Wired);
 	});
 
-	it('parses --mode x3 as alias for x3-wired', () => {
-		expect(parseMode('x3')).toBe(ConnectionMode.X3Wired);
+	it('parses --transport receiver', () => {
+		expect(parseTransport('receiver')).toBe(TransportKind.Receiver);
 	});
 
-	it('parses --mode wired', () => {
-		expect(parseMode('wired')).toBe(ConnectionMode.Wired);
+	it('rejects removed transport aliases', () => {
+		expect(() => parseTransport('x3')).toThrow('Unknown transport');
+		expect(() => parseTransport('x3-wired')).toThrow('Unknown transport');
+		expect(() => parseTransport('adapter')).toThrow('Unknown transport');
 	});
 
-	it('parses --mode adapter', () => {
-		expect(parseMode('adapter')).toBe(ConnectionMode.Adapter);
-	});
-
-	it('throws on unknown mode', () => {
-		expect(() => parseMode('bluetooth')).toThrow('Unknown mode');
+	it('throws on unknown transport', () => {
+		expect(() => parseTransport('bluetooth')).toThrow('Unknown transport');
 	});
 
 	it('extracts command from argv', () => {
@@ -44,10 +43,10 @@ describe('CLI args parser', () => {
 	});
 
 	it('collects flags before command', () => {
-		const result = parseArgs(['--mode', 'wired', 'set-dpi', '--stages', '800,1600,2400,3200,5000,26000']);
+		const result = parseArgs(['--transport', 'receiver', 'set-dpi', '--stages', '800,1600,2400']);
 		expect(result.command).toBe('set-dpi');
-		expect(result.flags.mode).toBe('wired');
-		expect(result.flags.stages).toBe('800,1600,2400,3200,5000,26000');
+		expect(result.flags.transport).toBe('receiver');
+		expect(result.flags.stages).toBe('800,1600,2400');
 	});
 
 	it('collects flags after command', () => {
@@ -73,10 +72,10 @@ describe('CLI args parser', () => {
 	});
 
 	it('parses hex subcommand with positionals and flags', () => {
-		const result = parseArgs(['hex', 'dpi', '--stages', '800,1600,2400,3200,5000,26000']);
+		const result = parseArgs(['hex', 'dpi', '--stages', '800,1600,2400']);
 		expect(result.command).toBe('hex');
 		expect(result.positionals).toEqual(['dpi']);
-		expect(result.flags.stages).toBe('800,1600,2400,3200,5000,26000');
+		expect(result.flags.stages).toBe('800,1600,2400');
 	});
 
 	it('parses bind --list-actions as boolean flag', () => {
@@ -116,27 +115,25 @@ describe('CLI args parser', () => {
 		expect(result.flags.help).toBe(true);
 	});
 
-	it('last --mode wins when overridden', () => {
-		const result = parseArgs(['--mode', 'adapter', 'hex', 'dpi', '--mode', 'x3-wired']);
-		expect(result.flags.mode).toBe('x3-wired');
+	it('last --transport wins when overridden', () => {
+		const result = parseArgs(['--transport', 'receiver', 'hex', 'dpi', '--transport', 'wired']);
+		expect(result.flags.transport).toBe('wired');
 	});
 });
 
 describe('CLI DPI validation helpers', () => {
-	// --- parseDpiStages ---
 	it('parses valid stages string', () => {
-		const result = parseDpiStages('800,1600,2400,3200,5000,26000');
-		expect(result).toEqual([800, 1600, 2400, 3200, 5000, 26000]);
+		expect(parseDpiStages('800,1600,2400,3200,5000,26000')).toEqual([800, 1600, 2400, 3200, 5000, 26000]);
 	});
 
 	it('parses stages with spaces', () => {
-		const result = parseDpiStages('800, 1600, 2400, 3200, 5000, 26000');
-		expect(result).toEqual([800, 1600, 2400, 3200, 5000, 26000]);
+		expect(parseDpiStages('800, 1600, 2400, 3200, 5000, 26000')).toEqual([800, 1600, 2400, 3200, 5000, 26000]);
 	});
 
-	it('parses X3 variable-length stages', () => {
-		expect(parseDpiStages('400,800,1600', ConnectionMode.X3Wired)).toEqual([400, 800, 1600]);
-		expect(parseDpiStages('400,800,1600,2400,3200,5000,20400,26000', ConnectionMode.X3Wired)).toEqual([
+	it('parses one to eight X3 stages', () => {
+		expect(parseDpiStages('400')).toEqual([400]);
+		expect(parseDpiStages('400,800,1600')).toEqual([400, 800, 1600]);
+		expect(parseDpiStages('400,800,1600,2400,3200,5000,20400,26000')).toEqual([
 			400, 800, 1600, 2400, 3200, 5000, 20400, 26000,
 		]);
 	});
@@ -148,43 +145,31 @@ describe('CLI DPI validation helpers', () => {
 	});
 
 	it('rejects negative value', () => {
-		expect(() => parseDpiStages('800,-100,2400,3200,5000,26000')).toThrow('must be a positive integer');
+		expect(() => parseDpiStages('800,-100,2400')).toThrow('must be a positive integer');
 	});
 
 	it('rejects zero value', () => {
-		expect(() => parseDpiStages('800,0,2400,3200,5000,26000')).toThrow('must be a positive integer');
+		expect(() => parseDpiStages('800,0,2400')).toThrow('must be a positive integer');
 	});
 
 	it('rejects non-numeric value', () => {
-		expect(() => parseDpiStages('800,abc,2400,3200,5000,26000')).toThrow('is not a finite number');
+		expect(() => parseDpiStages('800,abc,2400')).toThrow('is not a finite number');
 	});
 
 	it('rejects NaN entry', () => {
-		expect(() => parseDpiStages('800,NaN,2400,3200,5000,26000')).toThrow('is not a finite number');
+		expect(() => parseDpiStages('800,NaN,2400')).toThrow('is not a finite number');
 	});
 
 	it('rejects empty entry (double comma)', () => {
-		expect(() => parseDpiStages('800,,2400,3200,5000,26000')).toThrow('entry 2 is empty');
-	});
-
-	it('rejects too few values', () => {
-		expect(() => parseDpiStages('800,1600,2400,3200,5000')).toThrow('exactly 6');
+		expect(() => parseDpiStages('800,,2400')).toThrow('entry 2 is empty');
 	});
 
 	it('rejects too many values', () => {
-		expect(() => parseDpiStages('800,1600,2400,3200,5000,26000,999')).toThrow('exactly 6');
-	});
-
-	it('rejects X3 stages above 8 values', () => {
-		expect(() => parseDpiStages('1,2,3,4,5,6,7,8,9', ConnectionMode.X3Wired)).toThrow('1 to 8');
-	});
-
-	it('rejects non-X3 variable-length stages', () => {
-		expect(() => parseDpiStages('400,800,1600', ConnectionMode.Wired)).toThrow('exactly 6');
+		expect(() => parseDpiStages('1,2,3,4,5,6,7,8,9')).toThrow('1 to 8');
 	});
 
 	it('rejects fractional value', () => {
-		expect(() => parseDpiStages('800,1600.5,2400,3200,5000,26000')).toThrow('must be an integer');
+		expect(() => parseDpiStages('800,1600.5,2400')).toThrow('must be an integer');
 	});
 
 	it('rejects non-string input', () => {
@@ -199,38 +184,29 @@ describe('CLI DPI validation helpers', () => {
 		expect(() => parseDpiStages('')).toThrow('--stages is required');
 	});
 
-	// --- parseActiveStage ---
 	it('returns undefined when active is omitted', () => {
 		expect(parseActiveStage(undefined)).toBeUndefined();
 	});
 
-	it('parses valid active stage 1', () => {
+	it('parses valid active stages through 8', () => {
 		expect(parseActiveStage('1')).toBe(1);
+		expect(parseActiveStage('8')).toBe(8);
 	});
 
-	it('parses valid active stage 6', () => {
-		expect(parseActiveStage('6')).toBe(6);
-	});
-
-	it('parses active stage from number-like string', () => {
-		expect(parseActiveStage('3')).toBe(3);
+	it('validates active stage against provided stage count', () => {
+		expect(parseActiveStage('3', 3)).toBe(3);
+		expect(() => parseActiveStage('4', 3)).toThrow('must be between 1 and 3');
 	});
 
 	it('rejects active stage 0', () => {
-		expect(() => parseActiveStage('0')).toThrow('must be between 1 and 6');
+		expect(() => parseActiveStage('0')).toThrow('must be between 1 and 8');
 	});
 
-	it('rejects active stage 7', () => {
-		expect(() => parseActiveStage('7')).toThrow('must be between 1 and 6');
+	it('rejects active stage 9', () => {
+		expect(() => parseActiveStage('9')).toThrow('must be between 1 and 8');
 	});
 
-	it('validates active stage against X3 provided stage count', () => {
-		expect(parseActiveStage('3', 3)).toBe(3);
-		expect(() => parseActiveStage('4', 3)).toThrow('must be between 1 and 3');
-		expect(parseActiveStage('8', 8)).toBe(8);
-	});
-
-	it('rejects boolean true for --active (bare flag)', () => {
+	it('rejects boolean true for --active', () => {
 		expect(() => parseActiveStage(true)).toThrow('--active requires a value');
 	});
 
@@ -239,106 +215,81 @@ describe('CLI DPI validation helpers', () => {
 	});
 
 	it('rejects NaN for active', () => {
-		expect(() => parseActiveStage('NaN')).toThrow('must be an integer between 1 and 6');
+		expect(() => parseActiveStage('NaN')).toThrow('must be an integer between 1 and 8');
 	});
 
 	it('rejects non-integer for active', () => {
-		expect(() => parseActiveStage('2.5')).toThrow('must be an integer between 1 and 6');
+		expect(() => parseActiveStage('2.5')).toThrow('must be an integer between 1 and 8');
 	});
 
 	it('rejects empty string for active', () => {
 		expect(() => parseActiveStage('')).toThrow('--active requires a value');
 	});
 
-	it('parses X3 DPI sensor flags', () => {
-		expect(
-			parseDpiSensorOptions(
-				{ lod: '2', ripple: 'on', 'angle-snap': 'on', 'motion-sync': 'off' },
-				ConnectionMode.X3Wired,
-			),
-		).toEqual({ lod: 2, ripplerControl: true, angleSnap: true, motionSync: false });
+	it('parses X3 DPI sensor flags for both transports', () => {
+		const flags = { lod: '2', ripple: 'on', 'angle-snap': 'on', 'motion-sync': 'off' };
+		expect(parseDpiSensorOptions(flags)).toEqual({
+			lod: 2,
+			ripplerControl: true,
+			angleSnap: true,
+			motionSync: false,
+		});
 	});
 
-	it('rejects X3-only sensor flags in non-X3 mode', () => {
-		expect(() => parseDpiSensorOptions({ lod: '2' }, ConnectionMode.Wired)).toThrow('only supported in x3-wired');
-		expect(() => parseDpiSensorOptions({ 'motion-sync': 'on' }, ConnectionMode.Adapter)).toThrow(
-			'only supported in x3-wired',
-		);
-	});
-
-	it('allows angle snap and ripple flags in non-X3 modes', () => {
-		expect(parseDpiSensorOptions({ ripple: 'off', 'angle-snap': 'on' }, ConnectionMode.Wired)).toEqual({
+	it('allows common sensor flags', () => {
+		expect(parseDpiSensorOptions({ ripple: 'off', 'angle-snap': 'on' })).toEqual({
 			ripplerControl: false,
 			angleSnap: true,
 		});
 	});
 });
-
 describe('Hex commands (no hardware)', () => {
-	it('hex dpi: X3Wired allows DPI up to 26000', () => {
+	it('hex dpi: wired uses compact 52-byte output', () => {
 		const builder = new DpiBuilder({ dpiValues: [800, 1600, 2400, 3200, 5000, 26000] });
-		const buffer = builder.build(ConnectionMode.X3Wired);
+		const buffer = builder.build(TransportKind.Wired);
 		expect(buffer.length).toBe(52);
 		expect(buffer.toString('hex').length).toBe(104);
 	});
 
-	it('hex dpi: Wired mode rejects DPI 26000', () => {
+	it('hex dpi: receiver uses padded 56-byte output', () => {
 		const builder = new DpiBuilder({ dpiValues: [800, 1600, 2400, 3200, 5000, 26000] });
-		expect(() => builder.build(ConnectionMode.Wired)).toThrow(ParamsError);
-	});
-
-	it('hex dpi: Adapter also rejects DPI 26000', () => {
-		const builder = new DpiBuilder({ dpiValues: [800, 1600, 2400, 3200, 5000, 26000] });
-		expect(() => builder.build(ConnectionMode.Adapter)).toThrow(ParamsError);
-	});
-
-	it('hex dpi: produces different hex for X3Wired vs Wired with same stages', () => {
-		const stages: [number, number, number, number, number, number] = [800, 1600, 2400, 3200, 5000, 22000];
-		const x3 = new DpiBuilder({ dpiValues: stages });
-		const x3Buffer = x3.build(ConnectionMode.X3Wired);
-		const wired = new DpiBuilder({ dpiValues: stages });
-		const wiredBuffer = wired.build(ConnectionMode.Wired);
-		expect(x3Buffer.toString('hex')).not.toBe(wiredBuffer.toString('hex'));
-	});
-
-	it('hex dpi: Wired mode returns 104 hex chars (52 bytes)', () => {
-		const stages: [number, number, number, number, number, number] = [800, 1600, 2400, 3200, 5000, 22000];
-		const builder = new DpiBuilder({ dpiValues: stages });
-		const buffer = builder.build(ConnectionMode.Wired);
-		expect(buffer.toString('hex').length).toBe(104);
-	});
-
-	it('hex dpi: Adapter mode returns 112 hex chars (56 bytes)', () => {
-		const stages: [number, number, number, number, number, number] = [800, 1600, 2400, 3200, 5000, 22000];
-		const builder = new DpiBuilder({ dpiValues: stages });
-		const buffer = builder.build(ConnectionMode.Adapter);
+		const buffer = builder.build(TransportKind.Receiver);
+		expect(buffer.length).toBe(56);
 		expect(buffer.toString('hex').length).toBe(112);
+	});
+
+	it('hex dpi: both transports support the X3 DPI range', () => {
+		for (const transport of [TransportKind.Wired, TransportKind.Receiver]) {
+			const builder = new DpiBuilder({ dpiValues: [800, 1600, 2400, 3200, 5000, 26000] });
+			expect(() => builder.build(transport)).not.toThrow();
+		}
+	});
+
+	it('hex dpi: produces different output lengths by transport', () => {
+		const stages: [number, number, number, number, number, number] = [800, 1600, 2400, 3200, 5000, 22000];
+		const wiredBuffer = new DpiBuilder({ dpiValues: stages }).build(TransportKind.Wired);
+		const receiverBuffer = new DpiBuilder({ dpiValues: stages }).build(TransportKind.Receiver);
+		expect(wiredBuffer.toString('hex')).not.toBe(receiverBuffer.toString('hex'));
 	});
 
 	it('hex rate: builds valid hex for all rate values', () => {
 		for (const rate of [Rate.powerSaving, Rate.office, Rate.gaming, Rate.eSports]) {
 			const builder = new PollingRateBuilder().setRate(rate);
-			builder.build(ConnectionMode.Wired);
+			builder.build(TransportKind.Wired);
 			expect(builder.toString().length).toBe(18);
 		}
 	});
 
-	it('hex reset: X3Wired returns 12 hex chars (6 bytes)', () => {
-		const buffer = new InternalStateResetReportBuilder().build(ConnectionMode.X3Wired);
+	it('hex reset: wired returns 6 bytes', () => {
+		const buffer = new InternalStateResetReportBuilder().build(TransportKind.Wired);
 		expect(buffer.toString('hex')).toBe('0c0a01fe01fe');
-		expect(buffer.toString('hex').length).toBe(12);
+		expect(buffer.length).toBe(6);
 	});
 
-	it('hex reset: Wired returns 12 hex chars (6 bytes)', () => {
-		const buffer = new InternalStateResetReportBuilder().build(ConnectionMode.Wired);
-		expect(buffer.toString('hex')).toBe('0c0a01fe01fe');
-		expect(buffer.toString('hex').length).toBe(12);
-	});
-
-	it('hex reset: Adapter returns 20 hex chars (10 bytes)', () => {
-		const buffer = new InternalStateResetReportBuilder().build(ConnectionMode.Adapter);
+	it('hex reset: receiver returns 10 padded bytes', () => {
+		const buffer = new InternalStateResetReportBuilder().build(TransportKind.Receiver);
 		expect(buffer.toString('hex')).toBe('0c0a01fe01fe00000000');
-		expect(buffer.toString('hex').length).toBe(20);
+		expect(buffer.length).toBe(10);
 	});
 });
 

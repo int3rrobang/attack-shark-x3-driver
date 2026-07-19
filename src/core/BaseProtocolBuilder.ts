@@ -1,4 +1,4 @@
-import type { ConnectionMode } from '../types.js';
+import type { TransportKind } from '../types.js';
 
 export interface BaseProtocolBuilder {
 	/**
@@ -68,7 +68,7 @@ export interface BaseProtocolBuilder {
 	/**
 	 * Returns the final buffer to be sent to the device
 	 */
-	build(mode: ConnectionMode): Buffer | Buffer[];
+	build(kind: TransportKind): Buffer | Buffer[];
 
 	/**
 	 * Hexadecimal representation of the buffer (for debugging)

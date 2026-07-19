@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Attack Shark X3 / M600 — Web Bluetooth Probe</title>
+	<style>
+		* {
+			box-sizing: border-box;
+			margin: 0;
+			padding: 0;
+		}
+		body {
+			font-family: system-ui, -apple-system, sans-serif;
+			background: #111;
+			color: #e0e0e0;
+			max-width: 780px;
+			margin: 2rem auto;
+			padding: 0 1rem;
+		}
+		h1 {
+			font-size: 1.4rem;
+			margin-bottom: 0.25rem;
+			color: #0cf;
+		}
+		h2 {
+			font-size: 1.1rem;
+			margin: 1.2rem 0 0.5rem;
+			color: #aaa;
+			border-bottom: 1px solid #333;
+			padding-bottom: 0.3rem;
+		}
+		.note {
+			background: #221;
+			border: 1px solid #660;
+			padding: 0.75rem 1rem;
+			border-radius: 6px;
+			margin-bottom: 1.5rem;
+			font-size: 0.85rem;
+			color: #cc0;
+		}
+		button {
+			background: #0a6;
+			border: none;
+			color: #fff;
+			padding: 0.5rem 1rem;
+			border-radius: 4px;
+			font-size: 0.9rem;
+			cursor: pointer;
+			margin-right: 0.5rem;
+			margin-bottom: 0.5rem;
+		}
+		button:hover {
+			background: #0c8;
+		}
+		button:disabled {
+			background: #444;
+			cursor: default;
+		}
+		button.secondary {
+			background: #444;
+		}
+		button.secondary:hover {
+			background: #555;
+		}
+		button.danger {
+			background: #a33;
+		}
+		button.danger:hover {
+			background: #c44;
+		}
+		button.danger:disabled {
+			background: #444;
+		}
+		.row {
+			margin-bottom: 1rem;
+		}
+		label {
+			font-weight: 600;
+			display: block;
+			margin-bottom: 0.4rem;
+		}
+		.hint {
+			font-weight: 400;
+			font-size: 0.8rem;
+			color: #888;
+		}
+		.info-block {
+			background: #1a1a1a;
+			border: 1px solid #333;
+			border-radius: 6px;
+			padding: 0.75rem 1rem;
+			font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+			font-size: 0.82rem;
+			word-break: break-all;
+			line-height: 1.5;
+		}
+		#log {
+			background: #1a1a1a;
+			border: 1px solid #333;
+			border-radius: 6px;
+			padding: 1rem;
+			font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+			font-size: 0.82rem;
+			white-space: pre-wrap;
+			word-break: break-all;
+			max-height: 420px;
+			overflow-y: auto;
+			line-height: 1.5;
+		}
+		.btn-group {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.4rem;
+			margin-bottom: 0.6rem;
+		}
+		.warning {
+			background: #321;
+			border: 1px solid #a60;
+			padding: 0.75rem 1rem;
+			border-radius: 6px;
+			margin-bottom: 0.75rem;
+			font-size: 0.85rem;
+			color: #f90;
+		}
+		textarea {
+			width: 100%;
+			background: #1a1a1a;
+			border: 1px solid #555;
+			border-radius: 4px;
+			color: #e0e0e0;
+			padding: 0.5rem;
+			font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+			font-size: 0.85rem;
+			resize: vertical;
+		}
+		input[type="text"] {
+			background: #1a1a1a;
+			border: 1px solid #555;
+			border-radius: 4px;
+			color: #e0e0e0;
+			padding: 0.35rem 0.5rem;
+			font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+			font-size: 0.85rem;
+		}
+		input[type="number"] {
+			background: #1a1a1a;
+			border: 1px solid #555;
+			border-radius: 4px;
+			color: #e0e0e0;
+			padding: 0.35rem 0.5rem;
+			font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+			font-size: 0.85rem;
+			width: 5rem;
+		}
+		.check-row {
+			display: flex;
+			align-items: center;
+			gap: 0.4rem;
+			margin-bottom: 0.5rem;
+		}
+		.check-row label {
+			margin-bottom: 0;
+			font-weight: 400;
+		}
+		.preview {
+			background: #111;
+			border: 1px solid #444;
+			padding: 0.4rem 0.6rem;
+			border-radius: 4px;
+			font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+			font-size: 0.8rem;
+			color: #888;
+			min-height: 1.5em;
+		}
+	</style>
+</head>
+<body>
+
+	<h1>Attack Shark X3 / M600 — Web Bluetooth Probe</h1>
+
+	<div class="note">
+		<strong>Important:</strong> This page must be served from <code>localhost</code>
+		(or HTTPS) for Web Bluetooth to be available. Open with a local server
+		(e.g. <code>npx serve web-bluetooth-probe</code> from repo root) in
+		Chrome/Edge — not as a <code>file://</code> URL.
+	</div>
+
+	<!-- Status -->
+	<div class="row">
+		<label>API Status: <span id="status">checking…</span></label>
+	</div>
+
+	<!-- Device acquisition -->
+	<h2>Device</h2>
+
+	<div class="row">
+		<label>Acquisition</label>
+		<div class="btn-group">
+			<button id="btn-permitted">Use permitted device</button>
+			<button id="btn-choose">Choose device</button>
+		</div>
+		<div class="hint" style="margin-bottom:0.5rem">
+			"Use permitted device" tries the optional <code>getDevices()</code> API.
+			"Choose device" opens the browser chooser; the device may need to advertise
+			on the selected RF slot, but you do <strong>not</strong> need to unpair from the OS.
+			Tested Chromium builds lacked usable permission reuse, so expect to use the chooser each session.
+		</div>
+	</div>
+
+	<div class="row">
+		<label>Connection: <span id="conn-state">disconnected</span></label>
+		<div class="btn-group">
+			<button id="btn-connect" disabled>Connect</button>
+			<button id="btn-disconnect" class="secondary" disabled>Disconnect</button>
+		</div>
+	</div>
+
+	<div class="row">
+		<label>Device info</label>
+		<div id="device-info" class="info-block">No device selected.</div>
+	</div>
+
+	<div class="row">
+		<label>Characteristics: <span id="char-status">—</span></label>
+	</div>
+
+	<!-- Read controls -->
+	<h2>Read</h2>
+
+	<div class="row">
+		<label>FEE1 <span class="hint">(opaque; observed to change on reads/connection activity; not write proof)</span></label>
+		<div class="btn-group">
+			<button id="btn-read-fee1" disabled>Read FEE1</button>
+		</div>
+		<div id="fee1-value" class="preview">—</div>
+	</div>
+
+	<div class="row">
+		<label>Battery</label>
+		<div class="btn-group">
+			<button id="btn-read-battery" disabled>Read Battery</button>
+		</div>
+		<div id="battery-value" class="preview">—</div>
+	</div>
+
+	<!-- Write panel (gated) -->
+	<h2>Write (FEE3)</h2>
+
+	<div class="warning">
+		<strong>This writes to the mouse.</strong> Packets may change settings
+		or crash firmware. Read-only controls work without this section.
+	</div>
+
+	<div id="write-gate" style="display:none">
+		<div class="check-row">
+			<input type="checkbox" id="chk-ack-risk" />
+			<label for="chk-ack-risk">I acknowledge this may crash firmware or change settings</label>
+		</div>
+
+		<div class="row">
+			<label for="txt-confirm">Type <code>WRITE</code> to confirm</label>
+			<input type="text" id="txt-confirm" placeholder="WRITE" style="width:8rem" />
+		</div>
+
+		<div class="row">
+			<label for="ack-timeout">ACK timeout (seconds)</label>
+			<input type="number" id="ack-timeout" min="0.5" max="30" step="0.5" value="2.0" />
+		</div>
+
+		<div class="row">
+			<label for="txt-hex">Hex packet <span class="hint">(whitespace-tolerant, even-length hex; byte 0 = report ID)</span></label>
+			<textarea id="txt-hex" rows="3" placeholder="e.g. 050f011003a8636363010401e9"></textarea>
+		</div>
+
+		<div class="row">
+			<label>Preview</label>
+			<div id="pkt-preview" class="preview">—</div>
+		</div>
+
+		<div class="row">
+			<button id="btn-send" class="danger" disabled>Send Write</button>
+		</div>
+
+		<div class="warning">
+			<strong>Hard-blocks:</strong> Report 0x06 is blocked over BLE.
+			Report 0x05 with byte 3 = 0x00 is blocked (known BLE firmware crash risk —
+			LightMode.Off). No FFC0/FFC1/FFC2 access is exposed.<br />
+			<strong>ACK correlation:</strong> correlation is by report ID only
+			(no transaction ID). Same-RID packets may mis-correlate stale ACKs.
+			FEE1 reads before/after are observational snapshots only, not proof.
+		</div>
+	</div>
+
+	<!-- Log -->
+	<h2>Log</h2>
+
+	<div class="btn-group">
+		<button id="btn-clear-log" class="secondary">Clear</button>
+		<button id="btn-copy-log" class="secondary">Copy</button>
+	</div>
+	<div id="log"></div>
+
+	<script src="app.js" defer></script>
+</body>
+</html>

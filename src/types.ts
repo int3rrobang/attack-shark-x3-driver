@@ -1,21 +1,31 @@
 /**
- * Connection modes supported by the driver.
+ * Transport kinds supported by the X3/M600 driver.
  */
-export enum ConnectionMode {
-	/** Wireless mode via 2.4GHz adapter */
-	Adapter = 0xfa60,
-	/** Wired mode via USB cable */
-	Wired = 0xfa55,
-	/** Wired mode for X3 variant (different PID) */
-	X3Wired = 0xfa61,
+export enum TransportKind {
+	Wired = 'wired',
+	Receiver = 'receiver',
 }
 
 /**
- * Returns true if the connection mode is any wired variant (including X3Wired).
+ * Configuration for a wired transport.
  */
-export function isConnectionModeWired(mode: ConnectionMode): boolean {
-	return mode === ConnectionMode.Wired || mode === ConnectionMode.X3Wired;
+export interface WiredTransportOptions {
+	kind: TransportKind.Wired;
+	path?: string;
 }
+
+/**
+ * Configuration for a 2.4 GHz receiver transport.
+ */
+export interface ReceiverTransportOptions {
+	kind: TransportKind.Receiver;
+	path?: string;
+}
+
+/**
+ * Options for selecting the USB transport and, optionally, a specific HID path.
+ */
+export type TransportOptions = WiredTransportOptions | ReceiverTransportOptions;
 
 /**
  * Base structure for USB control transfer options.

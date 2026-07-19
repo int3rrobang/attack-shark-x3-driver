@@ -1,6 +1,6 @@
 import type { BaseProtocolBuilder } from '../core/BaseProtocolBuilder.js';
 import { ParamsError } from '../errors.js';
-import { Button, ConnectionMode } from '../types.js';
+import { Button, type TransportKind } from '../types.js';
 import {
 	type KeyCode,
 	type MacroBuilderOptions,
@@ -241,7 +241,7 @@ export class CustomMacroBuilder implements BaseProtocolBuilder {
 		return sum;
 	}
 
-	build(mode: ConnectionMode): [Buffer, Buffer, Buffer, Buffer] {
+	build(_transport: TransportKind): [Buffer, Buffer, Buffer, Buffer] {
 		const eventCount = Math.floor(this.macroEvents.length / 2);
 		this.secondPacket[29] = Math.min(eventCount, CustomMacroBuilder.MAX_MACRO_EVENTS);
 
@@ -261,15 +261,14 @@ export class CustomMacroBuilder implements BaseProtocolBuilder {
 			this.thirdPacket[i] = this.macroEvents[eventByteIndex++] ?? 0x00;
 		}
 
-		// Page 2 header byte 1: X3 wired hardware uses 0x40; non-X3 uses 0x0c.
-		this.fourthPacket[1] = mode === ConnectionMode.X3Wired ? 0x40 : 0x0c;
+		this.fourthPacket[1] = 0x40;
 
 		const checksum = this.calculateChecksum();
 
 		this.fourthPacket[10] = (checksum >> 8) & 0xff;
 		this.fourthPacket[11] = checksum & 0xff;
 
-		return [this.defineMacroButton.build(mode), this.secondPacket, this.thirdPacket, this.fourthPacket];
+		return [this.defineMacroButton.build(_transport), this.secondPacket, this.thirdPacket, this.fourthPacket];
 	}
 
 	toString(): string {

@@ -1,27 +1,27 @@
 {
-	"name": "attack-shark-x11-driver",
+	"name": "attack-shark-x3-driver",
 	"version": "1.0.1",
-	"description": "A TypeScript driver for the Attack Shark X11 gaming mouse, supporting Linux and other platforms via Node.js/Bun and USB HID.",
-	"author": {
-		"name": "HarukaYamamoto0",
-		"email": "harukayamamotodev@gmail.com",
-		"url": "https://harukadev.com"
-	},
+	"description": "A TypeScript driver for the Attack Shark X3 / M600 gaming mouse, supporting wired, 2.4 GHz receiver, and BLE modes via Node.js/Bun and USB HID.",
+	"author": "int3rrobang",
 	"license": "MIT",
-	"homepage": "https://github.com/HarukaYamamoto0/attack-shark-x11-driver#readme",
+	"homepage": "https://github.com/int3rrobang/attack-shark-x3-driver#readme",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/HarukaYamamoto0/attack-shark-x11-driver.git"
+		"url": "git+https://github.com/int3rrobang/attack-shark-x3-driver.git"
 	},
 	"bugs": {
-		"url": "https://github.com/HarukaYamamoto0/attack-shark-x11-driver/issues"
+		"url": "https://github.com/int3rrobang/attack-shark-x3-driver/issues"
 	},
 	"keywords": [
 		"attack-shark",
-		"x11",
+		"x3",
+		"m600",
 		"mouse",
 		"driver",
-		"linux",
+		"wired",
+		"receiver",
+		"wireless",
+		"ble",
 		"usb",
 		"hid",
 		"typescript"
@@ -31,7 +31,7 @@
 	"types": "./dist/index.d.ts",
 	"type": "module",
 	"bin": {
-		"attack-shark-x11": "./dist/cli.js"
+		"attack-shark-x3": "./dist/cli.js"
 	},
 	"exports": {
 		".": {

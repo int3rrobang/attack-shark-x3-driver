@@ -1,10 +1,16 @@
-# Custom Macro Communication Protocol (Report 0x0308 / 0x0309)
+# Custom macros (report `0x09`)
 
-This document describes the USB HID communication protocol used to configure custom macros for the Attack Shark X11 mouse, as implemented in the `CustomMacroBuilder` class.
+Report `0x09` stores custom macro event pages. A complete operation first binds a button through report [`0x08`](08-button-mapping.md), then sends three `0x09` pages through `CustomMacroBuilder`.
 
-## Overview
+## Compatibility
 
-Applying a custom macro involves sending a sequence of four USB HID `SET_REPORT` packets. Each packet transmits different parts of the macro configuration, including button assignment, play options, macro events, and a validation checksum.
+| Variant | Transport | Status | Evidence |
+|:--------|:----------|:-------|:---------|
+| X11 wired / adapter | USB HID | Supported | implementation + sample dumps |
+| X3/FA61 wired | USB HID | Multi-page macros confirmed | live-confirmed |
+| X3/M600 BLE | BLE FEE3 | Single-page parser acceptance only | live-confirmed ACK; full behavior untested |
+
+Applying a custom macro involves four USB HID `SET_REPORT` packets: one `0x08` assignment followed by three `0x09` pages carrying playback options, events, and a validation checksum.
 
 ## USB HID Request Parameters
 

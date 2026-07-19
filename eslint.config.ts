@@ -5,7 +5,7 @@ import tseslint from 'typescript-eslint';
 import prettier from 'eslint-config-prettier';
 
 export default defineConfig([
-	globalIgnores(['**/.*', '**/*.json', 'dist/', 'build/', 'node_modules/', '*.yml']),
+	globalIgnores(['**/.*', '**/*.json', 'dist/', 'build/', 'node_modules/', 'web-bluetooth-probe/', '*.yml']),
 	js.configs.recommended,
 	...tseslint.configs.recommended,
 	{

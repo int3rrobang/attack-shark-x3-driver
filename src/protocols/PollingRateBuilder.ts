@@ -1,6 +1,6 @@
 import type { BaseProtocolBuilder } from '../core/BaseProtocolBuilder.js';
 import { ParamsError } from '../errors.js';
-import type { ConnectionMode } from '../types.js';
+import type { TransportKind } from '../types.js';
 
 export enum Rate {
 	powerSaving = 125,
@@ -82,8 +82,7 @@ export class PollingRateBuilder implements BaseProtocolBuilder {
 		return this;
 	}
 
-	build(_mode: ConnectionMode): Buffer {
-		// In both connection modes, the buffer is the same.
+	build(_transport: TransportKind): Buffer {
 		this.buffer[4] = this.calculateChecksum();
 		return this.buffer;
 	}

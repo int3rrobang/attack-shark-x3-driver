@@ -1,4 +1,4 @@
-import { Button, ConnectionMode } from '../../types.js';
+import { Button, type TransportKind } from '../../types.js';
 import { MacrosBuilder, macroTemplates, MacroName } from '../../protocols/MacrosBuilder.js';
 import { BIND_HELP } from '../help.js';
 import { withDriver } from '../helpers.js';
@@ -17,7 +17,7 @@ const BUTTON_MAP: Record<string, Button> = {
 export const help = BIND_HELP;
 
 export async function run(
-	mode: ConnectionMode,
+	transport: TransportKind,
 	delayMs: number,
 	flags: Record<string, string | boolean>,
 ): Promise<void> {
@@ -38,7 +38,7 @@ export async function run(
 			'\nNote: bind sends a full model-default mapping packet; unspecified buttons reset to model defaults, not current device state.',
 		);
 		console.log(
-			'x3-wired/FA61: DPI binds appear ignored; scroll binds are experimental/unsafe and may repeat indefinitely.',
+			'FA61 wired: DPI binds appear ignored; scroll binds are experimental/unsafe and may repeat indefinitely.',
 		);
 		return;
 	}
@@ -63,7 +63,7 @@ export async function run(
 		throw new Error(`Unknown action: ${actionStr}. Use --list-actions to see available actions.`);
 	}
 
-	await withDriver(mode, delayMs, async (driver) => {
+	await withDriver(transport, delayMs, async (driver) => {
 		const builder = new MacrosBuilder().setMacro(button, macro);
 		await driver.setMacro(builder);
 	});
@@ -72,9 +72,7 @@ export async function run(
 	console.log(
 		'Note: bind sends a full model-default mapping packet; unspecified buttons reset to model defaults, not current device state.',
 	);
-	if (mode === ConnectionMode.X3Wired) {
-		console.log(
-			'x3-wired/FA61 caveat: DPI binds appear ignored; scroll binds are experimental/unsafe and may repeat indefinitely.',
-		);
-	}
+	console.log(
+		'FA61 wired caveat: DPI binds appear ignored; scroll binds are experimental/unsafe and may repeat indefinitely.',
+	);
 }

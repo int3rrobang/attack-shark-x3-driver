@@ -1,6 +1,14 @@
-# Polling Rate Protocol (Report 0x06)
+# Polling rate (report `0x06`)
 
-This document describes the USB HID communication protocol used to configure the Polling Rate for the **Attack Shark X11** mouse. This setting controls how often the mouse reports its position to the computer.
+Report `0x06` configures how often the mouse reports movement. X11 USB modes and X3/FA61 wired use the same nine-byte packet; X3 BLE explicitly rejects this report.
+
+## Compatibility
+
+| Variant | Transport | Status | Evidence |
+|:--------|:----------|:-------|:---------|
+| X11 wired / adapter | USB HID | Supported | implementation + capture |
+| X3/FA61 wired | USB HID | Same layout confirmed | capture-confirmed + live-confirmed |
+| X3/M600 BLE | BLE FEE3 | Rejected; do not send | live-confirmed + static-analysis |
 
 ## Technical Specifications
 

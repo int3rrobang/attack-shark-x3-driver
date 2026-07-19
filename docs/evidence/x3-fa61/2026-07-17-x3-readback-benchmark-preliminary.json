@@ -1,0 +1,3885 @@
+{
+  "startedAt": "2026-07-17T11:07:53.855Z",
+  "label": "X3",
+  "device": {
+    "vendorId": 7511,
+    "productId": 64097,
+    "path": "\\\\?\\HID#VID_1D57&PID_FA61&MI_02&Col04#8&219d702f&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+    "serialNumber": "",
+    "manufacturer": "Beken",
+    "product": "USB Gaming Mouse",
+    "release": 265,
+    "interface": 2,
+    "usagePage": 11
+  },
+  "settings": {
+    "iterations": 20,
+    "warmup": 5,
+    "pollMs": 1,
+    "cooldownMs": 25,
+    "maxRetries": 3
+  },
+  "modes": {
+    "persistent": {
+      "version": {
+        "summary": {
+          "count": 20,
+          "valid": 20,
+          "malformed": 0,
+          "malformedPercent": 0,
+          "meanRetries": 0,
+          "openUs": {
+            "count": 20,
+            "minimum": 0,
+            "p50": 0,
+            "p90": 0,
+            "p95": 0,
+            "p99": 0,
+            "maximum": 0,
+            "mean": 0
+          },
+          "selectorUs": {
+            "count": 20,
+            "minimum": 1420,
+            "p50": 1841,
+            "p90": 2210,
+            "p95": 2836,
+            "p99": 3004,
+            "maximum": 3004,
+            "mean": 1924
+          },
+          "readyUs": {
+            "count": 20,
+            "minimum": 2930,
+            "p50": 3013,
+            "p90": 3141,
+            "p95": 3543,
+            "p99": 7107,
+            "maximum": 7107,
+            "mean": 3251
+          },
+          "getUs": {
+            "count": 20,
+            "minimum": 2811,
+            "p50": 2993,
+            "p90": 3090,
+            "p95": 3094,
+            "p99": 3257,
+            "maximum": 3257,
+            "mean": 3004
+          },
+          "validTotalUs": {
+            "count": 20,
+            "minimum": 10508,
+            "p50": 12018,
+            "p90": 13612,
+            "p95": 23660,
+            "p99": 26094,
+            "maximum": 26094,
+            "mean": 13351
+          },
+          "malformedResponses": []
+        },
+        "transactions": [
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12396,
+            "attempts": [
+              {
+                "selectorUs": 1961,
+                "readyUs": 2967,
+                "getUs": 3090,
+                "validationUs": 58,
+                "totalUs": 8078,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13210,
+            "attempts": [
+              {
+                "selectorUs": 1615,
+                "readyUs": 3141,
+                "getUs": 2911,
+                "validationUs": 20,
+                "totalUs": 7690,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11866,
+            "attempts": [
+              {
+                "selectorUs": 2210,
+                "readyUs": 3137,
+                "getUs": 2811,
+                "validationUs": 20,
+                "totalUs": 8271,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 23660,
+            "attempts": [
+              {
+                "selectorUs": 1759,
+                "readyUs": 3543,
+                "getUs": 2996,
+                "validationUs": 4490,
+                "totalUs": 14743,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12812,
+            "attempts": [
+              {
+                "selectorUs": 1865,
+                "readyUs": 2934,
+                "getUs": 2978,
+                "validationUs": 30,
+                "totalUs": 7811,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12018,
+            "attempts": [
+              {
+                "selectorUs": 1556,
+                "readyUs": 2962,
+                "getUs": 2988,
+                "validationUs": 33,
+                "totalUs": 7542,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13612,
+            "attempts": [
+              {
+                "selectorUs": 1566,
+                "readyUs": 2954,
+                "getUs": 3008,
+                "validationUs": 36,
+                "totalUs": 7566,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12916,
+            "attempts": [
+              {
+                "selectorUs": 1841,
+                "readyUs": 3013,
+                "getUs": 3005,
+                "validationUs": 38,
+                "totalUs": 7899,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08021070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11793,
+            "attempts": [
+              {
+                "selectorUs": 1961,
+                "readyUs": 3070,
+                "getUs": 2985,
+                "validationUs": 35,
+                "totalUs": 8055,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11481,
+            "attempts": [
+              {
+                "selectorUs": 1765,
+                "readyUs": 3093,
+                "getUs": 2993,
+                "validationUs": 32,
+                "totalUs": 7886,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12435,
+            "attempts": [
+              {
+                "selectorUs": 1741,
+                "readyUs": 2986,
+                "getUs": 3094,
+                "validationUs": 70,
+                "totalUs": 7893,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12753,
+            "attempts": [
+              {
+                "selectorUs": 1907,
+                "readyUs": 3102,
+                "getUs": 3257,
+                "validationUs": 29,
+                "totalUs": 8298,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10508,
+            "attempts": [
+              {
+                "selectorUs": 1616,
+                "readyUs": 2961,
+                "getUs": 3020,
+                "validationUs": 31,
+                "totalUs": 7631,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 26094,
+            "attempts": [
+              {
+                "selectorUs": 2836,
+                "readyUs": 7107,
+                "getUs": 2978,
+                "validationUs": 40,
+                "totalUs": 12965,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10803,
+            "attempts": [
+              {
+                "selectorUs": 3004,
+                "readyUs": 3015,
+                "getUs": 3033,
+                "validationUs": 33,
+                "totalUs": 9087,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11824,
+            "attempts": [
+              {
+                "selectorUs": 1420,
+                "readyUs": 3116,
+                "getUs": 2944,
+                "validationUs": 33,
+                "totalUs": 7516,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12265,
+            "attempts": [
+              {
+                "selectorUs": 1874,
+                "readyUs": 2948,
+                "getUs": 2937,
+                "validationUs": 37,
+                "totalUs": 7799,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11520,
+            "attempts": [
+              {
+                "selectorUs": 2197,
+                "readyUs": 3009,
+                "getUs": 2993,
+                "validationUs": 38,
+                "totalUs": 8241,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11049,
+            "attempts": [
+              {
+                "selectorUs": 1707,
+                "readyUs": 3025,
+                "getUs": 3021,
+                "validationUs": 29,
+                "totalUs": 7785,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08021070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12006,
+            "attempts": [
+              {
+                "selectorUs": 2080,
+                "readyUs": 2930,
+                "getUs": 3031,
+                "validationUs": 32,
+                "totalUs": 8075,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          }
+        ]
+      },
+      "profileMetadata": {
+        "summary": {
+          "count": 20,
+          "valid": 20,
+          "malformed": 0,
+          "malformedPercent": 0,
+          "meanRetries": 0,
+          "openUs": {
+            "count": 20,
+            "minimum": 0,
+            "p50": 0,
+            "p90": 0,
+            "p95": 0,
+            "p99": 0,
+            "maximum": 0,
+            "mean": 0
+          },
+          "selectorUs": {
+            "count": 20,
+            "minimum": 1569,
+            "p50": 2177,
+            "p90": 2982,
+            "p95": 3080,
+            "p99": 3680,
+            "maximum": 3680,
+            "mean": 2258
+          },
+          "readyUs": {
+            "count": 20,
+            "minimum": 2017,
+            "p50": 3005,
+            "p90": 3390,
+            "p95": 5026,
+            "p99": 11380,
+            "maximum": 11380,
+            "mean": 3511
+          },
+          "getUs": {
+            "count": 20,
+            "minimum": 2611,
+            "p50": 2985,
+            "p90": 3054,
+            "p95": 3136,
+            "p99": 4010,
+            "maximum": 4010,
+            "mean": 3001
+          },
+          "validTotalUs": {
+            "count": 20,
+            "minimum": 10845,
+            "p50": 12471,
+            "p90": 14571,
+            "p95": 32917,
+            "p99": 38470,
+            "maximum": 38470,
+            "mean": 14875
+          },
+          "malformedResponses": []
+        },
+        "transactions": [
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11919,
+            "attempts": [
+              {
+                "selectorUs": 1946,
+                "readyUs": 3029,
+                "getUs": 3015,
+                "validationUs": 86,
+                "totalUs": 8078,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 32917,
+            "attempts": [
+              {
+                "selectorUs": 3080,
+                "readyUs": 2017,
+                "getUs": 4010,
+                "validationUs": 12678,
+                "totalUs": 21788,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13350,
+            "attempts": [
+              {
+                "selectorUs": 2982,
+                "readyUs": 5026,
+                "getUs": 3000,
+                "validationUs": 105,
+                "totalUs": 11117,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12742,
+            "attempts": [
+              {
+                "selectorUs": 2177,
+                "readyUs": 2990,
+                "getUs": 2985,
+                "validationUs": 153,
+                "totalUs": 8308,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13599,
+            "attempts": [
+              {
+                "selectorUs": 1687,
+                "readyUs": 2982,
+                "getUs": 3032,
+                "validationUs": 202,
+                "totalUs": 7906,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11722,
+            "attempts": [
+              {
+                "selectorUs": 2206,
+                "readyUs": 3033,
+                "getUs": 3022,
+                "validationUs": 179,
+                "totalUs": 8443,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11674,
+            "attempts": [
+              {
+                "selectorUs": 2210,
+                "readyUs": 2951,
+                "getUs": 3054,
+                "validationUs": 43,
+                "totalUs": 8259,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10845,
+            "attempts": [
+              {
+                "selectorUs": 1618,
+                "readyUs": 3390,
+                "getUs": 2611,
+                "validationUs": 37,
+                "totalUs": 7658,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12471,
+            "attempts": [
+              {
+                "selectorUs": 2175,
+                "readyUs": 3294,
+                "getUs": 2745,
+                "validationUs": 33,
+                "totalUs": 8249,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12072,
+            "attempts": [
+              {
+                "selectorUs": 2122,
+                "readyUs": 2977,
+                "getUs": 2999,
+                "validationUs": 45,
+                "totalUs": 8146,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13020,
+            "attempts": [
+              {
+                "selectorUs": 2251,
+                "readyUs": 2904,
+                "getUs": 3136,
+                "validationUs": 41,
+                "totalUs": 8334,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14571,
+            "attempts": [
+              {
+                "selectorUs": 2574,
+                "readyUs": 2973,
+                "getUs": 2787,
+                "validationUs": 38,
+                "totalUs": 8375,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14248,
+            "attempts": [
+              {
+                "selectorUs": 1905,
+                "readyUs": 3014,
+                "getUs": 2997,
+                "validationUs": 39,
+                "totalUs": 7958,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13793,
+            "attempts": [
+              {
+                "selectorUs": 2165,
+                "readyUs": 3005,
+                "getUs": 2990,
+                "validationUs": 35,
+                "totalUs": 8198,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12537,
+            "attempts": [
+              {
+                "selectorUs": 2337,
+                "readyUs": 3137,
+                "getUs": 2918,
+                "validationUs": 37,
+                "totalUs": 8431,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12414,
+            "attempts": [
+              {
+                "selectorUs": 2002,
+                "readyUs": 2983,
+                "getUs": 2944,
+                "validationUs": 33,
+                "totalUs": 7965,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11411,
+            "attempts": [
+              {
+                "selectorUs": 1569,
+                "readyUs": 3098,
+                "getUs": 2917,
+                "validationUs": 76,
+                "totalUs": 7662,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11919,
+            "attempts": [
+              {
+                "selectorUs": 2277,
+                "readyUs": 2974,
+                "getUs": 2970,
+                "validationUs": 35,
+                "totalUs": 8259,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11810,
+            "attempts": [
+              {
+                "selectorUs": 2201,
+                "readyUs": 3058,
+                "getUs": 2931,
+                "validationUs": 34,
+                "totalUs": 8226,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 38470,
+            "attempts": [
+              {
+                "selectorUs": 3680,
+                "readyUs": 11380,
+                "getUs": 2956,
+                "validationUs": 2397,
+                "totalUs": 20418,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          }
+        ]
+      },
+      "dpi": {
+        "summary": {
+          "count": 20,
+          "valid": 20,
+          "malformed": 0,
+          "malformedPercent": 0,
+          "meanRetries": 0,
+          "openUs": {
+            "count": 20,
+            "minimum": 0,
+            "p50": 0,
+            "p90": 0,
+            "p95": 0,
+            "p99": 0,
+            "maximum": 0,
+            "mean": 0
+          },
+          "selectorUs": {
+            "count": 20,
+            "minimum": 1503,
+            "p50": 2016,
+            "p90": 2295,
+            "p95": 2309,
+            "p99": 2343,
+            "maximum": 2343,
+            "mean": 1972
+          },
+          "readyUs": {
+            "count": 20,
+            "minimum": 2939,
+            "p50": 3001,
+            "p90": 3065,
+            "p95": 3072,
+            "p99": 3084,
+            "maximum": 3084,
+            "mean": 3011
+          },
+          "getUs": {
+            "count": 20,
+            "minimum": 2893,
+            "p50": 2997,
+            "p90": 3107,
+            "p95": 3113,
+            "p99": 3131,
+            "maximum": 3131,
+            "mean": 3005
+          },
+          "validTotalUs": {
+            "count": 20,
+            "minimum": 10677,
+            "p50": 12298,
+            "p90": 13402,
+            "p95": 13535,
+            "p99": 15379,
+            "maximum": 15379,
+            "mean": 12407
+          },
+          "malformedResponses": []
+        },
+        "transactions": [
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 15379,
+            "attempts": [
+              {
+                "selectorUs": 2131,
+                "readyUs": 2988,
+                "getUs": 3018,
+                "validationUs": 83,
+                "totalUs": 8224,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13535,
+            "attempts": [
+              {
+                "selectorUs": 1668,
+                "readyUs": 2980,
+                "getUs": 2992,
+                "validationUs": 55,
+                "totalUs": 7696,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12088,
+            "attempts": [
+              {
+                "selectorUs": 1503,
+                "readyUs": 2972,
+                "getUs": 3028,
+                "validationUs": 69,
+                "totalUs": 7575,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12315,
+            "attempts": [
+              {
+                "selectorUs": 1798,
+                "readyUs": 3065,
+                "getUs": 2931,
+                "validationUs": 104,
+                "totalUs": 7902,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11580,
+            "attempts": [
+              {
+                "selectorUs": 1956,
+                "readyUs": 2939,
+                "getUs": 3107,
+                "validationUs": 67,
+                "totalUs": 8070,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12690,
+            "attempts": [
+              {
+                "selectorUs": 2281,
+                "readyUs": 3033,
+                "getUs": 2981,
+                "validationUs": 32,
+                "totalUs": 8329,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11968,
+            "attempts": [
+              {
+                "selectorUs": 2197,
+                "readyUs": 2969,
+                "getUs": 2969,
+                "validationUs": 33,
+                "totalUs": 8170,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11458,
+            "attempts": [
+              {
+                "selectorUs": 1717,
+                "readyUs": 2956,
+                "getUs": 3131,
+                "validationUs": 54,
+                "totalUs": 7860,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13402,
+            "attempts": [
+              {
+                "selectorUs": 2016,
+                "readyUs": 3084,
+                "getUs": 2997,
+                "validationUs": 65,
+                "totalUs": 8164,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13255,
+            "attempts": [
+              {
+                "selectorUs": 2239,
+                "readyUs": 2986,
+                "getUs": 2949,
+                "validationUs": 44,
+                "totalUs": 8220,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13290,
+            "attempts": [
+              {
+                "selectorUs": 2232,
+                "readyUs": 3001,
+                "getUs": 3047,
+                "validationUs": 33,
+                "totalUs": 8316,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12592,
+            "attempts": [
+              {
+                "selectorUs": 1924,
+                "readyUs": 3060,
+                "getUs": 3113,
+                "validationUs": 55,
+                "totalUs": 8155,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12621,
+            "attempts": [
+              {
+                "selectorUs": 2343,
+                "readyUs": 3045,
+                "getUs": 2981,
+                "validationUs": 42,
+                "totalUs": 8414,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10758,
+            "attempts": [
+              {
+                "selectorUs": 1505,
+                "readyUs": 3072,
+                "getUs": 2969,
+                "validationUs": 43,
+                "totalUs": 7591,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10677,
+            "attempts": [
+              {
+                "selectorUs": 1506,
+                "readyUs": 2968,
+                "getUs": 3000,
+                "validationUs": 41,
+                "totalUs": 7517,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12298,
+            "attempts": [
+              {
+                "selectorUs": 1579,
+                "readyUs": 3037,
+                "getUs": 3020,
+                "validationUs": 42,
+                "totalUs": 7681,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12318,
+            "attempts": [
+              {
+                "selectorUs": 2309,
+                "readyUs": 3014,
+                "getUs": 2925,
+                "validationUs": 45,
+                "totalUs": 8297,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11847,
+            "attempts": [
+              {
+                "selectorUs": 2101,
+                "readyUs": 3053,
+                "getUs": 3012,
+                "validationUs": 32,
+                "totalUs": 8201,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11774,
+            "attempts": [
+              {
+                "selectorUs": 2148,
+                "readyUs": 3024,
+                "getUs": 2893,
+                "validationUs": 31,
+                "totalUs": 8098,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12297,
+            "attempts": [
+              {
+                "selectorUs": 2295,
+                "readyUs": 2972,
+                "getUs": 3039,
+                "validationUs": 39,
+                "totalUs": 8349,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          }
+        ]
+      },
+      "buttons": {
+        "summary": {
+          "count": 20,
+          "valid": 20,
+          "malformed": 0,
+          "malformedPercent": 0,
+          "meanRetries": 0,
+          "openUs": {
+            "count": 20,
+            "minimum": 0,
+            "p50": 0,
+            "p90": 0,
+            "p95": 0,
+            "p99": 0,
+            "maximum": 0,
+            "mean": 0
+          },
+          "selectorUs": {
+            "count": 20,
+            "minimum": 1521,
+            "p50": 2002,
+            "p90": 2363,
+            "p95": 2502,
+            "p99": 2973,
+            "maximum": 2973,
+            "mean": 2029
+          },
+          "readyUs": {
+            "count": 20,
+            "minimum": 2935,
+            "p50": 3027,
+            "p90": 3080,
+            "p95": 3112,
+            "p99": 3130,
+            "maximum": 3130,
+            "mean": 3026
+          },
+          "getUs": {
+            "count": 20,
+            "minimum": 2877,
+            "p50": 3001,
+            "p90": 3100,
+            "p95": 3127,
+            "p99": 3291,
+            "maximum": 3291,
+            "mean": 3020
+          },
+          "validTotalUs": {
+            "count": 20,
+            "minimum": 10450,
+            "p50": 11594,
+            "p90": 12542,
+            "p95": 12733,
+            "p99": 13386,
+            "maximum": 13386,
+            "mean": 11624
+          },
+          "malformedResponses": []
+        },
+        "transactions": [
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12006,
+            "attempts": [
+              {
+                "selectorUs": 1689,
+                "readyUs": 3063,
+                "getUs": 3127,
+                "validationUs": 53,
+                "totalUs": 7934,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10824,
+            "attempts": [
+              {
+                "selectorUs": 1667,
+                "readyUs": 3034,
+                "getUs": 2965,
+                "validationUs": 28,
+                "totalUs": 7695,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10890,
+            "attempts": [
+              {
+                "selectorUs": 1778,
+                "readyUs": 3075,
+                "getUs": 3291,
+                "validationUs": 45,
+                "totalUs": 8193,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12086,
+            "attempts": [
+              {
+                "selectorUs": 2257,
+                "readyUs": 3074,
+                "getUs": 3036,
+                "validationUs": 62,
+                "totalUs": 8431,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10700,
+            "attempts": [
+              {
+                "selectorUs": 2973,
+                "readyUs": 2948,
+                "getUs": 3081,
+                "validationUs": 66,
+                "totalUs": 9071,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11276,
+            "attempts": [
+              {
+                "selectorUs": 1569,
+                "readyUs": 3038,
+                "getUs": 2877,
+                "validationUs": 65,
+                "totalUs": 7551,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10631,
+            "attempts": [
+              {
+                "selectorUs": 1521,
+                "readyUs": 3004,
+                "getUs": 3069,
+                "validationUs": 39,
+                "totalUs": 7636,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11775,
+            "attempts": [
+              {
+                "selectorUs": 2278,
+                "readyUs": 3027,
+                "getUs": 2971,
+                "validationUs": 31,
+                "totalUs": 8310,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10450,
+            "attempts": [
+              {
+                "selectorUs": 1602,
+                "readyUs": 3067,
+                "getUs": 2974,
+                "validationUs": 36,
+                "totalUs": 7682,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12398,
+            "attempts": [
+              {
+                "selectorUs": 2351,
+                "readyUs": 2984,
+                "getUs": 3028,
+                "validationUs": 28,
+                "totalUs": 8394,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11594,
+            "attempts": [
+              {
+                "selectorUs": 2306,
+                "readyUs": 2947,
+                "getUs": 2943,
+                "validationUs": 38,
+                "totalUs": 8235,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11541,
+            "attempts": [
+              {
+                "selectorUs": 2289,
+                "readyUs": 2964,
+                "getUs": 3039,
+                "validationUs": 38,
+                "totalUs": 8333,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13386,
+            "attempts": [
+              {
+                "selectorUs": 2502,
+                "readyUs": 2935,
+                "getUs": 2996,
+                "validationUs": 30,
+                "totalUs": 8466,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12542,
+            "attempts": [
+              {
+                "selectorUs": 2002,
+                "readyUs": 3000,
+                "getUs": 3100,
+                "validationUs": 39,
+                "totalUs": 8144,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12733,
+            "attempts": [
+              {
+                "selectorUs": 2186,
+                "readyUs": 3038,
+                "getUs": 2985,
+                "validationUs": 33,
+                "totalUs": 8244,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10663,
+            "attempts": [
+              {
+                "selectorUs": 1636,
+                "readyUs": 3080,
+                "getUs": 3009,
+                "validationUs": 28,
+                "totalUs": 7755,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10890,
+            "attempts": [
+              {
+                "selectorUs": 1581,
+                "readyUs": 3130,
+                "getUs": 2957,
+                "validationUs": 32,
+                "totalUs": 7703,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12023,
+            "attempts": [
+              {
+                "selectorUs": 1687,
+                "readyUs": 3112,
+                "getUs": 3001,
+                "validationUs": 39,
+                "totalUs": 7842,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11841,
+            "attempts": [
+              {
+                "selectorUs": 2363,
+                "readyUs": 3017,
+                "getUs": 2942,
+                "validationUs": 35,
+                "totalUs": 8394,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 0,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12238,
+            "attempts": [
+              {
+                "selectorUs": 2336,
+                "readyUs": 2979,
+                "getUs": 3001,
+                "validationUs": 33,
+                "totalUs": 8352,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "openPerTransaction": {
+      "version": {
+        "summary": {
+          "count": 20,
+          "valid": 20,
+          "malformed": 0,
+          "malformedPercent": 0,
+          "meanRetries": 0,
+          "openUs": {
+            "count": 20,
+            "minimum": 5000,
+            "p50": 7054,
+            "p90": 8170,
+            "p95": 8171,
+            "p99": 9190,
+            "maximum": 9190,
+            "mean": 6887
+          },
+          "selectorUs": {
+            "count": 20,
+            "minimum": 2871,
+            "p50": 2992,
+            "p90": 3031,
+            "p95": 3031,
+            "p99": 3248,
+            "maximum": 3248,
+            "mean": 2999
+          },
+          "readyUs": {
+            "count": 20,
+            "minimum": 2736,
+            "p50": 3032,
+            "p90": 3077,
+            "p95": 3120,
+            "p99": 3228,
+            "maximum": 3228,
+            "mean": 3022
+          },
+          "getUs": {
+            "count": 20,
+            "minimum": 2819,
+            "p50": 2999,
+            "p90": 3117,
+            "p95": 4736,
+            "p99": 5825,
+            "maximum": 5825,
+            "mean": 3212
+          },
+          "validTotalUs": {
+            "count": 20,
+            "minimum": 10603,
+            "p50": 11819,
+            "p90": 14548,
+            "p95": 14718,
+            "p99": 25455,
+            "maximum": 25455,
+            "mean": 13063
+          },
+          "malformedResponses": []
+        },
+        "transactions": [
+          {
+            "openUs": 5000,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11793,
+            "attempts": [
+              {
+                "selectorUs": 2975,
+                "readyUs": 3077,
+                "getUs": 2938,
+                "validationUs": 6,
+                "totalUs": 8998,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7817,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10648,
+            "attempts": [
+              {
+                "selectorUs": 3031,
+                "readyUs": 3019,
+                "getUs": 3020,
+                "validationUs": 19,
+                "totalUs": 9091,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 9190,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 25455,
+            "attempts": [
+              {
+                "selectorUs": 3009,
+                "readyUs": 3058,
+                "getUs": 2999,
+                "validationUs": 9,
+                "totalUs": 9078,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8170,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10858,
+            "attempts": [
+              {
+                "selectorUs": 2966,
+                "readyUs": 3040,
+                "getUs": 3000,
+                "validationUs": 8,
+                "totalUs": 9017,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7694,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13427,
+            "attempts": [
+              {
+                "selectorUs": 2976,
+                "readyUs": 3075,
+                "getUs": 2968,
+                "validationUs": 7,
+                "totalUs": 9029,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 5869,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11819,
+            "attempts": [
+              {
+                "selectorUs": 3003,
+                "readyUs": 2891,
+                "getUs": 3029,
+                "validationUs": 11,
+                "totalUs": 8937,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7054,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12959,
+            "attempts": [
+              {
+                "selectorUs": 2992,
+                "readyUs": 3228,
+                "getUs": 2819,
+                "validationUs": 7,
+                "totalUs": 9048,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 5462,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11758,
+            "attempts": [
+              {
+                "selectorUs": 2871,
+                "readyUs": 3032,
+                "getUs": 3047,
+                "validationUs": 6,
+                "totalUs": 8959,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8171,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14718,
+            "attempts": [
+              {
+                "selectorUs": 2986,
+                "readyUs": 3063,
+                "getUs": 2949,
+                "validationUs": 10,
+                "totalUs": 9011,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 5726,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11809,
+            "attempts": [
+              {
+                "selectorUs": 3021,
+                "readyUs": 2923,
+                "getUs": 3117,
+                "validationUs": 7,
+                "totalUs": 9071,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6996,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12857,
+            "attempts": [
+              {
+                "selectorUs": 3031,
+                "readyUs": 3028,
+                "getUs": 3044,
+                "validationUs": 8,
+                "totalUs": 9113,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 5952,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11585,
+            "attempts": [
+              {
+                "selectorUs": 2905,
+                "readyUs": 3069,
+                "getUs": 2907,
+                "validationUs": 8,
+                "totalUs": 8891,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 5280,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11574,
+            "attempts": [
+              {
+                "selectorUs": 3013,
+                "readyUs": 3035,
+                "getUs": 2940,
+                "validationUs": 7,
+                "totalUs": 8999,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7382,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14548,
+            "attempts": [
+              {
+                "selectorUs": 3020,
+                "readyUs": 2946,
+                "getUs": 3096,
+                "validationUs": 7,
+                "totalUs": 9072,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 5461,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14498,
+            "attempts": [
+              {
+                "selectorUs": 3248,
+                "readyUs": 2736,
+                "getUs": 5825,
+                "validationUs": 9,
+                "totalUs": 11821,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8152,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12392,
+            "attempts": [
+              {
+                "selectorUs": 2941,
+                "readyUs": 3120,
+                "getUs": 4736,
+                "validationUs": 9,
+                "totalUs": 10809,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7534,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13397,
+            "attempts": [
+              {
+                "selectorUs": 3023,
+                "readyUs": 3053,
+                "getUs": 2966,
+                "validationUs": 8,
+                "totalUs": 9052,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08021070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7152,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12854,
+            "attempts": [
+              {
+                "selectorUs": 3021,
+                "readyUs": 3028,
+                "getUs": 2877,
+                "validationUs": 7,
+                "totalUs": 8936,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 5699,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11712,
+            "attempts": [
+              {
+                "selectorUs": 2972,
+                "readyUs": 3003,
+                "getUs": 3006,
+                "validationUs": 8,
+                "totalUs": 8991,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7987,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10603,
+            "attempts": [
+              {
+                "selectorUs": 2971,
+                "readyUs": 3007,
+                "getUs": 2958,
+                "validationUs": 7,
+                "totalUs": 8946,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0b08011070830105",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          }
+        ]
+      },
+      "profileMetadata": {
+        "summary": {
+          "count": 20,
+          "valid": 20,
+          "malformed": 0,
+          "malformedPercent": 0,
+          "meanRetries": 0,
+          "openUs": {
+            "count": 20,
+            "minimum": 6446,
+            "p50": 7166,
+            "p90": 7814,
+            "p95": 8110,
+            "p99": 8490,
+            "maximum": 8490,
+            "mean": 7244
+          },
+          "selectorUs": {
+            "count": 20,
+            "minimum": 1499,
+            "p50": 2997,
+            "p90": 3037,
+            "p95": 3117,
+            "p99": 3172,
+            "maximum": 3172,
+            "mean": 2914
+          },
+          "readyUs": {
+            "count": 20,
+            "minimum": 2851,
+            "p50": 3023,
+            "p90": 3072,
+            "p95": 3130,
+            "p99": 3216,
+            "maximum": 3216,
+            "mean": 3011
+          },
+          "getUs": {
+            "count": 20,
+            "minimum": 2800,
+            "p50": 2983,
+            "p90": 3076,
+            "p95": 3165,
+            "p99": 4911,
+            "maximum": 4911,
+            "mean": 3093
+          },
+          "validTotalUs": {
+            "count": 20,
+            "minimum": 12553,
+            "p50": 12935,
+            "p90": 14004,
+            "p95": 14579,
+            "p99": 14680,
+            "maximum": 14680,
+            "mean": 13260
+          },
+          "malformedResponses": []
+        },
+        "transactions": [
+          {
+            "openUs": 6974,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13006,
+            "attempts": [
+              {
+                "selectorUs": 3172,
+                "readyUs": 2858,
+                "getUs": 2956,
+                "validationUs": 1910,
+                "totalUs": 10897,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7166,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13973,
+            "attempts": [
+              {
+                "selectorUs": 2786,
+                "readyUs": 3023,
+                "getUs": 2971,
+                "validationUs": 2778,
+                "totalUs": 11561,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6668,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14004,
+            "attempts": [
+              {
+                "selectorUs": 2910,
+                "readyUs": 3018,
+                "getUs": 2951,
+                "validationUs": 2694,
+                "totalUs": 11575,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7814,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13753,
+            "attempts": [
+              {
+                "selectorUs": 2997,
+                "readyUs": 3026,
+                "getUs": 3069,
+                "validationUs": 2361,
+                "totalUs": 11456,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7285,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14680,
+            "attempts": [
+              {
+                "selectorUs": 2975,
+                "readyUs": 3027,
+                "getUs": 3017,
+                "validationUs": 3588,
+                "totalUs": 12609,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7527,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14579,
+            "attempts": [
+              {
+                "selectorUs": 2999,
+                "readyUs": 3006,
+                "getUs": 2983,
+                "validationUs": 3301,
+                "totalUs": 12292,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7231,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12643,
+            "attempts": [
+              {
+                "selectorUs": 3117,
+                "readyUs": 2851,
+                "getUs": 2997,
+                "validationUs": 1645,
+                "totalUs": 10613,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7501,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13631,
+            "attempts": [
+              {
+                "selectorUs": 2997,
+                "readyUs": 2977,
+                "getUs": 3033,
+                "validationUs": 2454,
+                "totalUs": 11464,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6956,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12766,
+            "attempts": [
+              {
+                "selectorUs": 3024,
+                "readyUs": 3045,
+                "getUs": 3165,
+                "validationUs": 1689,
+                "totalUs": 10926,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7707,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13151,
+            "attempts": [
+              {
+                "selectorUs": 2856,
+                "readyUs": 3130,
+                "getUs": 2947,
+                "validationUs": 2244,
+                "totalUs": 11180,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6446,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12553,
+            "attempts": [
+              {
+                "selectorUs": 2993,
+                "readyUs": 3047,
+                "getUs": 2948,
+                "validationUs": 1282,
+                "totalUs": 10273,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7184,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12617,
+            "attempts": [
+              {
+                "selectorUs": 3000,
+                "readyUs": 2973,
+                "getUs": 2965,
+                "validationUs": 1576,
+                "totalUs": 10517,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6854,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12651,
+            "attempts": [
+              {
+                "selectorUs": 3027,
+                "readyUs": 2900,
+                "getUs": 3067,
+                "validationUs": 2061,
+                "totalUs": 11057,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8110,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12712,
+            "attempts": [
+              {
+                "selectorUs": 3020,
+                "readyUs": 3216,
+                "getUs": 2800,
+                "validationUs": 1313,
+                "totalUs": 10352,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7210,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12831,
+            "attempts": [
+              {
+                "selectorUs": 3012,
+                "readyUs": 3025,
+                "getUs": 3013,
+                "validationUs": 1451,
+                "totalUs": 10503,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6953,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13243,
+            "attempts": [
+              {
+                "selectorUs": 1499,
+                "readyUs": 3036,
+                "getUs": 3066,
+                "validationUs": 1776,
+                "totalUs": 9381,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7015,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12812,
+            "attempts": [
+              {
+                "selectorUs": 3017,
+                "readyUs": 3029,
+                "getUs": 2953,
+                "validationUs": 1681,
+                "totalUs": 10683,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8490,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12821,
+            "attempts": [
+              {
+                "selectorUs": 2936,
+                "readyUs": 3072,
+                "getUs": 2970,
+                "validationUs": 1658,
+                "totalUs": 10639,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6984,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12935,
+            "attempts": [
+              {
+                "selectorUs": 2908,
+                "readyUs": 3023,
+                "getUs": 4911,
+                "validationUs": 20,
+                "totalUs": 10865,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6795,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13836,
+            "attempts": [
+              {
+                "selectorUs": 3037,
+                "readyUs": 2940,
+                "getUs": 3076,
+                "validationUs": 2473,
+                "totalUs": 11528,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "0c0a0101fe05fa000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          }
+        ]
+      },
+      "dpi": {
+        "summary": {
+          "count": 20,
+          "valid": 20,
+          "malformed": 0,
+          "malformedPercent": 0,
+          "meanRetries": 0,
+          "openUs": {
+            "count": 20,
+            "minimum": 6914,
+            "p50": 7588,
+            "p90": 8666,
+            "p95": 9481,
+            "p99": 11369,
+            "maximum": 11369,
+            "mean": 7807
+          },
+          "selectorUs": {
+            "count": 20,
+            "minimum": 2028,
+            "p50": 2973,
+            "p90": 3049,
+            "p95": 3067,
+            "p99": 3335,
+            "maximum": 3335,
+            "mean": 2945
+          },
+          "readyUs": {
+            "count": 20,
+            "minimum": 2691,
+            "p50": 3023,
+            "p90": 3093,
+            "p95": 4009,
+            "p99": 6032,
+            "maximum": 6032,
+            "mean": 3214
+          },
+          "getUs": {
+            "count": 20,
+            "minimum": 2995,
+            "p50": 5020,
+            "p90": 6546,
+            "p95": 7245,
+            "p99": 19269,
+            "maximum": 19269,
+            "mean": 5752
+          },
+          "validTotalUs": {
+            "count": 20,
+            "minimum": 10766,
+            "p50": 13228,
+            "p90": 15388,
+            "p95": 15804,
+            "p99": 27437,
+            "maximum": 27437,
+            "mean": 14026
+          },
+          "malformedResponses": []
+        },
+        "transactions": [
+          {
+            "openUs": 7588,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12875,
+            "attempts": [
+              {
+                "selectorUs": 3335,
+                "readyUs": 2691,
+                "getUs": 5020,
+                "validationUs": 30,
+                "totalUs": 11080,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7797,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12003,
+            "attempts": [
+              {
+                "selectorUs": 2941,
+                "readyUs": 3023,
+                "getUs": 4474,
+                "validationUs": 22,
+                "totalUs": 10463,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7102,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 10766,
+            "attempts": [
+              {
+                "selectorUs": 2995,
+                "readyUs": 2975,
+                "getUs": 2995,
+                "validationUs": 31,
+                "totalUs": 8999,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7624,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13893,
+            "attempts": [
+              {
+                "selectorUs": 2981,
+                "readyUs": 3017,
+                "getUs": 6073,
+                "validationUs": 24,
+                "totalUs": 12098,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7158,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13048,
+            "attempts": [
+              {
+                "selectorUs": 3033,
+                "readyUs": 3010,
+                "getUs": 4880,
+                "validationUs": 25,
+                "totalUs": 10951,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8034,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13228,
+            "attempts": [
+              {
+                "selectorUs": 2878,
+                "readyUs": 3074,
+                "getUs": 5346,
+                "validationUs": 29,
+                "totalUs": 11330,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6969,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13209,
+            "attempts": [
+              {
+                "selectorUs": 2982,
+                "readyUs": 3056,
+                "getUs": 4950,
+                "validationUs": 24,
+                "totalUs": 11015,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6914,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 15388,
+            "attempts": [
+              {
+                "selectorUs": 2959,
+                "readyUs": 3021,
+                "getUs": 7245,
+                "validationUs": 39,
+                "totalUs": 13267,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 11369,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14143,
+            "attempts": [
+              {
+                "selectorUs": 2028,
+                "readyUs": 6032,
+                "getUs": 3165,
+                "validationUs": 37,
+                "totalUs": 11267,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 9481,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 15804,
+            "attempts": [
+              {
+                "selectorUs": 2958,
+                "readyUs": 4009,
+                "getUs": 6546,
+                "validationUs": 34,
+                "totalUs": 13550,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7374,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14868,
+            "attempts": [
+              {
+                "selectorUs": 2946,
+                "readyUs": 3005,
+                "getUs": 6256,
+                "validationUs": 205,
+                "totalUs": 12414,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8212,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13038,
+            "attempts": [
+              {
+                "selectorUs": 2959,
+                "readyUs": 3048,
+                "getUs": 4989,
+                "validationUs": 24,
+                "totalUs": 11022,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6960,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12880,
+            "attempts": [
+              {
+                "selectorUs": 3067,
+                "readyUs": 2959,
+                "getUs": 4806,
+                "validationUs": 39,
+                "totalUs": 10874,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7283,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13528,
+            "attempts": [
+              {
+                "selectorUs": 2928,
+                "readyUs": 3048,
+                "getUs": 5332,
+                "validationUs": 28,
+                "totalUs": 11339,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7125,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12573,
+            "attempts": [
+              {
+                "selectorUs": 2978,
+                "readyUs": 3067,
+                "getUs": 4682,
+                "validationUs": 23,
+                "totalUs": 10753,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7112,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 27437,
+            "attempts": [
+              {
+                "selectorUs": 3017,
+                "readyUs": 3087,
+                "getUs": 19269,
+                "validationUs": 43,
+                "totalUs": 25420,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7750,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11221,
+            "attempts": [
+              {
+                "selectorUs": 3049,
+                "readyUs": 3005,
+                "getUs": 3002,
+                "validationUs": 29,
+                "totalUs": 9087,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7858,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13441,
+            "attempts": [
+              {
+                "selectorUs": 2999,
+                "readyUs": 2964,
+                "getUs": 5162,
+                "validationUs": 27,
+                "totalUs": 11163,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7757,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13568,
+            "attempts": [
+              {
+                "selectorUs": 2890,
+                "readyUs": 3090,
+                "getUs": 5170,
+                "validationUs": 30,
+                "totalUs": 11183,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8666,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13613,
+            "attempts": [
+              {
+                "selectorUs": 2973,
+                "readyUs": 3093,
+                "getUs": 5673,
+                "validationUs": 27,
+                "totalUs": 11769,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          }
+        ]
+      },
+      "buttons": {
+        "summary": {
+          "count": 20,
+          "valid": 20,
+          "malformed": 0,
+          "malformedPercent": 0,
+          "meanRetries": 0,
+          "openUs": {
+            "count": 20,
+            "minimum": 6686,
+            "p50": 7614,
+            "p90": 8415,
+            "p95": 8863,
+            "p99": 9439,
+            "maximum": 9439,
+            "mean": 7689
+          },
+          "selectorUs": {
+            "count": 20,
+            "minimum": 2874,
+            "p50": 3003,
+            "p90": 3053,
+            "p95": 3068,
+            "p99": 3297,
+            "maximum": 3297,
+            "mean": 3015
+          },
+          "readyUs": {
+            "count": 20,
+            "minimum": 2707,
+            "p50": 3012,
+            "p90": 3057,
+            "p95": 3086,
+            "p99": 3103,
+            "maximum": 3103,
+            "mean": 3004
+          },
+          "getUs": {
+            "count": 20,
+            "minimum": 3016,
+            "p50": 5114,
+            "p90": 6210,
+            "p95": 7471,
+            "p99": 10114,
+            "maximum": 10114,
+            "mean": 5453
+          },
+          "validTotalUs": {
+            "count": 20,
+            "minimum": 11295,
+            "p50": 13277,
+            "p90": 14165,
+            "p95": 15249,
+            "p99": 17649,
+            "maximum": 17649,
+            "mean": 13464
+          },
+          "malformedResponses": []
+        },
+        "transactions": [
+          {
+            "openUs": 7614,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 15249,
+            "attempts": [
+              {
+                "selectorUs": 2970,
+                "readyUs": 3086,
+                "getUs": 7471,
+                "validationUs": 91,
+                "totalUs": 13621,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 9439,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14165,
+            "attempts": [
+              {
+                "selectorUs": 3014,
+                "readyUs": 3044,
+                "getUs": 5789,
+                "validationUs": 24,
+                "totalUs": 11874,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8345,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13724,
+            "attempts": [
+              {
+                "selectorUs": 2874,
+                "readyUs": 3045,
+                "getUs": 5706,
+                "validationUs": 26,
+                "totalUs": 11653,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8108,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13481,
+            "attempts": [
+              {
+                "selectorUs": 2975,
+                "readyUs": 3020,
+                "getUs": 5354,
+                "validationUs": 26,
+                "totalUs": 11377,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8242,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12697,
+            "attempts": [
+              {
+                "selectorUs": 2973,
+                "readyUs": 3009,
+                "getUs": 4789,
+                "validationUs": 23,
+                "totalUs": 10796,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6953,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11295,
+            "attempts": [
+              {
+                "selectorUs": 3053,
+                "readyUs": 3009,
+                "getUs": 3016,
+                "validationUs": 35,
+                "totalUs": 9115,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6835,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13527,
+            "attempts": [
+              {
+                "selectorUs": 3033,
+                "readyUs": 2982,
+                "getUs": 5459,
+                "validationUs": 23,
+                "totalUs": 11499,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6927,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12547,
+            "attempts": [
+              {
+                "selectorUs": 3011,
+                "readyUs": 3016,
+                "getUs": 4601,
+                "validationUs": 24,
+                "totalUs": 10655,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8049,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13904,
+            "attempts": [
+              {
+                "selectorUs": 3000,
+                "readyUs": 2980,
+                "getUs": 5633,
+                "validationUs": 28,
+                "totalUs": 11643,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8863,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 17649,
+            "attempts": [
+              {
+                "selectorUs": 3297,
+                "readyUs": 2707,
+                "getUs": 10114,
+                "validationUs": 29,
+                "totalUs": 16150,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8229,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14036,
+            "attempts": [
+              {
+                "selectorUs": 3011,
+                "readyUs": 3012,
+                "getUs": 6210,
+                "validationUs": 25,
+                "totalUs": 12259,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 8415,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 14079,
+            "attempts": [
+              {
+                "selectorUs": 2990,
+                "readyUs": 3057,
+                "getUs": 6164,
+                "validationUs": 85,
+                "totalUs": 12299,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7710,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13277,
+            "attempts": [
+              {
+                "selectorUs": 3012,
+                "readyUs": 3052,
+                "getUs": 5039,
+                "validationUs": 23,
+                "totalUs": 11128,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6871,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12463,
+            "attempts": [
+              {
+                "selectorUs": 2991,
+                "readyUs": 3055,
+                "getUs": 4396,
+                "validationUs": 28,
+                "totalUs": 10472,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6686,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 11802,
+            "attempts": [
+              {
+                "selectorUs": 3003,
+                "readyUs": 3044,
+                "getUs": 4209,
+                "validationUs": 23,
+                "totalUs": 10281,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7382,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13959,
+            "attempts": [
+              {
+                "selectorUs": 3016,
+                "readyUs": 2945,
+                "getUs": 5687,
+                "validationUs": 31,
+                "totalUs": 11681,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7797,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13135,
+            "attempts": [
+              {
+                "selectorUs": 2978,
+                "readyUs": 3001,
+                "getUs": 5114,
+                "validationUs": 24,
+                "totalUs": 11119,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 6783,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 12137,
+            "attempts": [
+              {
+                "selectorUs": 3068,
+                "readyUs": 2958,
+                "getUs": 4632,
+                "validationUs": 25,
+                "totalUs": 10686,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7004,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13066,
+            "attempts": [
+              {
+                "selectorUs": 3033,
+                "readyUs": 3103,
+                "getUs": 4809,
+                "validationUs": 31,
+                "totalUs": 10980,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          },
+          {
+            "openUs": 7521,
+            "valid": true,
+            "retries": 0,
+            "totalUs": 13080,
+            "attempts": [
+              {
+                "selectorUs": 2994,
+                "readyUs": 2964,
+                "getUs": 4869,
+                "validationUs": 28,
+                "totalUs": 10857,
+                "polls": 1,
+                "beforeStatus": "a000000000000000",
+                "readyStatus": "a001000000000000",
+                "reportHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+                "valid": true,
+                "validationErrors": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "completedAt": "2026-07-17T11:08:06.880Z"
+}

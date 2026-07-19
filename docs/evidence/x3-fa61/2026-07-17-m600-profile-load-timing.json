@@ -1,0 +1,86 @@
+{
+  "createdAt": "2026-07-17T11:01:43.555Z",
+  "device": {
+    "vendorId": 7511,
+    "productId": 64097,
+    "path": "\\\\?\\HID#VID_1D57&PID_FA61&MI_02&Col04#8&219d702f&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+    "serialNumber": "",
+    "manufacturer": "Beken",
+    "product": "USB Gaming Mouse",
+    "release": 262,
+    "interface": 2,
+    "usagePage": 11
+  },
+  "transitions": [
+    {
+      "target": 2,
+      "metadataUs": 97185,
+      "dpiUs": 134428,
+      "attempts": 1,
+      "malformed": 0
+    },
+    {
+      "target": 1,
+      "metadataUs": 60330,
+      "dpiUs": null,
+      "attempts": 30,
+      "malformed": 30
+    },
+    {
+      "target": 2,
+      "metadataUs": 87376,
+      "dpiUs": 134974,
+      "attempts": 1,
+      "malformed": 0
+    },
+    {
+      "target": 1,
+      "metadataUs": 66837,
+      "dpiUs": null,
+      "attempts": 30,
+      "malformed": 30
+    },
+    {
+      "target": 2,
+      "metadataUs": 77531,
+      "dpiUs": 87111,
+      "attempts": 1,
+      "malformed": 0
+    },
+    {
+      "target": 1,
+      "metadataUs": 111475,
+      "dpiUs": null,
+      "attempts": 30,
+      "malformed": 30
+    },
+    {
+      "target": 2,
+      "metadataUs": 69737,
+      "dpiUs": 78796,
+      "attempts": 1,
+      "malformed": 0
+    },
+    {
+      "target": 1,
+      "metadataUs": 64420,
+      "dpiUs": null,
+      "attempts": 30,
+      "malformed": 30
+    },
+    {
+      "target": 2,
+      "metadataUs": 83114,
+      "dpiUs": 105390,
+      "attempts": 1,
+      "malformed": 0
+    },
+    {
+      "target": 1,
+      "metadataUs": 61160,
+      "dpiUs": null,
+      "attempts": 30,
+      "malformed": 30
+    }
+  ]
+}

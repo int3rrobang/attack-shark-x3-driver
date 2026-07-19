@@ -1,6 +1,15 @@
-# Battery Status Protocol
+# Battery status
 
-This document describes the USB interrupt protocol used to retrieve the battery level from the **Attack Shark X11** mouse. This protocol is specifically active when the device is operating in **Wireless and Bluetooth Mode**.
+X11 adapter mode reports battery percentage through USB interrupt endpoint `0x83`. X3 BLE exposes the standard GATT Battery Service instead; X11 Bluetooth behavior is not documented.
+
+## Compatibility
+
+| Variant | Path | Status | Evidence |
+|:--------|:-----|:-------|:---------|
+| X11 2.4 GHz adapter | USB interface 2, interrupt IN `0x83` | Supported | implementation |
+| X11 wired | USB | Unavailable through this path | implementation |
+| X3/FA61 wired | USB | Unavailable while wired | live-observed |
+| X3/M600 BLE | GATT `0x180f` / `0x2a19` | Read + notify confirmed | live-confirmed |
 
 ## Communication Specifications
 

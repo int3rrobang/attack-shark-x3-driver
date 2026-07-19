@@ -1,6 +1,6 @@
 import type { BaseProtocolBuilder } from '../core/BaseProtocolBuilder.js';
 import { ParamsError } from '../errors.js';
-import { Button, ConnectionMode } from '../types.js';
+import { Button, type TransportKind } from '../types.js';
 
 export type MacroTuple = readonly [FirmwareAction, Modifiers, KeyCode | number];
 
@@ -355,7 +355,7 @@ const BUTTON_OFFSET: Record<InternalButtons, number> = {
 	[InternalButtons.SCROLL_DOWN]: 54,
 };
 
-const X3_WIRED_DEFAULT_PACKET = Buffer.from(
+const X3_DEFAULT_PACKET = Buffer.from(
 	'083b010200000300000400000d00003c00000f00000600000500003c00000100000100000100000100000100000100000100000a000009000000c2',
 	'hex',
 );
@@ -391,7 +391,6 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 
 	readonly buffer: Buffer;
 	private readonly macroOverrides = new Map<Button, MacroTuple>();
-	private modeDefaults: ConnectionMode | undefined;
 	public readonly bmRequestType: number = MacrosBuilder.BM_REQUEST_TYPE;
 	public readonly bRequest: number = MacrosBuilder.B_REQUEST;
 	public readonly wValue: number = MacrosBuilder.W_VALUE;
@@ -405,7 +404,7 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 	 */
 	constructor(options?: MacroBuilderOptions) {
 		this.buffer = Buffer.alloc(59);
-		this.applyX11Defaults();
+		this.applyX3Defaults();
 
 		if (options?.left !== undefined) this.setMacro(Button.LEFT, options.left);
 		if (options?.right !== undefined) this.setMacro(Button.RIGHT, options.right);
@@ -417,26 +416,8 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 		if (options?.scrollDown !== undefined) this.setMacro(Button.SCROLL_DOWN, options.scrollDown);
 	}
 
-	private applyX11Defaults(): void {
-		this.buffer.fill(0x00);
-
-		// Header: Report ID 0x08, Length 0x3b (59), Protocol version 0x01
-		this.buffer[0] = 0x08;
-		this.buffer[1] = 0x3b;
-		this.buffer[2] = 0x01;
-
-		// Initialize all 18 button slots (3 bytes each) with [0x01, 0x00, 0x00]
-		// This is the "Inactive" or "Disabled" default state for most slots.
-		for (let i = 3; i <= 54; i += 3) {
-			this.buffer[i] = 0x01;
-			this.buffer[i + 1] = 0x00;
-			this.buffer[i + 2] = 0x00;
-		}
-
-		// Default internal assignments
-		this.buffer[18] = 0x0d; // Slot 6 (DPI Cycle)
-		this.buffer[51] = 0x09; // Slot 17 (Scroll Up)
-		this.buffer[54] = 0x0a; // Slot 18 (Scroll Down)
+	private applyX3Defaults(): void {
+		X3_DEFAULT_PACKET.copy(this.buffer);
 
 		if (MacrosBuilder.DEFAULT_MACROS.left !== undefined)
 			this.writeMacro(Button.LEFT, MacrosBuilder.DEFAULT_MACROS.left);
@@ -448,8 +429,6 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 			this.writeMacro(Button.FORWARD, MacrosBuilder.DEFAULT_MACROS.forward);
 		if (MacrosBuilder.DEFAULT_MACROS.backward !== undefined)
 			this.writeMacro(Button.BACKWARD, MacrosBuilder.DEFAULT_MACROS.backward);
-
-		this.modeDefaults = ConnectionMode.Wired;
 	}
 
 	private applyMacroOverrides(): void {
@@ -492,47 +471,23 @@ export class MacrosBuilder implements BaseProtocolBuilder {
 	}
 
 	private getButtonOffset(internalButton: InternalButtons): number | undefined {
-		if (this.modeDefaults === ConnectionMode.X3Wired) {
-			if (internalButton === InternalButtons.SCROLL_UP) return BUTTON_OFFSET[InternalButtons.SCROLL_DOWN];
-			if (internalButton === InternalButtons.SCROLL_DOWN) return BUTTON_OFFSET[InternalButtons.SCROLL_UP];
-		}
-
+		if (internalButton === InternalButtons.SCROLL_UP) return BUTTON_OFFSET[InternalButtons.SCROLL_DOWN];
+		if (internalButton === InternalButtons.SCROLL_DOWN) return BUTTON_OFFSET[InternalButtons.SCROLL_UP];
 		return BUTTON_OFFSET[internalButton];
 	}
 
 	/**
-	 * Calculates the checksum for the macro configuration buffer.
-	 * The checksum is the sum of bytes from index 2 to 57, minus 1, masked to 8 bits.
-	 *
-	 * @return {number} The calculated 8-bit checksum.
+	 * Calculates the 16-bit big-endian checksum for bytes 3 through 56.
 	 */
 	calculateChecksum(): number {
 		let sum = 0;
-
-		for (let i = 2; i < this.buffer.length - 1; i++) {
-			sum = (sum + (this.buffer[i] ?? 0x00)) & 0xff;
-		}
-
-		return (sum - 1) & 0xff;
+		for (let i = 3; i <= 56; i++) sum = (sum + (this.buffer[i] ?? 0x00)) & 0xffff;
+		return sum;
 	}
 
-	/**
-	 * Finalizes the buffer by calculating the checksum.
-	 *
-	 * @param mode Connection mode used to select model-specific defaults.
-	 * @return {Buffer} The built macro configuration buffer.
-	 */
-	build(mode: ConnectionMode): Buffer {
-		if (mode === ConnectionMode.X3Wired) {
-			X3_WIRED_DEFAULT_PACKET.copy(this.buffer);
-			this.modeDefaults = ConnectionMode.X3Wired;
-			this.applyMacroOverrides();
-		} else if (this.modeDefaults === ConnectionMode.X3Wired) {
-			this.applyX11Defaults();
-			this.applyMacroOverrides();
-		}
-
-		this.buffer[58] = this.calculateChecksum();
+	build(_transport: TransportKind): Buffer {
+		this.applyMacroOverrides();
+		this.buffer.writeUInt16BE(this.calculateChecksum(), 57);
 		return this.buffer;
 	}
 

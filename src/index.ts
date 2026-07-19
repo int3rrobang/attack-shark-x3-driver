@@ -1,4 +1,5 @@
-export * from './core/AttackSharkX11.js';
+export * from './core/AttackSharkX3.js';
+export * from './types.js';
 export * from './core/BaseProtocolBuilder.js';
 export * from './protocols/CustomMacroBuilder.js';
 export * from './protocols/DpiBuilder.js';

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { parseArgs } from './cli/args.js';
-import { parseMode } from './cli/types.js';
+import { parseTransport } from './cli/types.js';
 
 import * as listCmd from './cli/commands/list.js';
 import * as openCmd from './cli/commands/open.js';
@@ -22,7 +22,7 @@ import * as help from './cli/help.js';
 
 async function main(): Promise<void> {
 	const parsed = parseArgs(process.argv.slice(2));
-	const mode = parseMode(parsed.flags['mode'] as string | undefined);
+	const transport = parseTransport(parsed.flags['transport'] as string | undefined);
 	const delayMs = parsed.flags['delay-ms'] !== undefined ? Number(parsed.flags['delay-ms']) : 500;
 
 	// top-level --help with no command
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
 				console.log(openCmd.help);
 				return;
 			}
-			await openCmd.run(mode, delayMs);
+			await openCmd.run(transport, delayMs);
 			break;
 		}
 		case 'battery': {
@@ -58,7 +58,7 @@ async function main(): Promise<void> {
 				console.log(batteryCmd.help);
 				return;
 			}
-			await batteryCmd.run(mode, delayMs);
+			await batteryCmd.run(transport, delayMs);
 			break;
 		}
 		case 'reset': {
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
 				console.log(resetCmd.help);
 				return;
 			}
-			await resetCmd.run(mode, delayMs);
+			await resetCmd.run(transport, delayMs);
 			break;
 		}
 		case 'set-dpi': {
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
 				console.log(setDpiCmd.help);
 				return;
 			}
-			await setDpiCmd.run(mode, delayMs, parsed.flags);
+			await setDpiCmd.run(transport, delayMs, parsed.flags);
 			break;
 		}
 		case 'set-rate': {
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
 				console.log(setRateCmd.help);
 				return;
 			}
-			await setRateCmd.run(mode, delayMs, parsed.flags, parsed.positionals);
+			await setRateCmd.run(transport, delayMs, parsed.flags, parsed.positionals);
 			break;
 		}
 		case 'set-prefs': {
@@ -90,7 +90,7 @@ async function main(): Promise<void> {
 				console.log(setPrefsCmd.help);
 				return;
 			}
-			await setPrefsCmd.run(mode, delayMs, parsed.flags);
+			await setPrefsCmd.run(transport, delayMs, parsed.flags);
 			break;
 		}
 		case 'bind': {
@@ -98,7 +98,7 @@ async function main(): Promise<void> {
 				console.log(bindCmd.help);
 				return;
 			}
-			await bindCmd.run(mode, delayMs, parsed.flags);
+			await bindCmd.run(transport, delayMs, parsed.flags);
 			break;
 		}
 		case 'hex': {
@@ -108,8 +108,8 @@ async function main(): Promise<void> {
 				process.exit(0);
 			}
 
-			// re-parse --mode within hex flags if present, otherwise inherit
-			const hexMode = parseMode(parsed.flags['mode'] as string | undefined);
+			// re-parse --transport within hex flags if present, otherwise inherit
+			const hexTransport = parseTransport(parsed.flags['transport'] as string | undefined);
 
 			if (parsed.flags['help']) {
 				switch (sub) {
@@ -136,19 +136,19 @@ async function main(): Promise<void> {
 
 			switch (sub) {
 				case 'dpi':
-					hexDpi.run(hexMode, parsed.flags);
+					hexDpi.run(hexTransport, parsed.flags);
 					break;
 				case 'rate':
-					hexRate.run(hexMode, parsed.flags);
+					hexRate.run(hexTransport, parsed.flags);
 					break;
 				case 'prefs':
-					hexPrefs.run(hexMode, parsed.flags);
+					hexPrefs.run(hexTransport, parsed.flags);
 					break;
 				case 'bind':
-					hexBind.run(hexMode, parsed.flags);
+					hexBind.run(hexTransport, parsed.flags);
 					break;
 				case 'reset':
-					hexReset.run(hexMode);
+					hexReset.run(hexTransport);
 					break;
 				default:
 					console.error(`Unknown hex subcommand: ${sub}`);

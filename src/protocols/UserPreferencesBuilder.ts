@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import type { BaseProtocolBuilder } from '../core/BaseProtocolBuilder.js';
 import { ParamsError } from '../errors.js';
-import { isConnectionModeWired, type ConnectionMode } from '../types.js';
+import { TransportKind } from '../types.js';
 
 /**
  * Enum representing different light modes for a device or application.
@@ -312,7 +312,6 @@ export class UserPreferencesBuilder implements BaseProtocolBuilder {
 	 */
 	setLightMode(mode: LightMode): this {
 		this.buffer[3] = mode;
-		this.updateIndex11();
 		return this;
 	}
 
@@ -353,7 +352,6 @@ export class UserPreferencesBuilder implements BaseProtocolBuilder {
 		this.buffer[6] = rgb.r & 0xff;
 		this.buffer[7] = rgb.g & 0xff;
 		this.buffer[8] = rgb.b & 0xff;
-		this.updateIndex11();
 		return this;
 	}
 
@@ -384,17 +382,13 @@ export class UserPreferencesBuilder implements BaseProtocolBuilder {
 
 	calculateChecksum(): number {
 		let checksum = 0;
-		// Checksum is the sum of bytes from index 3 to 10
-		for (let i = 3; i <= 10; i++) {
-			checksum = (checksum + (this.buffer[i] ?? 0x00)) & 0xff;
-		}
+		for (let i = 3; i <= 10; i++) checksum = (checksum + (this.buffer[i] ?? 0x00)) & 0xffff;
 		return checksum;
 	}
 
-	build(mode: ConnectionMode): Buffer {
-		this.buffer[12] = this.calculateChecksum();
-		if (isConnectionModeWired(mode)) return this.buffer.subarray(0, 13);
-		else return this.buffer;
+	build(transport: TransportKind): Buffer {
+		this.buffer.writeUInt16BE(this.calculateChecksum(), 11);
+		return transport === TransportKind.Wired ? this.buffer.subarray(0, 13) : this.buffer;
 	}
 
 	toString(): string {
@@ -411,23 +405,5 @@ export class UserPreferencesBuilder implements BaseProtocolBuilder {
 		const hardwareSpeed = 6 - this.ledSpeed;
 		// high nibble = deep sleep bucket, low nibble = led speed
 		this.buffer[4] = ((bucket << 4) | (hardwareSpeed & 0x0f)) & 0xff;
-	}
-
-	private updateIndex11(): void {
-		const mode = this.buffer[3] ?? LightMode.Off;
-		const r = this.buffer[6] ?? 0x00;
-		const g = this.buffer[7] ?? 0xff;
-		const b = this.buffer[8] ?? 0x00;
-
-		let count = 0;
-		if (r >= 0x64) count++;
-		if (g >= 0x64) count++;
-		if (b >= 0x64) count++;
-
-		if (mode === LightMode.BreathingDpi) {
-			this.buffer[11] = (count + 1) & 0xff;
-		} else {
-			this.buffer[11] = count & 0xff;
-		}
 	}
 }

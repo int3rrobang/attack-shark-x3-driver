@@ -3,6 +3,7 @@ coverage
 node_modules
 dist
 docs
+web-bluetooth-probe
 
 /tmp
 /out-tsc

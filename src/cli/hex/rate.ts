@@ -1,5 +1,5 @@
 import { PollingRateBuilder, Rate } from '../../protocols/PollingRateBuilder.js';
-import type { ConnectionMode } from '../../types.js';
+import type { TransportKind } from '../../types.js';
 import { HEX_RATE_HELP } from '../help.js';
 
 const RATE_MAP: Record<number, Rate> = {
@@ -11,7 +11,7 @@ const RATE_MAP: Record<number, Rate> = {
 
 export const help = HEX_RATE_HELP;
 
-export function run(mode: ConnectionMode, flags: Record<string, string | boolean>): void {
+export function run(transport: TransportKind, flags: Record<string, string | boolean>): void {
 	const rateStr = flags['rate'];
 	if (typeof rateStr !== 'string') {
 		throw new Error('--rate is required (125, 250, 500, or 1000)');
@@ -23,6 +23,6 @@ export function run(mode: ConnectionMode, flags: Record<string, string | boolean
 	}
 
 	const builder = new PollingRateBuilder().setRate(rate);
-	builder.build(mode);
+	builder.build(transport);
 	console.log(builder.toString());
 }

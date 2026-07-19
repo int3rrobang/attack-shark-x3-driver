@@ -1,24 +1,21 @@
-import { ConnectionMode } from '../types.js';
+import { TransportKind } from '../types.js';
 
-export const MODE_MAP: Record<string, ConnectionMode> = {
-	'x3-wired': ConnectionMode.X3Wired,
-	x3: ConnectionMode.X3Wired,
-	wired: ConnectionMode.Wired,
-	adapter: ConnectionMode.Adapter,
+export const TRANSPORT_MAP: Record<string, TransportKind> = {
+	wired: TransportKind.Wired,
+	receiver: TransportKind.Receiver,
 };
 
-export const PID_TO_MODE_LABEL: Record<number, string> = {
-	[ConnectionMode.X3Wired]: 'x3-wired',
-	[ConnectionMode.Wired]: 'wired',
-	[ConnectionMode.Adapter]: 'adapter',
+export const PID_TO_TRANSPORT_LABEL: Record<number, string> = {
+	0xfa61: 'wired',
+	0xfa60: 'receiver',
 };
 
-export function parseMode(raw: string | undefined): ConnectionMode {
-	if (raw === undefined) return ConnectionMode.X3Wired;
+export function parseTransport(raw: string | undefined): TransportKind {
+	if (raw === undefined) return TransportKind.Wired;
 	const normalized = raw.toLowerCase();
-	const mode = MODE_MAP[normalized];
-	if (mode === undefined) {
-		throw new Error(`Unknown mode: ${raw}. Supported: x3-wired, x3, wired, adapter`);
+	const transport = TRANSPORT_MAP[normalized];
+	if (transport === undefined) {
+		throw new Error(`Unknown transport: ${raw}. Supported: wired, receiver`);
 	}
-	return mode;
+	return transport;
 }

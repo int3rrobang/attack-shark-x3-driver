@@ -1,4 +1,4 @@
-import { Button, type ConnectionMode } from '../../types.js';
+import { Button, type TransportKind } from '../../types.js';
 import { MacrosBuilder, macroTemplates, type MacroName } from '../../protocols/MacrosBuilder.js';
 import { HEX_BIND_HELP } from '../help.js';
 
@@ -15,7 +15,7 @@ const BUTTON_MAP: Record<string, Button> = {
 
 export const help = HEX_BIND_HELP;
 
-export function run(mode: ConnectionMode, flags: Record<string, string | boolean>): void {
+export function run(transport: TransportKind, flags: Record<string, string | boolean>): void {
 	const buttonStr = flags['button'];
 	const actionStr = flags['action'];
 
@@ -35,6 +35,6 @@ export function run(mode: ConnectionMode, flags: Record<string, string | boolean
 	}
 
 	const builder = new MacrosBuilder().setMacro(button, macro);
-	builder.build(mode);
+	builder.build(transport);
 	console.log(builder.toString());
 }

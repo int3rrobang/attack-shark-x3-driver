@@ -1,5 +1,5 @@
 import { Rate } from '../../protocols/PollingRateBuilder.js';
-import type { ConnectionMode } from '../../types.js';
+import type { TransportKind } from '../../types.js';
 import { SET_RATE_HELP } from '../help.js';
 import { withDriver } from '../helpers.js';
 
@@ -29,7 +29,7 @@ export function parseRate(raw: unknown): Rate {
 }
 
 export async function run(
-	mode: ConnectionMode,
+	transport: TransportKind,
 	delayMs: number,
 	flags: Record<string, string | boolean>,
 	positionals: string[],
@@ -38,7 +38,7 @@ export async function run(
 	const rateStr = flags['rate'];
 	if (typeof rateStr === 'string') {
 		const rate = parseRate(rateStr);
-		await withDriver(mode, delayMs, async (driver) => {
+		await withDriver(transport, delayMs, async (driver) => {
 			await driver.setPollingRate(rate);
 		});
 		console.log(`Polling rate set to ${rateStr} Hz.`);
@@ -49,7 +49,7 @@ export async function run(
 	const posRate = positionals[0];
 	if (posRate !== undefined) {
 		const rate = parseRate(posRate);
-		await withDriver(mode, delayMs, async (driver) => {
+		await withDriver(transport, delayMs, async (driver) => {
 			await driver.setPollingRate(rate);
 		});
 		console.log(`Polling rate set to ${posRate} Hz.`);
