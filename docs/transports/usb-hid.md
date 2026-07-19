@@ -48,6 +48,27 @@ Then:
 3. require status `a0 01 00 00 00 00 00 00`;
 4. read `LL` bytes from feature report `RR`.
 
+### Rust transaction implementation
+
+The Rust crate's default `usb` feature uses `hidapi` and opens only the FA61
+configuration collection. On Windows that means `Col04`; elsewhere interface 2
+is accepted. Automatic opening requires exactly one match, while multi-device
+setups must select an exact enumerated path.
+
+One worker thread exclusively owns the HID handle. Every async read API enters
+its queue as one command. The worker sends a fresh selector, polls the validated
+`0xa0` mailbox for at most 250 ms, fetches the selected report exactly once, and
+passes it through the report-specific decoder. A malformed status or report is
+discarded and rearmed, with four total attempts by default. HID I/O errors are
+returned directly rather than disguised as protocol mismatches.
+
+`read_profile(profile)` keeps metadata, DPI, preferences, and buttons inside one
+queue item. Its result exposes persistent metadata separately from the explicit
+working-profile target. Fake-transport tests cover successful profile-2
+readback, not-ready polling, malformed-target retry, bounded exhaustion, and
+transport failure. The Rust native path has not yet been independently exercised
+against hardware. \[implementation]
+
 ### One-shot readiness mailbox
 
 **Live-confirmed on the wired M600, 2026-07-17:** the readiness flag does reset. Across

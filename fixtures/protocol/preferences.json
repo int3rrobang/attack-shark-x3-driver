@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "builder-profile-1-fa61-write-compact",
+      "evidence": "inference",
+      "source": "__tests__/UserPreferencesBuilder.test.ts",
+      "transport": "wired",
+      "framing": "compact",
+      "profile": 1,
+      "packetHex": "050f010003a800ff00010201ad",
+      "knownState": {
+        "lightMode": 0,
+        "configuration": 3,
+        "deepSleep": 168,
+        "hostColorBytes": [0, 255, 0],
+        "sleepTimer": 1,
+        "debounce": 2
+      }
+    },
+    {
+      "name": "profile-1-fa61-readback-full",
+      "evidence": "live-confirmed",
+      "source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
+      "transport": "wired",
+      "framing": "full",
+      "profile": 1,
+      "packetHex": "050f017003a800ff000104021f0000",
+      "knownState": {
+        "lightMode": 112,
+        "configuration": 3,
+        "deepSleep": 168,
+        "hostColorBytes": [0, 255, 0],
+        "sleepTimer": 1,
+        "debounce": 4,
+        "padding": [0, 0]
+      }
+    },
+    {
+      "name": "profile-2-fa61-readback-full",
+      "evidence": "live-confirmed",
+      "source": "docs/evidence/x3-fa61/2026-07-17-m600-profile-targeted.json",
+      "transport": "wired",
+      "framing": "full",
+      "profile": 2,
+      "packetHex": "050f0270030800ff000104017f0000",
+      "knownState": {
+        "lightMode": 112,
+        "configuration": 3,
+        "deepSleep": 8,
+        "hostColorBytes": [0, 255, 0],
+        "sleepTimer": 1,
+        "debounce": 4,
+        "padding": [0, 0]
+      }
+    }
+  ]
+}

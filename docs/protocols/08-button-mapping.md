@@ -56,13 +56,19 @@ The production X11 builder sums bytes 2–57, subtracts one, masks to 8 bits, an
 
 ### X3 dialect
 
-X3 uses a 16-bit big-endian result:
+X3 uses a 16-bit big-endian sum over the eighteen assignment slots. The
+target-profile byte is excluded:
 
 ```text
-checksum = (sum(bytes[2..56]) - 1) & 0xffff
+checksum = sum(bytes[3..56]) & 0xffff
 byte[57] = checksum >> 8
 byte[58] = checksum & 0xff
 ```
+
+The live profile-2 packet ends in `00 bb`, exactly matching the slot-only sum.
+The earlier `sum(bytes[2..56]) - 1` interpretation happened to match profile 1
+because its target byte is `01`, but it produces `00 bc` for profile 2 and is
+therefore corrected. \[live-confirmed + corrected]
 
 FEE4 ACK observations distinguish the dialects:
 
@@ -71,7 +77,7 @@ FEE4 ACK observations distinguish the dialects:
 | X3 16-bit checksum | `10 50 00 08` accepted | live-confirmed |
 | Legacy low-byte-only checksum | `10 50 01 08` rejected | live-confirmed |
 
-The current production `MacrosBuilder` still writes the legacy one-byte checksum after loading X3 defaults. This is an implementation gap, not evidence that X3 shares the X11 checksum.
+The Rust codec and X3-only production builder use this 16-bit checksum. The historical X11 formula remains documented above but is not emitted by the new Rust path.
 
 ## Custom macro binding
 

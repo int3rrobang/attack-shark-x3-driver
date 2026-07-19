@@ -8,11 +8,14 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["usb"]
 serde = ["dep:serde"]
+usb = ["dep:hidapi", "dep:tokio"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+hidapi = { version = "2", optional = true }
+tokio = { version = "1", features = ["macros", "rt", "sync"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 thiserror = "2"
 
