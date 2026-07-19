@@ -53,9 +53,9 @@ X3 uses a fixed 13-byte payload with a **16-bit big-endian checksum** at bytes 1
 | 3     | Light Mode    | Selects the LED animation mode. **Warning: `0x00` crashes firmware over BLE.** \[live-confirmed] |
 | 4     | Configuration | Combined byte: `(Deep Sleep Bucket << 4) \| (LED Speed & 0x0F)` |
 | 5     | Deep Sleep    | Encoded deep sleep timer: `0x08 + (Minutes * 0x10)`. |
-| 6     | Red           | RGB Red component (0-255).                           |
-| 7     | Green         | RGB Green component (0-255).                         |
-| 8     | Blue          | RGB Blue component (0-255).                          |
+| 6     | Host color byte 1 | Stock UI labels this as red; no X3 hardware effect is confirmed. |
+| 7     | Host color byte 2 | Stock UI labels this as green; no X3 hardware effect is confirmed. |
+| 8     | Host color byte 3 | Stock UI labels this as blue; no X3 hardware effect is confirmed. |
 | 9     | Sleep Timer   | Sleep timer in half-minutes: `Minutes * 2`.          |
 | 10    | Debounce      | Encoded key response time: `((ms - 4) / 2) + 2`.     |
 | 11–12 | Checksum      | **16-bit big-endian**: sum of bytes 3..10, masked to 16 bits. |
@@ -80,7 +80,7 @@ checksum = sum(bytes[3..10]) & 0xffff   // 16-bit big-endian at bytes[11..12]
 
 > Source: [dated browser investigation](../research/2026-07-browser-investigation.md#4-checksum-facts) §4.1–4.3
 
-> ⚠️ **Implementation gap**: Protocol behaviour is confirmed, but the current production TypeScript `UserPreferencesBuilder` still emits the legacy 8-bit/state-byte checksum format (X11). X3 0x05 packets require a 16-bit big-endian checksum at bytes 11–12. Default packets can accidentally appear valid when the high byte or legacy state byte happens to coincide with the correct 16-bit value. Model-specific checksum fixes in the builder are **not yet implemented**.
+> The production X3 builder emits this 16-bit big-endian checksum. Parser acceptance does not establish that the host-labeled lighting fields have a hardware effect.
 
 ---
 
@@ -98,7 +98,7 @@ checksum = sum(bytes[3..10]) & 0xffff   // 16-bit big-endian at bytes[11..12]
 | Static DPI      | `0x50`    | Color based on current DPI stage (Fixed). |
 | Breathing DPI   | `0x60`    | Pulsing color based on current DPI stage. |
 
-> **X3 hardware note**: This hardware has **no configurable RGB lighting**. Light-mode and RGB-color fields are still present in the packet and must contain valid values, but they have no visible effect. Light/sleep field semantics are **not fully characterized** on X3. \[inference]
+> **X3 hardware note**: This hardware has **no configurable RGB lighting**. The host-labeled color bytes are still present in the packet but have no confirmed visible effect. Treat them as opaque preserved bytes on X3 rather than meaningful RGB state. Light/sleep field semantics are **not fully characterized**. \[inference]
 
 ### 2. Deep Sleep Configuration (Index 4 & 5)
 
@@ -121,12 +121,12 @@ The mouse enters a deep power-saving mode after a period of inactivity.
 - **Hardware Encoding**: The value sent to the device is inverted: `6 - UserSpeed`.
     - Speed 1 (Slowest) -> `5`
     - Speed 5 (Fastest) -> `1`
-- **Default**: 3.
-- **X3 note**: No visible effect on this hardware (no configurable RGB). Must still contain a valid value.
+- The current builder uses value `3`, matching the captured empty-profile image. This is not established as a factory or firmware default.
+- **X3 note**: No visible effect on this hardware. Preserve the field when updating an existing profile.
 
-### 4. RGB Colors (Index 6, 7, 8)
+### 4. Host-labeled color bytes (Index 6, 7, 8)
 
-Used for Static and Breathing modes (X11). On X3, these fields are present but have no visible effect — the hardware has no configurable RGB lighting. For modes like Neon or Color Breathing, these values might be ignored by the device but are usually sent as default or last used color.
+The stock UI labels these bytes as RGB and they control color on X11. On X3 they are present in the profile image but have no confirmed visible effect. A decoder should preserve the raw three-byte value; exposing it as meaningful X3 RGB configuration would overstate the evidence.
 
 ### 5. Sleep Timer (Index 9)
 

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "fixtures": [
     {
-      "name": "profile-1-fa61-write-compact",
+      "name": "captured-empty-profile-1-fa61-write-compact",
       "evidence": "inference",
       "source": "__tests__/DpiBuilder.test.ts",
       "transport": "wired",
@@ -22,7 +22,7 @@
       }
     },
     {
-      "name": "profile-1-fa60-write-full",
+      "name": "captured-empty-profile-1-fa60-write-full-inferred",
       "evidence": "inference",
       "source": "__tests__/DpiBuilder.test.ts",
       "transport": "receiver",

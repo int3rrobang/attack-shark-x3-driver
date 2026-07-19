@@ -24,7 +24,7 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum HexCommand {
-    /// Build an X3 DPI report.
+    /// Build an offline DPI packet from a captured empty-profile-1 image.
     Dpi(DpiArgs),
 }
 
@@ -112,12 +112,12 @@ fn run(cli: Cli) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             if profile.get() != ProfileId::MIN {
                 return Err(
-                    "fresh DPI packet generation only has an evidenced template for profile 1; \
-                     read the target profile before constructing a complete write"
+                    "the captured empty-profile packet is only evidenced for profile 1; \
+                     read an existing target profile before constructing a complete write"
                         .to_owned(),
                 );
             }
-            let mut state = DpiState::profile_one_template(stages, active_stage)
+            let mut state = DpiState::captured_empty_profile_one(stages, active_stage)
                 .map_err(|error| error.to_string())?;
             state.sensor = SensorOptions {
                 lift_off_distance: arguments.lod.into(),

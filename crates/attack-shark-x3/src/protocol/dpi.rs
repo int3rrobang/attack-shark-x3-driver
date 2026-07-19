@@ -10,7 +10,7 @@ pub const DPI_RECEIVER_LENGTH: usize = 56;
 const CHECKSUM_OFFSET: usize = 50;
 const FIXED_TAIL_START: usize = 25;
 const FIXED_TAIL_LENGTH: usize = 25;
-const DEFAULT_FIXED_TAIL: [u8; FIXED_TAIL_LENGTH] = [
+const CAPTURED_EMPTY_PROFILE_TAIL: [u8; FIXED_TAIL_LENGTH] = [
     0xff, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0xff,
     0x00, 0xff, 0xff, 0x40, 0x00, 0xff, 0xff, 0xff, 0x01,
 ];
@@ -66,13 +66,17 @@ impl DpiState {
         })
     }
 
-    /// Creates profile 1 using the stock template captured for that profile.
+    /// Reproduces the profile-1 DPI tail observed after the stock app applied
+    /// a new empty profile.
+    ///
+    /// This is not established as a factory or firmware default and must not
+    /// be used as the basis for updating an existing profile.
     ///
     /// # Errors
     ///
     /// Returns an error when the stage count is outside 1..=8 or `active_stage`
     /// does not refer to one of the configured stages.
-    pub fn profile_one_template(
+    pub fn captured_empty_profile_one(
         stages: Vec<DpiValue>,
         active_stage: StageIndex,
     ) -> Result<Self, ProtocolError> {
@@ -80,7 +84,7 @@ impl DpiState {
             ProfileId::try_from(ProfileId::MIN)?,
             stages,
             active_stage,
-            DEFAULT_FIXED_TAIL,
+            CAPTURED_EMPTY_PROFILE_TAIL,
         )
     }
 }

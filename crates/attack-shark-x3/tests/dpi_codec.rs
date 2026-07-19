@@ -265,7 +265,7 @@ fn sensor_options_use_their_confirmed_offsets() {
     ];
 
     for (expected_offset, sensor) in cases {
-        let mut state = DpiState::profile_one_template(stages.clone(), active)
+        let mut state = DpiState::captured_empty_profile_one(stages.clone(), active)
             .expect("profile 1 state must be valid");
         state.sensor = sensor;
         let report =
