@@ -6,22 +6,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-autobins = false
 
 [features]
 default = ["usb"]
-serde = []
+serde = ["dep:serde"]
 usb = ["dep:hidapi"]
 ble = ["dep:bluest", "dep:futures-lite", "dep:windows"]
 
 [dependencies]
 bluest = { version = "0.6.9", features = ["serde"], optional = true }
 hidapi = { version = "2", optional = true }
-clap = { version = "4", features = ["derive"] }
 futures-lite = { version = "2", optional = true }
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "io-util", "process"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+serde = { version = "1", features = ["derive"], optional = true }
 thiserror = "2"
 
 [target.'cfg(windows)'.dependencies]
@@ -34,14 +31,11 @@ windows = { version = "0.48", features = [
 	"Devices_Bluetooth_GenericAttributeProfile",
 ], optional = true }
 
+[dev-dependencies]
+serde_json = "1"
 
 [lints]
 workspace = true
-
-[[bin]]
-name = "x3ctl"
-path = "src/bin/x3ctl.rs"
-
 
 [[example]]
 name = "receiver-smoke"

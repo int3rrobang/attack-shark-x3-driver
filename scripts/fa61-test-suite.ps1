@@ -33,7 +33,7 @@ use capture-manual to exercise physical reports and record evidence.
 Offline coverage (no device access):
   * Rust workspace fmt/check/clippy/test
   * x3ctl --help and debug subcommand help (dpi, profile-control, read-selector)
-  * Offline packet builders via 'cargo run -p attack-shark-x3 --bin x3ctl -- <args>':
+  * Offline packet builders via 'cargo run -p x3ctl -- <args>':
       exactly six DPI slots on wired and receiver, profile-control framing (compact/full),
       and read-selector report generation for all report types
   * Six-slot boundary rejection: an attempted seventh active stage must fail (exit code 1)
@@ -125,7 +125,7 @@ function Invoke-X3Ctl {
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [int[]]$ExpectedExitCodes = @(0)
     )
-    $prefix = @('run', '--quiet', '--manifest-path', $CargoManifest, '-p', 'attack-shark-x3', '--bin', 'x3ctl', '--')
+    $prefix = @('run', '--quiet', '--manifest-path', $CargoManifest, '-p', 'x3ctl', '--')
     return Invoke-Step -Name $Name -Executable 'cargo' -Arguments ($prefix + $Arguments) -ExpectedExitCodes $ExpectedExitCodes
 }
 
