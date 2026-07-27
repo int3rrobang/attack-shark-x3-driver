@@ -213,7 +213,6 @@ impl DeviceManager {
         verified_at: crate::state::Timestamp,
     ) -> Result<(), ManagerError> {
         let mut transaction = self.store().transaction()?;
-        transaction.state().validate()?;
         let device_state = transaction
             .state_mut()
             .devices
@@ -245,6 +244,7 @@ impl DeviceManager {
             invalidate_persistence(&mut profile_state.preferences);
             invalidate_persistence(&mut profile_state.buttons);
         }
+        transaction.state().validate()?;
         transaction.commit()?;
         Ok(())
     }

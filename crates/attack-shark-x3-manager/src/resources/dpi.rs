@@ -117,15 +117,18 @@ impl DeviceManager {
         let transport = session.transport();
 
         if transport == TransportKind::Ble && !policy.allow_explicit_defaults {
-            let mut transaction = self.store().transaction()?;
-            if !has_dpi_baseline(transaction.state(), device, profile) {
-                return Err(ManagerError::MissingBaseline {
-                    resource: "DPI",
-                    profile: Some(profile),
-                });
+            {
+                let state = self.store().load()?;
+                if !has_dpi_baseline(&state, device, profile) {
+                    return Err(ManagerError::MissingBaseline {
+                        resource: "DPI",
+                        profile: Some(profile),
+                    });
+                }
             }
 
             let write = session.write_dpi(desired.clone()).await?;
+            let mut transaction = self.store().transaction()?;
             let outcome = persist_dpi_write(
                 &mut transaction,
                 device,
@@ -277,14 +280,14 @@ fn merge_dpi_delta(baseline: DpiState, delta: &DpiDelta) -> Result<DpiState, Man
     }
 
     let sensor = merged.sensor;
-    let mut validated = DpiState::new(
+    let validated = DpiState::new(
         merged.profile,
         merged.stages,
         merged.active_stage,
         merged.preserved_tail,
     )
-    .map_err(|error| ManagerError::InvalidUpdate(error.to_string()))?;
-    validated.sensor = sensor;
+    .map_err(|error| ManagerError::InvalidUpdate(error.to_string()))?
+    .with_sensor(sensor);
     Ok(validated)
 }
 

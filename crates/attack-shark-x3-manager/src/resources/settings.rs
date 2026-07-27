@@ -99,15 +99,18 @@ impl DeviceManager {
         let transport = session.transport();
 
         if transport == TransportKind::Ble && !policy.allow_explicit_defaults {
-            let mut transaction = self.store().transaction()?;
-            if !has_preferences_baseline(transaction.state(), device, profile) {
-                return Err(ManagerError::MissingBaseline {
-                    resource: "preferences",
-                    profile: Some(profile),
-                });
+            {
+                let state = self.store().load()?;
+                if !has_preferences_baseline(&state, device, profile) {
+                    return Err(ManagerError::MissingBaseline {
+                        resource: "preferences",
+                        profile: Some(profile),
+                    });
+                }
             }
 
             let write = session.write_preferences(desired).await?;
+            let mut transaction = self.store().transaction()?;
             let outcome = persist_preferences_write(
                 &mut transaction,
                 device,

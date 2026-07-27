@@ -313,13 +313,13 @@ impl DeviceManager {
             .and_then(|device_state| device_state.profiles.get(&profile));
 
         if let Some(resource) = profile_state.map(|profile| &profile.buttons) {
-            if let Some(observed) = resource.observed.as_ref() {
-                return Ok(observed.value);
-            }
             if let Some(desired) = resource.desired.as_ref() {
                 if allow_explicit_defaults || desired.source != DesiredSource::ExplicitDefaults {
                     return Ok(desired.value);
                 }
+            }
+            if let Some(observed) = resource.observed.as_ref() {
+                return Ok(observed.value);
             }
         }
 

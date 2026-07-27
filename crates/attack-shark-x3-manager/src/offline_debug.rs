@@ -86,6 +86,10 @@ fn packet(
     framing: OfflinePacketFraming,
     transport: Option<TransportKind>,
 ) -> OfflinePacket {
+    assert!(
+        bytes.len() >= 2,
+        "protocol encoder produced a {kind:?} packet shorter than 2 bytes"
+    );
     OfflinePacket {
         kind,
         report_id: bytes[0],

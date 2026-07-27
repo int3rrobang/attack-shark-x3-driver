@@ -1,15 +1,20 @@
 use attack_shark_x3::{BatteryEvent, DpiButtonEvent};
 use tokio::sync::broadcast;
 
+use crate::backend::DeviceSession;
 use crate::device::DeviceId;
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 
 /// Receivers for the input streams that the opened hardware session actually
 /// exposes. A missing receiver means that transport has no such stream.
+///
+/// The session is held alive for the lifetime of the subscriptions; dropping
+/// this struct closes the session and stops the input worker.
 pub struct EventSubscriptions {
     pub dpi_button: Option<broadcast::Receiver<DpiButtonEvent>>,
     pub battery: Option<broadcast::Receiver<BatteryEvent>>,
+    _session: Box<dyn DeviceSession>,
 }
 
 impl DeviceManager {
@@ -24,6 +29,7 @@ impl DeviceManager {
         Ok(EventSubscriptions {
             dpi_button: events.dpi_button,
             battery: events.battery,
+            _session: session,
         })
     }
 }
