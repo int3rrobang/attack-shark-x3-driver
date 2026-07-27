@@ -39,6 +39,7 @@ impl PreferencesFraming {
 /// hardware effect is not.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct PreferencesState {
     pub profile: ProfileId,
     pub light_mode: u8,

@@ -11,6 +11,8 @@ pub const DPI_BUTTON_REPORT_TRAILING_BYTE: u8 = 0x00;
 
 /// A physical DPI-button press reported on the auxiliary HID input path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct DpiButtonEvent {
     pub raw_report: [u8; DPI_BUTTON_REPORT_LENGTH],
     pub active_stage: StageIndex,
@@ -47,6 +49,8 @@ pub const BATTERY_REPORT_PREFIX: [u8; 4] = [0x03, 0x55, 0x40, 0x01];
 
 /// A battery percentage decoded from the receiver interrupt IN report.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct BatteryEvent {
     pub raw_report: [u8; BATTERY_REPORT_LENGTH],
     pub level: u8,
@@ -182,5 +186,28 @@ mod tests {
         nearby[2] = 0x11;
         assert_eq!(decode_dpi_button_report(&nearby), None);
         assert_eq!(decode_dpi_button_report(&DPI_BUTTON_REPORT_PREFIX), None);
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::{BatteryEvent, DpiButtonEvent, decode_battery_report, decode_dpi_button_report};
+
+    #[test]
+    fn dpi_button_event_round_trip() {
+        let packet = [0x03, 0x00, 0x10, 0x02, 0x00];
+        let event = decode_dpi_button_report(&packet).unwrap();
+        let json = serde_json::to_string(&event).unwrap();
+        let restored: DpiButtonEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, restored);
+    }
+
+    #[test]
+    fn battery_event_round_trip() {
+        let packet = [0x03, 0x10, 0x40, 0x01, 0x0a];
+        let event = decode_battery_report(&packet).unwrap();
+        let json = serde_json::to_string(&event).unwrap();
+        let restored: BatteryEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, restored);
     }
 }

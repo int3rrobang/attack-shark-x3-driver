@@ -10,6 +10,7 @@ const PADDING_START: usize = 5;
 /// A polling rate supported by the X3/M600 USB configuration protocol.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum PollingRate {
     Hz125,
     Hz250,

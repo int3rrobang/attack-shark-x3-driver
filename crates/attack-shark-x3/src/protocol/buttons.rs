@@ -17,6 +17,8 @@ const CHECKSUM_OFFSET: usize = SLOTS_END;
 /// The fields deliberately remain raw firmware values: action, modifier, and
 /// key/action value semantics are not complete for every firmware revision.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ButtonAssignment {
     pub action: u8,
     pub modifier: u8,
@@ -41,6 +43,8 @@ impl ButtonAssignment {
 
 /// The complete raw table carried by an FA61 report-`0x08` packet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ButtonsState {
     pub profile: ProfileId,
     pub slots: [ButtonAssignment; BUTTON_SLOT_COUNT],
@@ -173,5 +177,30 @@ impl ButtonsReport {
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; BUTTON_REPORT_LENGTH] {
         &self.bytes
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::{BUTTON_SLOT_COUNT, ButtonAssignment, ButtonsState};
+    use crate::ProfileId;
+
+    #[test]
+    fn button_assignment_round_trip() {
+        let slot = ButtonAssignment::new(0x01, 0x02, 0x03);
+        let json = serde_json::to_string(&slot).unwrap();
+        let restored: ButtonAssignment = serde_json::from_str(&json).unwrap();
+        assert_eq!(slot, restored);
+    }
+
+    #[test]
+    fn buttons_state_round_trip() {
+        let mut slots = [ButtonAssignment::default(); BUTTON_SLOT_COUNT];
+        slots[0] = ButtonAssignment::new(0x01, 0x00, 0x04);
+        slots[17] = ButtonAssignment::new(0x02, 0x01, 0x05);
+        let state = ButtonsState::new(ProfileId::try_from(2).unwrap(), slots);
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: ButtonsState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, restored);
     }
 }

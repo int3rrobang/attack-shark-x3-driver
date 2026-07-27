@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/attack-shark-x3", "crates/x3ctl"]
+members = ["crates/attack-shark-x3", "crates/attack-shark-x3-manager", "crates/x3ctl"]
 resolver = "3"
 
 [workspace.package]

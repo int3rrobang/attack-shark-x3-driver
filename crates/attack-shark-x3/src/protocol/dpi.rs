@@ -18,6 +18,7 @@ const CAPTURED_EMPTY_PROFILE_TAIL: [u8; FIXED_TAIL_LENGTH] = [
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum LiftOffDistance {
     #[default]
     OneMillimeter,
@@ -26,6 +27,7 @@ pub enum LiftOffDistance {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct SensorOptions {
     pub lift_off_distance: LiftOffDistance,
     pub ripple_control: bool,
@@ -35,12 +37,14 @@ pub struct SensorOptions {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct DpiState {
     pub profile: ProfileId,
     pub stages: Vec<DpiValue>,
     pub active_stage: StageIndex,
     pub sensor: SensorOptions,
     /// Bytes 25..=49 have unresolved semantics and must survive read-modify-write.
+    #[cfg_attr(feature = "serde", serde(with = "preserved_tail_hex"))]
     pub preserved_tail: [u8; FIXED_TAIL_LENGTH],
 }
 
@@ -361,4 +365,106 @@ fn decode_toggle(field: &'static str, value: u8) -> Result<bool, ProtocolError> 
         1 => Ok(true),
         value => Err(ProtocolError::InvalidSensorValue { field, value }),
     }
+}
+
+#[cfg(feature = "serde")]
+mod preserved_tail_hex {
+    use serde::{Deserializer, Serializer};
+
+    const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
+    pub fn serialize<S: Serializer>(bytes: &[u8; 25], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut buf = [0_u8; 50];
+        for (i, &byte) in bytes.iter().enumerate() {
+            buf[i * 2] = HEX_CHARS[(byte >> 4) as usize];
+            buf[i * 2 + 1] = HEX_CHARS[(byte & 0x0f) as usize];
+        }
+        let s = std::str::from_utf8(&buf).expect("hex output is always valid UTF-8");
+        serializer.serialize_str(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 25], D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = [u8; 25];
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a string of exactly 50 hexadecimal characters")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                if v.len() != 50 {
+                    return Err(E::invalid_length(v.len(), &"50 hexadecimal characters"));
+                }
+                let mut out = [0_u8; 25];
+                for (i, byte) in out.iter_mut().enumerate() {
+                    let hi = hex_nibble(v.as_bytes()[i * 2]).map_err(E::custom)?;
+                    let lo = hex_nibble(v.as_bytes()[i * 2 + 1]).map_err(E::custom)?;
+                    *byte = (hi << 4) | lo;
+                }
+                Ok(out)
+            }
+        }
+
+        deserializer.deserialize_str(Visitor)
+    }
+
+    fn hex_nibble(c: u8) -> Result<u8, String> {
+        match c {
+            b'0'..=b'9' => Ok(c - b'0'),
+            b'a'..=b'f' => Ok(c - b'a' + 10),
+            b'A'..=b'F' => Ok(c - b'A' + 10),
+            _ => Err(format!("invalid hex character: {}", c as char)),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod preserved_tail_hex_tests {
+    use super::preserved_tail_hex;
+
+    const TAIL: [u8; 25] = [
+        0xff, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff,
+        0xff, 0x00, 0xff, 0xff, 0x40, 0x00, 0xff, 0xff, 0xff, 0x01,
+    ];
+
+    #[test]
+    fn serializes_as_50_lowercase_hex_chars() {
+        let json = serde_json::to_string(&Tail(TAIL)).unwrap();
+        let inner: String = serde_json::from_str(&json).unwrap();
+        assert_eq!(inner.len(), 50);
+        assert_eq!(inner, "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01");
+        assert_eq!(inner, inner.to_lowercase());
+    }
+
+    #[test]
+    fn deserializes_uppercase_input() {
+        let json = "\"FF000000FF000000FFFFFF0000FFFFFF00FFFF4000FFFFFF01\"";
+        let Tail(out) = serde_json::from_str(json).unwrap();
+        assert_eq!(out, TAIL);
+    }
+
+    #[test]
+    fn rejects_wrong_length() {
+        let result = serde_json::from_str::<Tail>("\"ff00\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_hex_character() {
+        let bad = "zz000000ff000000ffffff0000ffffff00ffff4000ffffff01";
+        let result = serde_json::from_str::<Tail>(&format!("\"{bad}\""));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_non_string() {
+        let result = serde_json::from_str::<Tail>("[1,2,3]");
+        assert!(result.is_err());
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(transparent)]
+    struct Tail(#[serde(with = "preserved_tail_hex")] [u8; 25]);
 }

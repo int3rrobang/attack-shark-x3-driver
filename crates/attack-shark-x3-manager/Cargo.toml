@@ -1,0 +1,26 @@
+[package]
+name = "attack-shark-x3-manager"
+description = "Headless device operations, durable state, and safety policy for Attack Shark X3/M600-family mice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["usb"]
+usb = ["attack-shark-x3/usb"]
+ble = ["attack-shark-x3/ble"]
+
+[dependencies]
+attack-shark-x3 = { path = "../attack-shark-x3", default-features = false, features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -16,6 +16,7 @@ const OBSERVED_UNTARGETED_PARAMETER: u8 = 0x01;
 /// This state is independent of whichever profile-backed section was most
 /// recently loaded into the device's working buffers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct ProfileMetadata {
     current: ProfileId,
     maximum: ProfileId,
@@ -333,5 +334,26 @@ fn validate_fixed_byte(packet: &[u8], offset: usize, expected: u8) -> Result<(),
             expected,
             actual,
         })
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::ProfileMetadata;
+    use crate::ProfileId;
+
+    #[test]
+    fn profile_metadata_round_trip_preserves_invariants() {
+        let metadata = ProfileMetadata::new(
+            ProfileId::try_from(2).unwrap(),
+            ProfileId::try_from(4).unwrap(),
+        )
+        .unwrap();
+        let json = serde_json::to_string(&metadata).unwrap();
+        let restored: ProfileMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(metadata, restored);
+        assert_eq!(restored.current().get(), 2);
+        assert_eq!(restored.maximum().get(), 4);
+        assert!(restored.current().get() <= restored.maximum().get());
     }
 }
