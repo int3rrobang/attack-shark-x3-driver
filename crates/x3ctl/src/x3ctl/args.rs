@@ -1,5 +1,43 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+/// Clap-safe button slot for `bind set --slot`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum SlotArg {
+    Left,
+    Right,
+    Middle,
+    Forward,
+    Backward,
+}
+
+/// Clap-safe button action for `bind set --action`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum ActionArg {
+    Disable,
+    #[value(alias = "left-click")]
+    LeftClick,
+    #[value(alias = "right-click")]
+    RightClick,
+    #[value(alias = "middle-click")]
+    MiddleClick,
+    Backward,
+    Forward,
+    #[value(alias = "double-click")]
+    DoubleClick,
+    #[value(alias = "dpi-cycle")]
+    DpiCycle,
+    #[value(alias = "dpi-plus")]
+    DpiPlus,
+    #[value(alias = "dpi-minus")]
+    DpiMinus,
+    #[value(alias = "profile-cycle")]
+    ProfileCycle,
+    #[value(alias = "profile-plus")]
+    ProfilePlus,
+    #[value(alias = "profile-minus")]
+    ProfileMinus,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     Human,
@@ -182,14 +220,10 @@ pub enum BindCommand {
 
 #[derive(Debug, Args)]
 pub struct BindSetArgs {
-    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=17))]
-    pub slot: u8,
-    #[arg(long)]
-    pub action: u8,
-    #[arg(long, default_value_t = 0)]
-    pub modifier: u8,
-    #[arg(long, default_value_t = 0)]
-    pub key_code: u8,
+    #[arg(long, value_enum)]
+    pub slot: SlotArg,
+    #[arg(long, value_enum)]
+    pub action: ActionArg,
 }
 
 #[derive(Debug, Subcommand)]
@@ -281,7 +315,10 @@ fn parse_color(raw: &str) -> Result<[u8; 3], String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, DebugCommand, OutputFormat, StateCommand, TransportArg};
+    use super::{
+        ActionArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, OutputFormat, SlotArg,
+        StateCommand, TransportArg,
+    };
     use clap::Parser;
 
     #[test]
@@ -334,5 +371,156 @@ mod tests {
             cli.command,
             Some(Command::Debug(DebugCommand::Dpi(_)))
         ));
+    }
+
+    #[test]
+    fn bind_set_accepts_safe_symbolic_slots_and_actions() {
+        let cases: &[(&str, &str, SlotArg, ActionArg)] = &[
+            ("left", "left-click", SlotArg::Left, ActionArg::LeftClick),
+            (
+                "right",
+                "right-click",
+                SlotArg::Right,
+                ActionArg::RightClick,
+            ),
+            (
+                "middle",
+                "middle-click",
+                SlotArg::Middle,
+                ActionArg::MiddleClick,
+            ),
+            ("forward", "forward", SlotArg::Forward, ActionArg::Forward),
+            (
+                "backward",
+                "backward",
+                SlotArg::Backward,
+                ActionArg::Backward,
+            ),
+            ("left", "disable", SlotArg::Left, ActionArg::Disable),
+            (
+                "left",
+                "double-click",
+                SlotArg::Left,
+                ActionArg::DoubleClick,
+            ),
+            ("left", "dpi-cycle", SlotArg::Left, ActionArg::DpiCycle),
+            ("left", "dpi-plus", SlotArg::Left, ActionArg::DpiPlus),
+            ("left", "dpi-minus", SlotArg::Left, ActionArg::DpiMinus),
+            (
+                "left",
+                "profile-cycle",
+                SlotArg::Left,
+                ActionArg::ProfileCycle,
+            ),
+            (
+                "left",
+                "profile-plus",
+                SlotArg::Left,
+                ActionArg::ProfilePlus,
+            ),
+            (
+                "left",
+                "profile-minus",
+                SlotArg::Left,
+                ActionArg::ProfileMinus,
+            ),
+        ];
+        for &(slot, action, expected_slot, expected_action) in cases {
+            let cli =
+                Cli::try_parse_from(["x3ctl", "bind", "set", "--slot", slot, "--action", action])
+                    .unwrap_or_else(|error| {
+                        panic!("should parse slot={slot} action={action}: {error}")
+                    });
+            match cli.command {
+                Some(Command::Bind(BindCommand::Set(BindSetArgs { slot, action }))) => {
+                    assert_eq!(slot, expected_slot);
+                    assert_eq!(action, expected_action);
+                }
+                other => panic!("expected BindSet, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn bind_set_rejects_raw_numeric_slot_and_action() {
+        // Raw numeric --slot must be rejected
+        assert!(
+            Cli::try_parse_from([
+                "x3ctl",
+                "bind",
+                "set",
+                "--slot",
+                "0",
+                "--action",
+                "left-click"
+            ])
+            .is_err()
+        );
+        // Raw numeric --action must be rejected
+        assert!(
+            Cli::try_parse_from(["x3ctl", "bind", "set", "--slot", "left", "--action", "4"])
+                .is_err()
+        );
+        // No scroll slots exposed
+        assert!(
+            Cli::try_parse_from([
+                "x3ctl",
+                "bind",
+                "set",
+                "--slot",
+                "scroll-up",
+                "--action",
+                "left-click"
+            ])
+            .is_err()
+        );
+        // No dpi slot exposed
+        assert!(
+            Cli::try_parse_from([
+                "x3ctl",
+                "bind",
+                "set",
+                "--slot",
+                "dpi",
+                "--action",
+                "left-click"
+            ])
+            .is_err()
+        );
+        // No modifier/key-code args
+        assert!(
+            Cli::try_parse_from([
+                "x3ctl",
+                "bind",
+                "set",
+                "--slot",
+                "left",
+                "--action",
+                "left-click",
+                "--modifier",
+                "1"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "x3ctl",
+                "bind",
+                "set",
+                "--slot",
+                "left",
+                "--action",
+                "left-click",
+                "--key-code",
+                "4"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn bind_set_requires_both_slot_and_action() {
+        assert!(Cli::try_parse_from(["x3ctl", "bind", "set", "--slot", "left"]).is_err());
+        assert!(Cli::try_parse_from(["x3ctl", "bind", "set", "--action", "left-click"]).is_err());
     }
 }

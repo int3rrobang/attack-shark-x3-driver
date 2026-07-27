@@ -1,6 +1,6 @@
-# X11 evidence
+# X11 evidence (historical — unsupported by current Rust implementation)
 
-These artifacts describe the Attack Shark X11 wired (`0xfa55`) or 2.4 GHz adapter (`0xfa60`). They are evidence for the X11 dialect only.
+These artifacts describe the Attack Shark X11 wired (`0xfa55`) or 2.4 GHz adapter (`0xfa60`). They are evidence for the X11 dialect only. **X11 is not supported by the current Rust implementation** (`attack-shark-x3`, `attack-shark-x3-manager`, `x3ctl`). This evidence is preserved for dialect comparison and provenance; it must not be generalized to X3/FA61 hardware.
 
 | Path | Description | Variant |
 |:-----|:------------|:--------|

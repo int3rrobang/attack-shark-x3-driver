@@ -11,9 +11,7 @@ generalized to X11 without independent evidence.
 
 ## Probing sessions 2026-07-17
 
-All sessions used the wired FA61 Col04 path. They were driven by
-`scripts/fa61-profile-ab.ts` and `scripts/fa61-readback-benchmark.ts` and must not be
-generalized to BLE or to non-Col04 interfaces.
+All sessions used the wired FA61 Col04 path. They were driven by the historical (now-deleted) TypeScript scripts `scripts/fa61-profile-ab.ts` and `scripts/fa61-readback-benchmark.ts` and must not be generalized to BLE or to non-Col04 interfaces. The script references are provenance records — the raw JSON captures below are the authoritative evidence. Equivalent experiments can be reproduced using the Rust `x3ctl` CLI.
 
 | Path | Mouse | Description | Evidence |
 |:-----|:------|:------------|:---------|

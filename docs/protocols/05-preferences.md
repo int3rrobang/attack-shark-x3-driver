@@ -8,7 +8,7 @@ Report `0x05` carries lighting fields, sleep timers, and debounce/key-response c
 |:--------|:----------|:-------|:---------|
 | X11 wired / adapter | USB HID | Supported | implementation |
 | X3/M600 via FA60 receiver | USB HID | 15-byte X3 full framing and `0xa0` readback | binary report + implementation |
-| X3/FA61 wired | USB HID | Device behavior confirmed; native Rust builder uses the 16-bit layout; legacy TypeScript builder remains on the X11 checksum | live-confirmed + capture-confirmed |
+| X3/FA61 wired | USB HID | Device behavior confirmed; native Rust codec uses the 16-bit layout | live-confirmed + capture-confirmed |
 | X3/M600 BLE | BLE FEE3 | Confirmed with safety restriction | live-confirmed |
 
 ## HID Report Parameters

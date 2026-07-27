@@ -9,11 +9,12 @@ Prefer offline packet builders, fixtures, and CLI `hex` commands. Hardware acces
 - Use conservative delays between configuration packets. Stock X3 reset captures use about 500 ms.
 - Treat a BLE ACK as parser acceptance only; it does not prove application or persistence.  ACK status `0x00` means the firmware parsed the packet — it is not proof that the change took effect or was written to EEPROM.
 - Over USB, `x3ctl` verifies configuration writes through immediate readback of the affected fields.  This readback proves only the device's current working state, not EEPROM persistence.  Report `0x06` (polling rate) persistence was separately verified across a power-cycle on one wired device. [live-confirmed]
-- BLE has no configuration readback path. `x3ctl` therefore cannot verify BLE writes through readback. The CLI requires a complete durable-state baseline. `state init-defaults` creates an explicit desired-state baseline without reading or writing hardware; `--replace-defaults` authorizes using it for omitted fields. Without a trusted or explicitly authorized baseline, BLE DPI, preferences, button, and profile commands fail before writing.
+- BLE has no configuration readback path. `x3ctl` therefore cannot verify BLE writes through readback. The CLI requires a complete durable-state baseline. On the first run for a new device, `--replace-defaults` authorizes the manager's evidence-qualified captured defaults as the baseline for omitted fields. Without a trusted or explicitly authorized baseline, BLE DPI, preferences, button, and profile commands fail before writing.
 - Do not fuzz arbitrary values or unchecked indices.
-- The `--no-state` flag suppresses durable-state readback and writeback for a single invocation; `--stateless` also bypasses the broker (`--direct --no-state`).  In normal operation the broker merges each command delta into the durable-state file after every successful hardware write.
+- The `--stateless` flag keeps state only in memory for the current invocation: the manager still reads, merges, and verifies within that run, but nothing is persisted to disk.
+- The `--replace-defaults` flag is a per-operation authorization: it tells the manager to accept evidence-qualified captured defaults when no durable baseline exists for a field. It does not seed or write defaults into persistent state by itself.
 - The `--dry-run` flag validates and prints what would be sent without touching hardware.
-- Every persistent write carries a provenance tag in durable state so the apply pipeline can distinguish readback-verified values from synthesised defaults, user writes, and imported exports.
+- Durable state separates desired values (what was written) from observed values (what was read back). A USB readback confirms application but not EEPROM persistence. `x3ctl verify --method profile-reload` or `--method power-cycle` tests persistence explicitly. `x3ctl state invalidate` preserves the desired and observed values but clears the persistence evidence tags, so the next operation re-verifies before trusting cached state.
 
 ## Known-dangerous operations
 

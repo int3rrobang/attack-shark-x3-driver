@@ -2,6 +2,16 @@
 
 This directory separates model support, packet formats, transports, research provenance, and raw evidence. Start with the device you have; report pages remain canonical for packet bytes shared across models.
 
+## Documentation layers
+
+| Layer | What it is | Source of truth | Status |
+|:------|:-----------|:----------------|:-------|
+| **Canonical** | Protocol pages, transport pages, device pages, and Rust source | Current Rust implementation (`attack-shark-x3`, `attack-shark-x3-manager`, `x3ctl`) | Active |
+| **Evidence** | Raw descriptors, captures, packet dumps under `evidence/` | Immutable byte-for-byte hardware artifacts | Immutable |
+| **Historical** | Deleted TypeScript/Bun tooling, old scripts, prior session records | Preserved for provenance only; not runnable | Deleted/archived |
+
+**Current Rust sources of truth.** The workspace is `attack-shark-x3` (low-level driver), `attack-shark-x3-manager` (stateful manager), and `x3ctl` (CLI). No TypeScript/Bun product, broker, daemon, IPC layer, or direct mode remains. CLI invocations use `cargo run -p x3ctl -- ...`. Where historical TypeScript tooling is referenced for provenance, it is explicitly labeled deleted and the raw evidence is the authoritative record.
+
 ## Choose a device
 
 - **[Attack Shark X11](devices/x11.md)** — X11 wired (`0xfa55`) and historical X11 2.4 GHz adapter evidence. PID `0xfa60` identifies a shared receiver and is not, by itself, an X11 model identifier.
@@ -43,17 +53,19 @@ Brand aliases do not by themselves prove identical firmware. Each technical clai
 | **live-confirmed** | Observed on a live device through a controlled probe or operation |
 | **capture-confirmed** | Established from a packet capture or byte-for-byte export |
 | **static-analysis** | Derived from binary or firmware analysis without executing the artifact |
-| **implementation** | Describes current production source behavior; not automatically hardware proof |
+| **implementation** | Describes current Rust production source behavior; not automatically hardware proof |
 | **historical** | Preserved from prior session records but not independently reproduced |
 | **inference** | Reasonable interpretation not directly observed |
 | **corrected** | Supersedes an earlier interpretation; see the [correction ledger](research/corrections.md) |
 
-More recent live or capture evidence overrides conflicting static analysis or inference. A successful BLE ACK proves parser acceptance only; it does not establish that a setting took effect or persisted.
+More recent live or capture evidence overrides conflicting static analysis or inference. A successful BLE ACK proves parser acceptance only; it does not establish that a setting took effect or persisted. **Raw evidence under `evidence/` is immutable** — it must not be rewritten to match a theory or updated implementation.
+
 
 ## Contribution rules
 
-- Preserve established X11 behavior unless independent X11 evidence supports a change.
+- Current implementation claims must be grounded in the Rust source. Historical TypeScript/Bun references are provenance only and do not describe runnable tooling.
+- X11 evidence is historical and unsupported by the current Rust implementation. It is preserved for dialect comparison and provenance, not for runtime behavior.
 - Do not generalize X3 behavior to X11, BLE behavior to USB, or branding to protocol compatibility.
-- Keep raw evidence byte-for-byte intact and put interpretation in protocol or research pages.
+- Keep raw evidence byte-for-byte intact and put interpretation in protocol or research pages. Raw evidence is immutable.
 - Give stable technical facts one canonical home; summaries should link rather than duplicate formulas.
 - Read [`safety.md`](safety.md) before any hardware write.

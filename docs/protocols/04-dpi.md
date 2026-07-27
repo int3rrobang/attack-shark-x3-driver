@@ -1,6 +1,6 @@
 # DPI (report `0x04`)
 
-Report `0x04` configures DPI stages and model-specific sensor fields. The driver implements it in `DpiBuilder`; X3 uses the same report bytes over USB HID and BLE FEE3.
+Report `0x04` configures DPI stages and model-specific sensor fields. The Rust codec implements it as `DpiReport`; X3 uses the same report bytes over USB HID and BLE FEE3.
  
 ## Compatibility
 
@@ -73,8 +73,7 @@ target byte.
 
 ## DPI Value Encoding
 
-DPI values are not stored as literal integers. X11 wired/adapter values are mapped to specific hexadecimal values defined in
-`src/tables/dpi-map.ts`. X3 wired uses the captured stock encoding directly: `raw = dpi / 50 - 1`, offset 8-15 store
+DPI values are not stored as literal integers. X11 wired/adapter values are mapped to specific hexadecimal values defined in the X11 DPI lookup table. X3 wired uses the captured stock encoding directly: `raw = dpi / 50 - 1`, offset 8-15 store
 `raw & 0xff` (low byte), and offsets 16-23 store `raw >> 8` (high byte). \[live-confirmed via stock software capture]
 
 - **Range**: X11 wired/adapter support up to 22,000 DPI. X3 wired supports 50 to 26,000 DPI.
@@ -96,7 +95,7 @@ stages are zeroed (`00`) and disabled by the offset 5 stage mask. \[live-confirm
 
 ## X3 Sensor Toggles
 
-For `ConnectionMode.X3Wired`, captured stock software stores sensor toggles in RID `04`, not RID `07`. \[static-analysis via stock capture]
+For the X3 wired transport mode, captured stock software stores sensor toggles in RID `04`, not RID `07`. \[static-analysis via stock capture]
 
 | Offset | Field       | Values                    |
 |:-------|:------------|:--------------------------|
@@ -109,14 +108,8 @@ For `ConnectionMode.X3Wired`, captured stock software stores sensor toggles in R
 
 The checksum is a simple 16-bit sum of the bytes in the buffer from index 3 to 49.
 
-```typescript
-function calculateChecksum(buffer: Buffer): number {
-    let sum = 0;
-    for (let i = 3; i <= 49; i++) {
-        sum += buffer[i];
-    }
-    return sum & 0xFFFF;
-}
+```rust
+// checksum = sum(bytes[3..=49]) & 0xFFFF  // 16-bit big-endian at bytes[50..=51]
 ```
 
 The result is then stored in big-endian format:

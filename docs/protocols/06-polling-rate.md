@@ -109,10 +109,12 @@ but it cannot provide configuration readback.
 The CLI equivalents are:
 
 ```text
-cargo run -p attack-shark-x3 -- read rate
-cargo run -p attack-shark-x3 -- set-rate --rate 1000
-cargo run -p attack-shark-x3 --features ble -- --transport ble ble-list
-cargo run -p attack-shark-x3 --features ble -- --transport ble set-rate --rate 500
+cargo run -p x3ctl -- rate get
+cargo run -p x3ctl -- rate set 1000
+
+# BLE (requires ble feature)
+cargo run -p x3ctl --features ble -- --transport ble rate get
+cargo run -p x3ctl --features ble -- --transport ble rate set 500
 ```
 
 The BLE CLI command reports parser acceptance from the FEE4 ACK; it does not
@@ -121,7 +123,7 @@ verify persistence or effective polling behavior.
 ## Hardware qualification
 
 **Live-confirmed on one X3/FA61 wired mouse, 2026-07-20:** the Rust CLI read
-returned 1000 Hz (`rr = 0x01`), `set-rate --rate 500` sent
+returned 1000 Hz (`rr = 0x01`), `rate set 500` sent
 `06090102fd00000000` and passed immediate readback, and a physical power-cycle
 returned 500 Hz. The original 1000 Hz setting was then restored and read back
 successfully with `06090101fe00000000`.
@@ -190,29 +192,6 @@ higher values rather than presenting a misleading control. It is not a proof
 of the link-layer connection interval: these are OS-delivered reports and can
 also reflect host scheduling, report coalescing, dropped reports, or movement
 generation. \[live-confirmed measurement + inference]
-## Implementation Guide (TypeScript)
-
-The following example demonstrates how to apply a 1000Hz polling rate using the driver's internal logic:
-
-```typescript
-// 1. Prepare the buffer
-const buffer = Buffer.alloc(9);
-buffer[0] = 0x06; // Report ID
-buffer[1] = 0x09;
-buffer[2] = 0x01;
-buffer[3] = 0x01; // 1000 Hz (eSports)
-buffer[4] = 0xFF - buffer[3]; // Checksum: 0xFE
-
-// 2. Send the USB Control Request
-await device.controlTransfer(
-    0x21,         // bmRequestType
-    0x09,         // bRequest (SET_REPORT)
-    0x0306,       // wValue (Feature 0x03, ID 0x06)
-    0x0002,       // wIndex (Interface 2)
-    buffer        // Data payload
-);
-```
-
 ## Technical Summary
 
 -   **Report ID**: 0x06

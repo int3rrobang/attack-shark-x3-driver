@@ -11,17 +11,17 @@ use std::process::ExitCode;
 use attack_shark_x3_manager::{
     ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport, DeviceId, DeviceManager,
     DpiDelta, DpiState, DpiValue, LiftOffDistance, PollingRate, PreferencesDelta,
-    PreferencesFraming, PreferencesState, ProfileId, SensorOptions, SensorOptionsDelta, StageIndex,
-    StateStore, TransportKind, TransportSelection, UpdatePolicy, VerificationMethod,
-    encode_debug_buttons, encode_debug_dpi, encode_debug_prefs,
+    PreferencesFraming, PreferencesState, ProfileId, SafeButtonAction, SafeButtonSlot,
+    SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind, TransportSelection,
+    UpdatePolicy, VerificationMethod, encode_debug_buttons, encode_debug_dpi, encode_debug_prefs,
 };
 use clap::Parser;
 use serde::Serialize;
 
 use args::{
-    BindCommand, BindSetArgs, Cli, Command, DebugCommand, DebugDpiArgs, DebugPrefsArgs, DpiCommand,
-    DpiSetArgs, LodArg, PrefsCommand, PrefsSetArgs, ProfileCommand, ProfileSetArgs, RateCommand,
-    RateSetArgs, StateCommand, TransportArg, VerifyMethodArg,
+    ActionArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, DebugDpiArgs, DebugPrefsArgs,
+    DpiCommand, DpiSetArgs, LodArg, PrefsCommand, PrefsSetArgs, ProfileCommand, ProfileSetArgs,
+    RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg, VerifyMethodArg,
 };
 use output::Output;
 
@@ -255,9 +255,29 @@ fn build_prefs_action(cli: &Cli, args: &PrefsSetArgs) -> Result<Action, String> 
 
 fn build_bind_action(cli: &Cli, args: &BindSetArgs) -> Result<Action, String> {
     let profile = parse_profile(cli.profile)?;
-    let assignment = ButtonAssignment::new(args.action, args.modifier, args.key_code);
-    let delta =
-        ButtonSlotDelta::new(args.slot as usize, assignment).map_err(|error| error.to_string())?;
+    let slot = match args.slot {
+        SlotArg::Left => SafeButtonSlot::Left,
+        SlotArg::Right => SafeButtonSlot::Right,
+        SlotArg::Middle => SafeButtonSlot::Middle,
+        SlotArg::Forward => SafeButtonSlot::Forward,
+        SlotArg::Backward => SafeButtonSlot::Backward,
+    };
+    let action = match args.action {
+        ActionArg::Disable => SafeButtonAction::Disable,
+        ActionArg::LeftClick => SafeButtonAction::LeftClick,
+        ActionArg::RightClick => SafeButtonAction::RightClick,
+        ActionArg::MiddleClick => SafeButtonAction::MiddleClick,
+        ActionArg::Backward => SafeButtonAction::Backward,
+        ActionArg::Forward => SafeButtonAction::Forward,
+        ActionArg::DoubleClick => SafeButtonAction::DoubleClick,
+        ActionArg::DpiCycle => SafeButtonAction::DpiCycle,
+        ActionArg::DpiPlus => SafeButtonAction::DpiPlus,
+        ActionArg::DpiMinus => SafeButtonAction::DpiMinus,
+        ActionArg::ProfileCycle => SafeButtonAction::ProfileCycle,
+        ActionArg::ProfilePlus => SafeButtonAction::ProfilePlus,
+        ActionArg::ProfileMinus => SafeButtonAction::ProfileMinus,
+    };
+    let delta = ButtonSlotDelta::new(slot, action);
     Ok(Action::BindSet { profile, delta })
 }
 
@@ -406,7 +426,7 @@ async fn dispatch(
                 .await
                 .map_err(|error| error.to_string())?;
             output.print(
-                format!("Updated button slot {}", delta.slot_index),
+                format!("Updated button {:?} to {:?}", delta.slot(), delta.action()),
                 &outcome,
             )
         }
@@ -703,6 +723,61 @@ fn action_name(action: &Action) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use args::BindCommand;
+
+    #[test]
+    fn build_bind_action_maps_safe_slot_and_action() {
+        let cli = args::Cli::try_parse_from([
+            "x3ctl",
+            "bind",
+            "set",
+            "--slot",
+            "left",
+            "--action",
+            "profile-cycle",
+        ])
+        .expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        let args = match command {
+            Command::Bind(BindCommand::Set(args)) => args,
+            other => panic!("expected BindSet, got {other:?}"),
+        };
+        let action = build_bind_action(&cli, args).expect("build");
+        match action {
+            Action::BindSet { delta, .. } => {
+                assert_eq!(delta.slot(), SafeButtonSlot::Left);
+                assert_eq!(delta.slot_index(), 0);
+                assert_eq!(delta.action(), SafeButtonAction::ProfileCycle);
+                assert_eq!(delta.assignment().action, 0x34);
+                assert_eq!(delta.assignment().modifier, 0);
+                assert_eq!(delta.assignment().key_code, 0);
+            }
+            other => panic!("expected BindSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_bind_action_maps_backward_slot_and_forward_action() {
+        let cli = args::Cli::try_parse_from([
+            "x3ctl", "bind", "set", "--slot", "backward", "--action", "forward",
+        ])
+        .expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        let args = match command {
+            Command::Bind(BindCommand::Set(args)) => args,
+            other => panic!("expected BindSet, got {other:?}"),
+        };
+        let action = build_bind_action(&cli, args).expect("build");
+        match action {
+            Action::BindSet { delta, .. } => {
+                assert_eq!(delta.slot(), SafeButtonSlot::Backward);
+                assert_eq!(delta.slot_index(), 7);
+                assert_eq!(delta.action(), SafeButtonAction::Forward);
+                assert_eq!(delta.assignment().action, 0x06);
+            }
+            other => panic!("expected BindSet, got {other:?}"),
+        }
+    }
 
     #[test]
     fn dpi_stage_parser_validates_domain_values() {

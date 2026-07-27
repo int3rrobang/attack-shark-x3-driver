@@ -1,6 +1,6 @@
 # Custom macros (report `0x09`)
 
-Report `0x09` stores custom macro event pages. A complete operation first binds a button through report [`0x08`](08-button-mapping.md), then sends three `0x09` pages through `CustomMacroBuilder`.
+Report `0x09` stores custom macro event pages. A complete operation first binds a button through report [`0x08`](08-button-mapping.md), then sends three `0x09` pages.
 
 ## Compatibility
 
@@ -26,7 +26,7 @@ The **wValue** differs between the first packet and the subsequent ones.
 
 ## Packet 1: Button Assignment
 
-The first packet assigns a specific button to execute the custom macro. It uses a `MacrosBuilder` instance to generate the payload.
+The first packet assigns a specific button to execute the custom macro. It uses a button mapping report to set the target button's action to the macro trigger firmware action.
 
 - **wValue**: `0x0308` (Report Type: Feature, Report ID: 0x08)
 - **Payload size**: 64 bytes (usually the first 59 bytes are relevant)
@@ -53,7 +53,7 @@ This packet contains the macro configuration, playback options, and the first se
 | 29     | Event Count        | `uint8` | Total number of macro events (2 bytes per event)                            |
 | 30-63  | Macro Events (P0)  | `uint8` | Up to 17 macro events (34 bytes)                                            |
 
-### Playback Modes (`MacroSettings`)
+### Playback Modes
 
 - **0x00**: Play N times (N is set in Offset 4).
 - **0x01**: Play until any key is pressed.
@@ -112,10 +112,8 @@ Each macro event consists of **2 bytes**:
 
 The mouse uses a specific rounding logic for event delays to map milliseconds to the 7-bit delay field. Both keyboard and mouse events follow this rule:
 
-```typescript
-function computeDelayByte(ms: number): number {
-    return 2 * Math.floor((ms + 5) / 20) + 1;
-}
+```text
+delay_byte = 2 * floor((ms + 5) / 20) + 1
 ```
 
 Common values:
@@ -155,19 +153,9 @@ When a delay exceeds 1070ms, it is decomposed into a base delay and extra delay 
 
 The checksum is a 16-bit sum of specific byte ranges from Packet 2 and Packet 3.
 
-```typescript
-function calculateChecksum(packet2: Buffer, packet3: Buffer): number {
-    let sum = 0;
-    // Sum all bytes in Packet 2 from index 8 onwards
-    for (let i = 8; i < 64; i++) {
-        sum += packet2[i];
-    }
-    // Sum all bytes in Packet 3 from index 4 onwards
-    for (let i = 4; i < 64; i++) {
-        sum += packet3[i];
-    }
-    return sum & 0xFFFF;
-}
+```text
+checksum = sum(packet2[8..64]) + sum(packet3[4..64])
+result = checksum & 0xFFFF   // stored big-endian at packet4[10..11]
 ```
 
 The result is stored in Big Endian format in **Packet 4** at indices 10 and 11.
@@ -177,7 +165,7 @@ The result is stored in Big Endian format in **Packet 4** at indices 10 and 11.
 ## Live Capture Example: FA61/X3 Wired – Forward Button → "Press A", Loop 1
 
 This is a minimal confirmed macro captured from an FA61/PID `fa61` device in `x3-wired` mode.
-- Target button: Forward (button ID `0x07`, `CUSTOM_MACRO_BUTTONS.EXTRA_BUTTON_4`)
+- Target button: Forward (button ID `0x07`, extra button 4)
 - Mode: Play N times, N = 1
 - Events: press `A` (KeyCode `0x04`), release `A` (KeyCode `0x04`)
 
@@ -194,7 +182,7 @@ This is a minimal confirmed macro captured from an FA61/PID `fa61` device in `x3
 01 04  81 04  00 00 ... (zeros to byte 63)
 ```
 
-- Offset 4 (play mode): `0x00` (THE_NUMBER_OF_TIME_TO_PLAY)
+- Offset 4 (play mode): `0x00` (play N times)
 - Offset 8 (repeat count): `0x01`
 - Offset 29 (event count): `0x02`
 - Events: `[01, 04]` press A (10 ms delay), `[81, 04]` release A (10 ms delay)

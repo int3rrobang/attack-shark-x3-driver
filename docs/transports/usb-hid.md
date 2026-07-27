@@ -27,7 +27,7 @@ The report ID is byte 0 of the payload. Wired and adapter payload lengths may di
 
 ## Runtime behavior
 
-The production TypeScript driver uses native HID feature-report writes. USB writes are effectively fire-and-forget: unlike X3 BLE, the transport provides no per-report firmware ACK. A successful host write therefore does not prove that the firmware applied or persisted the setting.
+The production Rust driver uses native HID feature-report writes via `hidapi`. USB writes are effectively fire-and-forget from the firmware perspective: unlike X3 BLE, the transport provides no per-report firmware ACK. However, the Rust driver performs immediate readback verification of the affected fields. A successful host write therefore does not prove that the firmware persisted the setting to EEPROM.
 
 Use the configured inter-packet delay for multi-report operations. Stock X3 reset captures use about 500 ms between reports; sending the reset sequence back-to-back can leave only part of the configuration applied.
 

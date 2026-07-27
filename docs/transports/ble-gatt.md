@@ -20,8 +20,8 @@ This is the canonical reference for X3-family BLE services, writes, and ACK beha
 | `Attack_SharkX3Mouse.exe` (stock config app) | USB HID report formats via strings |
 | `X3.exe` (same app, binary analysis) | Concrete packet builders at specific addresses and transport dispatcher; malformed BLE queries were rejected, while valid report `0x06` acceptance was later live-confirmed |
 | Live BLE probing (`bleak` + Python) | GATT service discovery, write/ACK behavior, packet validation |
-| Live USB probing (`node-hid`) | Profile persistence testing |
-| `attack-shark-x11-edit` driver codebase | Reference packet builders (DpiBuilder, UserPreferencesBuilder, etc.) |
+| Live USB probing | Profile persistence testing |
+| Historical `attack-shark-x11-edit` driver codebase | Reference packet builders (DpiBuilder, UserPreferencesBuilder, etc.); superseded by Rust codec for X3 |
 
 ---
 
@@ -52,12 +52,12 @@ already-paired X3 on 2026-07-23. [live-confirmed]
 The Rust `x3ctl` CLI can send validated reports `0x04`, `0x05`, `0x06`, `0x08`, and
 `0x0c` over BLE and reports FEE4 parser acceptance. BLE has no configuration
 readback, so durable state for BLE devices lacks `usb-readback` provenance.
-DPI, preferences, button, and profile writes require a complete trusted
-baseline; `state init-defaults` creates an explicit desired-state baseline
-without reading or writing hardware, and `--replace-defaults` authorizes its
-use for omitted fields. Without an authorized baseline, the command fails
-before writing. BLE has no live configuration reads; `x3ctl` may display
-clearly labeled cached desired state.
+DPI, preferences, and button delta writes require a complete baseline. On the
+first run for a new BLE device, `--replace-defaults` authorizes the manager's
+evidence-qualified captured defaults as the baseline for omitted fields. Without
+an authorized baseline, the command fails before writing. Polling-rate and profile
+writes already carry complete values. BLE configuration reads are unsupported;
+`x3ctl` does not present durable desired state as live observation.
 
 ### Standard services
 
@@ -170,8 +170,8 @@ FEE1 is a 10-byte read-only characteristic. Its semantics are **unknown**. Obser
 | Feature | USB HID | BLE GATT |
 |---------|---------|----------|
 | Write config | ✅ | ✅ |
-| ACK/error per write | ❌ fire-and-forget | ✅ `10 50 <status> <report>` |
-| Read config back | ❌ `getFeatureReport` broken | ❌ FEE1 is opaque, not config |
+| ACK/error per write | ❌ fire-and-forget (but immediate readback verification) | ✅ `10 50 <status> <report>` |
+| Read config back | ✅ via `0xa0` selector/readback (wired + FA60 receiver) | ❌ FEE1 is opaque, not config |
 | RF-mode slot name | ❌ | ✅ device name = `"M600-5.2"` or `"M600-5.4"` (not a firmware version) |
 | Battery | ❌ (wired mode silent) | ✅ read + notify on `0x2A19` |
 | Profile save feedback | ❌ | ✅ `status=0x00` on `05 fa` |
@@ -179,33 +179,20 @@ FEE1 is a 10-byte read-only characteristic. Its semantics are **unknown**. Obser
 
 ---
 
-## API shape recommendation (derived from findings)
+## API shape (Rust)
 
-```ts
-interface X3Transport {
-  kind: "usb-wired" | "usb-dongle" | "ble-gatt";
+The builder/transport separation remains valid — protocol modules produce byte arrays while only the pipe changes. The Rust crate enforces this at the type level:
 
-  open(): Promise<void>;
-  close(): Promise<void>;
+- **Protocol codecs** (`DpiReport`, `PreferencesReport`, `ButtonsReport`, `ProfileControlReport`, `PollingRateReport`) encode and validate X3 packets with model-correct checksums.
+- **`MouseHandle`** (USB via `hidapi`) owns a single HID worker thread; every operation enters the queue as one command with fresh readback verification.
+- **`BleHandle`** (WinRT BLE) keeps the FEE3/FEE4 subscription alive for its lifetime; serialized writes reuse that subscription.
+- **`attack-shark-x3-manager`** orchestrates state, transport selection, and the read-modify-write loop; `x3ctl` is a thin CLI frontend.
 
-  /** Write a packet. Report ID is byte 0. Same bytes for all transports. */
-  writePacket(packet: Uint8Array): Promise<WriteResult>;
-}
+The transport layer accepts a `&[u8]` payload; report ID is byte 0. Same bytes for all transports. X3 requires 16-bit checksums for `0x05`/`0x08`; the Rust codec emits these correctly.
 
-interface WriteResult {
-  /** Did the transport layer accept the write? */
-  accepted: boolean;
+**USB path** (stable, product-facing): native HID via `hidapi` through the Rust `MouseHandle` worker, fire-and-forget from the firmware perspective, with immediate readback verification.
 
-  /** BLE only: firmware ACK status (0x00 = ok, 0x01 = rejected) */
-  ackStatus?: number;
-}
-```
-
-Key insight: the builder/transport separation remains valid — builders produce byte arrays while only the pipe changes. However, builders must emit the correct model dialect: X3 requires 16-bit checksums for 0x05/0x08 (the existing builders need model-specific checksum fixes).
-
-**USB path** (stable, product-facing): `node-hid`, fire-and-forget, no feedback.
-
-**BLE path** (experimental, dev/diagnostics): `bleak`/Web Bluetooth, gives ACK feedback per write. Already proven with standalone `ble-probe.py` harness.
+**BLE path** (experimental, dev/diagnostics): WinRT BLE on Windows through the Rust `BleHandle`, gives FEE4 ACK feedback per write.
 
 ---
 
@@ -232,31 +219,31 @@ Key insight: the builder/transport separation remains valid — builders produce
 # List already-connected BLE configuration devices
 x3ctl --transport ble devices
 
-# Seed explicit hardware defaults as a BLE baseline
-x3ctl --transport ble state init-defaults
+# Write DPI with explicit default fallback (first run, no readback available)
+x3ctl --transport ble --replace-defaults dpi set --stages 800,1600 --active-stage 2
 
-# Write config with explicit default fallback (no readback available)
-x3ctl --transport ble --replace-defaults dpi --active 2
-x3ctl --transport ble --replace-defaults prefs --debounce 8
-x3ctl --transport ble --replace-defaults bind forward profile-cycle
+# Write preferences with explicit default fallback
+x3ctl --transport ble --replace-defaults prefs set --debounce 8
+
+# Bind a button with explicit default fallback
+x3ctl --transport ble --replace-defaults bind set --slot forward --action profile-cycle
 
 # Commands that do not require --replace-defaults (no omitted fields)
-x3ctl --transport ble rate 500
-x3ctl --transport ble profile use 2
+x3ctl --transport ble rate set 500
+x3ctl --transport ble profile set 2
 
 # Dry-run: validate without touching hardware
-x3ctl --transport ble --dry-run dpi 800,1600,2400 --active 2
+x3ctl --transport ble --dry-run dpi set --stages 800,1600,2400 --active-stage 2
 ```
 
 Every FEE3 write is acknowledged through FEE4 with `10 50 <status> <report_id>`.
 Status `0x00` proves the parser accepted the packet; it does not prove the change
-took effect or persisted to EEPROM.  The broker serialises requests and maintains
-the FEE4 subscription across CLI calls.  Use `--direct` to bypass the broker and
-talk to the BLE device in-process.
+took effect or persisted to EEPROM. The manager serializes requests and maintains
+the FEE4 subscription across operations within one `BleHandle` session.
 
 ## Tooling
 
 - `ble-probe.py` — standalone BLE diagnostic harness (`uv run ble-probe.py`)
-- `attack-shark-x11-edit` — driver with protocol builders for USB HID
 - `X3.exe` binary analysis — reverse-engineered packet builders at known addresses
-- Live probes tested via `bleak` (Python) and `node-hid` (Node.js)
+- Historical `attack-shark-x11-edit` — reference packet builders (DpiBuilder, UserPreferencesBuilder, etc.); the Rust codec has superseded this for X3 work
+- Live probes tested via `bleak` (Python) and the native Rust transport

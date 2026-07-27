@@ -9,7 +9,7 @@ This page records the stable transport conclusions for browser-based configurati
 | Web Bluetooth | Yes, for supported X3 BLE reports | Session-based, one-shot configurator |
 | WebHID | No | Can enumerate/open, but tested collections expose no usable configuration feature reports |
 | WebUSB | No | HID interfaces remain claimed by the operating system |
-| Native `node-hid` | Yes | Production wired path; suitable for Electron main process or a native sidecar |
+| Native HID (Rust/hidapi) | Yes | Production wired path via native Rust driver |
 | Native OS BLE | Expected to be viable | Experimental; persistent bonded-device access remains untested here |
 
 ## Web Bluetooth constraints

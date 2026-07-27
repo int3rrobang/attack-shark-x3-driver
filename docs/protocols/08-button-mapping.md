@@ -1,6 +1,6 @@
 # Button mapping (report `0x08`)
 
-Report `0x08` writes the complete button-assignment table. The driver implements it in `MacrosBuilder`; despite that historical class name, custom macro event pages use the separate [`0x09`](09-custom-macros.md) report.
+Report `0x08` writes the complete button-assignment table. The Rust codec implements it as `ButtonsReport`; custom macro event pages use the separate [`0x09`](09-custom-macros.md) report.
 
 ## Compatibility
 
@@ -8,7 +8,7 @@ Report `0x08` writes the complete button-assignment table. The driver implements
 |:--------|:----------|:-------|:---------|
 | X11 wired / adapter | USB HID | Supported | implementation and existing samples |
 | X3/M600 via FA60 receiver | USB HID | 59-byte X3 full report and `0xa0` readback | binary report + implementation |
-| X3/FA61 wired | USB HID | Normal buttons live-confirmed; native Rust codec and selected-slot CLI are available; legacy TypeScript builder remains on the X11 checksum | live-confirmed + capture-confirmed |
+| X3/FA61 wired | USB HID | Normal buttons live-confirmed; native Rust codec and selected-slot CLI are available | live-confirmed + capture-confirmed |
 | X3/M600 BLE | BLE FEE3 | 16-bit checksum acceptance confirmed | live-confirmed |
 
 ## HID framing and payload
@@ -25,11 +25,10 @@ Writes use bytes 0–1 `08 3b`; FA60 prepared readbacks use `08 3d` while remain
 <firmware action> <modifier> <key code or action value>
 ```
 
-A write replaces the full table. The historical TypeScript builder starts from
-model defaults and applies requested overrides; unspecified buttons therefore do
-not preserve the current live device state. The native Rust FA61 CLI instead
-reads the complete target table, changes one explicitly selected safe button
-slot, and writes the resulting complete table back. It does not expose arbitrary
+A write replaces the full table. The native Rust FA61 CLI reads the complete
+target table, changes one explicitly selected safe button slot, and writes the
+resulting complete table back. This bounded-slot delta preserves all existing
+slots while updating only the requested one. The CLI does not expose arbitrary
 raw slots or scroll remaps.
 
 An armed X3/M600 read also carries its one-based target at selector byte 4. Reading a
@@ -44,21 +43,25 @@ button table to its pre-write backup. The probe did not modify any button slot.
 
 ## Logical button slots
 
-The slot offsets for common controls are shared between X11 and X3
-(capture-confirmed 2026-07-24 for X3/FA60 receiver):
+The slot indices for common controls confirmed on X3/FA61 wired
+(capture-confirmed 2026-07-24 for X3/FA60 receiver; DPI at index 3
+live-confirmed):
 
-| Button | Offset |
-|:-------|:-------|
-| Left | 3 |
-| Right | 6 |
-| Middle | 9 |
-| DPI | 18 |
-| Forward | 21 |
-| Backward | 24 |
-| Scroll up | 51 |
-| Scroll down | 54 |
+| Button | Slot index | Byte offset |
+|:-------|:-----------|:------------|
+| Left | 0 | 3 |
+| Right | 1 | 6 |
+| Middle | 2 | 9 |
+| DPI | 3 | 12 |
+| Forward | 6 | 21 |
+| Backward | 7 | 24 |
 
-The captured X3 default packet reverses the logical scroll assignments: scroll down is at offset 51 and scroll up at offset 54. The driver swaps these offsets in `x3-wired` mode. Direct scroll remaps remain unsafe because actions may repeat until unplug or reboot. DPI-button remaps appear ignored by stock FA61 firmware.
+Scroll-up (index 4, offset 15), scroll-down (index 5, offset 18), and
+DPI-button (index 3, offset 12) slots exist in the 18-slot table but are
+intentionally not exposed by the CLI. Direct scroll remaps remain unsafe
+because actions may repeat until unplug or reboot. DPI-button remaps appear
+ignored by stock FA61 firmware. The native Rust CLI exposes only left, right,
+middle, forward, and backward slots.
 
 ## Checksums
 

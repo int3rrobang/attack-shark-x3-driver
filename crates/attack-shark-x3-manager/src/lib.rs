@@ -28,7 +28,7 @@ pub use manager::DeviceManager;
 pub use offline_debug::*;
 pub use operation::*;
 #[cfg(any(feature = "usb", feature = "ble"))]
-pub use resources::buttons::ButtonSlotDelta;
+pub use resources::buttons::{ButtonSlotDelta, SafeButtonAction, SafeButtonSlot};
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use resources::dpi::{DpiDelta, SensorOptionsDelta};
 #[cfg(any(feature = "usb", feature = "ble"))]
