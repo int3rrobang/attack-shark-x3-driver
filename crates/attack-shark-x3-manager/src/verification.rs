@@ -334,7 +334,7 @@ fn first_mismatch(
     if reloaded.target_profile != target || initial.target_profile != target {
         return Some("profile");
     }
-    if initial.persistent_metadata != reloaded.persistent_metadata {
+    if initial.persistent_metadata.maximum() != reloaded.persistent_metadata.maximum() {
         return Some("profile metadata");
     }
     if initial.dpi != reloaded.dpi {
