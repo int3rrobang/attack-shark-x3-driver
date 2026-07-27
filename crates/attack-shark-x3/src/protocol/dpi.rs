@@ -71,6 +71,12 @@ impl DpiState {
         })
     }
 
+    #[must_use]
+    pub fn with_sensor(mut self, sensor: SensorOptions) -> Self {
+        self.sensor = sensor;
+        self
+    }
+
     /// Reproduces the profile-1 DPI tail observed after the stock app applied
     /// a new empty profile.
     ///

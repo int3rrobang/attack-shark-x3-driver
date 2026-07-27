@@ -96,6 +96,24 @@ pub enum BleError {
     Notification(String),
 }
 
+impl BleError {
+    /// Returns true when the error indicates the connection is unrecoverable
+    /// and the session should be permanently closed.
+    #[must_use]
+    pub fn is_connection_lost(&self) -> bool {
+        matches!(
+            self,
+            Self::Disconnected
+                | Self::AdapterUnavailable
+                | Self::Backend(_)
+                | Self::DeviceOpen { .. }
+                | Self::MissingService { .. }
+                | Self::MissingCharacteristic { .. }
+                | Self::Notification(_)
+        )
+    }
+}
+
 /// Bounded policy for BLE application-report transactions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlePolicy {
@@ -739,8 +757,10 @@ impl BleSession {
                 Ok(receipt)
             }
             Err(error) => {
-                self.closed = true;
-                let _ = self.close_notifications().await;
+                if error.is_connection_lost() {
+                    self.closed = true;
+                    let _ = self.close_notifications().await;
+                }
                 Err(error)
             }
         }

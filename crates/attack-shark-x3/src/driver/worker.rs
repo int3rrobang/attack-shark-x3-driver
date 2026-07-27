@@ -481,7 +481,10 @@ pub(crate) fn spawn_input_worker(
         })
         .map_err(|error| DriverError::WorkerStart(error.to_string()))?;
     match ready_receiver.recv() {
-        Ok(Ok(()) | Err(_)) => {}
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            eprintln!("attack-shark-x3: input worker unavailable: {error}");
+        }
         Err(_) => return Err(DriverError::WorkerUnavailable),
     }
     Ok(())
