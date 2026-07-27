@@ -20,7 +20,9 @@ pub use driver::ble::{
 pub use error::ProtocolError;
 pub use model::{DpiValue, ProfileId, StageIndex, TransportKind};
 pub use protocol::buttons::{ButtonAssignment, ButtonsReport, ButtonsState, DecodedButtonsReport};
-pub use protocol::dpi::{DecodedDpiReport, DpiFraming, DpiReport, DpiState, SensorOptions};
+pub use protocol::dpi::{
+    DecodedDpiReport, DpiFraming, DpiReport, DpiState, LiftOffDistance, SensorOptions,
+};
 pub use protocol::input::{
     BATTERY_REPORT_LENGTH, BATTERY_REPORT_PREFIX, BATTERY_REPORT_PREFIX_X3, BatteryEvent,
     DPI_BUTTON_REPORT_LENGTH, DPI_BUTTON_REPORT_PREFIX, DPI_BUTTON_REPORT_TRAILING_BYTE,

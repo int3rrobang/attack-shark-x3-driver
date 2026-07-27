@@ -1,8 +1,11 @@
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, time::Duration};
 
 use thiserror::Error;
 
-use crate::{device::DeviceId, state::SCHEMA_VERSION};
+use crate::{
+    device::{DeviceId, TransportSelection},
+    state::SCHEMA_VERSION,
+};
 use attack_shark_x3::{ProfileId, TransportKind};
 
 /// Errors returned while loading, validating, or storing durable manager state.
@@ -105,6 +108,31 @@ pub enum ManagerError {
     /// The requested exact device is not currently available.
     #[error("device not found: {0}")]
     DeviceNotFound(DeviceId),
+    /// More than one connected device matched a transport selection.
+    #[error("multiple connected devices match transport selection {selection:?}: {candidates:?}")]
+    AmbiguousDevice {
+        selection: TransportSelection,
+        candidates: Vec<DeviceId>,
+    },
+
+    /// No connected device matched a transport selection.
+    #[error("no connected device matches transport selection {selection:?}")]
+    NoDevice { selection: TransportSelection },
+
+    /// An explicitly requested device was discovered but is disconnected.
+    #[error("device is disconnected: {0}")]
+    DeviceDisconnected(DeviceId),
+    /// The exact USB device did not disappear within the interactive wait window.
+    #[error(
+        "timed out waiting for USB device {device} to disappear during power-cycle verification after {timeout:?}"
+    )]
+    PowerCycleDisappearanceTimeout { device: DeviceId, timeout: Duration },
+
+    /// The exact USB device did not return within the interactive wait window.
+    #[error(
+        "timed out waiting for USB device {device} to reappear during power-cycle verification after {timeout:?}"
+    )]
+    PowerCycleReappearanceTimeout { device: DeviceId, timeout: Duration },
 
     /// Profile-reload verification has no distinct enabled profile to use.
     #[error("no alternate profile available for target {target} (maximum {maximum})")]

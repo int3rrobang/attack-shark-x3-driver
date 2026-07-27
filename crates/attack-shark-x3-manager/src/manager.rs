@@ -45,6 +45,79 @@ impl DeviceManager {
         self.factory.list(selection).await
     }
 
+    /// Returns the exact device currently selected in durable manager state.
+    pub fn selected_device(&self) -> Result<Option<DeviceId>, ManagerError> {
+        Ok(self.store.load()?.selected_device)
+    }
+
+    /// Selects an already-registered exact device and persists that choice.
+    pub fn select_device(&self, device: &DeviceId) -> Result<(), ManagerError> {
+        let mut transaction = self.store.transaction()?;
+        if !transaction.state().devices.contains_key(device) {
+            return Err(ManagerError::DeviceNotFound(device.clone()));
+        }
+        transaction.state_mut().selected_device = Some(device.clone());
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Discovers exact devices, records their identities, and resolves one
+    /// connected device without guessing.
+    ///
+    /// An explicit ID always takes precedence. Without one, a connected
+    /// persisted selection wins; otherwise exactly one connected candidate is
+    /// selected and persisted. Zero and multiple connected candidates are
+    /// reported as distinct manager errors.
+    pub async fn resolve_device(
+        &self,
+        explicit: Option<&DeviceId>,
+        selection: TransportSelection,
+    ) -> Result<DeviceId, ManagerError> {
+        let discovered = self.factory.list(selection).await?;
+        self.register_discovered(&discovered)?;
+
+        if let Some(explicit) = explicit {
+            return match discovered
+                .iter()
+                .find(|device| device.identity.id == *explicit)
+            {
+                None => Err(ManagerError::DeviceNotFound(explicit.clone())),
+                Some(device) if device.connected => Ok(explicit.clone()),
+                Some(_) => Err(ManagerError::DeviceDisconnected(explicit.clone())),
+            };
+        }
+
+        let state = self.store.load()?;
+        if let Some(selected) = state.selected_device.as_ref() {
+            if discovered
+                .iter()
+                .any(|device| device.connected && device.identity.id == *selected)
+            {
+                return Ok(selected.clone());
+            }
+        }
+
+        let mut candidates: Vec<DeviceId> = discovered
+            .iter()
+            .filter(|device| device.connected)
+            .map(|device| device.identity.id.clone())
+            .collect();
+        candidates.sort();
+        candidates.dedup();
+
+        match candidates.as_slice() {
+            [] => Err(ManagerError::NoDevice { selection }),
+            [candidate] => {
+                self.select_device(candidate)?;
+                Ok(candidate.clone())
+            }
+            _ => Err(ManagerError::AmbiguousDevice {
+                selection,
+                candidates,
+            }),
+        }
+    }
+
     pub fn register_device(&self, identity: DeviceIdentity) -> Result<(), ManagerError> {
         let mut txn = self.store.transaction()?;
         let state = txn.state_mut();
@@ -56,6 +129,23 @@ impl DeviceManager {
             .entry(identity.id.clone())
             .or_insert_with(|| DeviceState::new(identity));
         txn.commit()?;
+        Ok(())
+    }
+
+    fn register_discovered(&self, discovered: &[DiscoveredDevice]) -> Result<(), ManagerError> {
+        if discovered.is_empty() {
+            return Ok(());
+        }
+
+        let mut transaction = self.store.transaction()?;
+        for device in discovered {
+            transaction
+                .state_mut()
+                .devices
+                .entry(device.identity.id.clone())
+                .or_insert_with(|| DeviceState::new(device.identity.clone()));
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -162,13 +252,18 @@ impl DeviceManager {
         }
     }
 
-    pub(crate) fn identity(&self, device: &DeviceId) -> Result<DeviceIdentity, ManagerError> {
+    /// Returns the stored identity for an exact device ID.
+    pub fn device_identity(&self, device: &DeviceId) -> Result<DeviceIdentity, ManagerError> {
         let state = self.store.load()?;
         state
             .devices
             .get(device)
             .map(|device_state| device_state.identity.clone())
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))
+    }
+
+    pub(crate) fn identity(&self, device: &DeviceId) -> Result<DeviceIdentity, ManagerError> {
+        self.device_identity(device)
     }
 
     pub(crate) async fn open_session(
@@ -241,7 +336,8 @@ fn is_usb_transport(transport: TransportKind) -> bool {
 mod tests {
     use super::DeviceManager;
     use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession};
-    use crate::device::DeviceIdentity;
+    use crate::device::{DeviceIdentity, TransportSelection};
+    use crate::error::ManagerError;
     use crate::state::{DesiredSource, DesiredState, StatePaths, StateStore, Verification};
     use attack_shark_x3::{PollingRate, ProfileMetadata, TransportKind};
     use std::sync::Arc;
@@ -265,6 +361,144 @@ mod tests {
         .expect("valid test identity")
     }
 
+    fn usb_identity_named(serial: &str) -> DeviceIdentity {
+        DeviceIdentity::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            Some(serial),
+            &format!(r"\\?\hid#{serial}"),
+            Some(serial),
+        )
+        .expect("valid named test identity")
+    }
+
+    #[tokio::test]
+    async fn resolve_device_honors_explicit_id_and_registers_discovery() {
+        let first = usb_identity_named("EXPLICIT-A");
+        let second = usb_identity_named("EXPLICIT-B");
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_identity(first.clone(), true, ScriptedFakeSession::usb())
+                .with_identity(second.clone(), true, ScriptedFakeSession::usb()),
+        );
+        let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory);
+
+        let selected = manager
+            .resolve_device(Some(&second.id), TransportSelection::Auto)
+            .await
+            .unwrap();
+
+        assert_eq!(selected, second.id);
+        assert_eq!(manager.selected_device().unwrap(), None);
+        let state = manager.store().load().unwrap();
+        assert!(state.devices.contains_key(&first.id));
+        assert_eq!(manager.device_identity(&second.id).unwrap(), second);
+        assert!(state.devices.contains_key(&second.id));
+    }
+
+    #[tokio::test]
+    async fn resolve_device_honors_connected_stored_selection() {
+        let first = usb_identity_named("STORED-A");
+        let second = usb_identity_named("STORED-B");
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_identity(first.clone(), true, ScriptedFakeSession::usb())
+                .with_identity(second.clone(), true, ScriptedFakeSession::usb()),
+        );
+        let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory);
+        manager.register_device(first).unwrap();
+        manager.register_device(second.clone()).unwrap();
+        manager.select_device(&second.id).unwrap();
+
+        assert_eq!(
+            manager
+                .resolve_device(None, TransportSelection::Auto)
+                .await
+                .unwrap(),
+            second.id
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_device_selects_the_sole_connected_candidate() {
+        let connected = usb_identity_named("SOLE-CONNECTED");
+        let disconnected = usb_identity_named("SOLE-DISCONNECTED");
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_identity(connected.clone(), true, ScriptedFakeSession::usb())
+                .with_identity(disconnected, false, ScriptedFakeSession::usb()),
+        );
+        let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory);
+
+        assert_eq!(
+            manager
+                .resolve_device(None, TransportSelection::Auto)
+                .await
+                .unwrap(),
+            connected.id
+        );
+        assert_eq!(manager.selected_device().unwrap(), Some(connected.id));
+    }
+
+    #[tokio::test]
+    async fn resolve_device_reports_ambiguity_without_guessing() {
+        let first = usb_identity_named("AMBIGUOUS-A");
+        let second = usb_identity_named("AMBIGUOUS-B");
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_identity(first.clone(), true, ScriptedFakeSession::usb())
+                .with_identity(second.clone(), true, ScriptedFakeSession::usb()),
+        );
+        let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory);
+
+        let error = manager
+            .resolve_device(None, TransportSelection::Auto)
+            .await
+            .expect_err("multiple connected candidates must be explicit");
+        match error {
+            ManagerError::AmbiguousDevice {
+                selection,
+                candidates,
+            } => {
+                assert_eq!(selection, TransportSelection::Auto);
+                assert_eq!(candidates, vec![first.id.clone(), second.id.clone()]);
+            }
+            other => panic!("expected AmbiguousDevice, got {other:?}"),
+        }
+        assert_eq!(manager.selected_device().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_device_reports_no_connected_device() {
+        let disconnected = usb_identity_named("NONE-DISCONNECTED");
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            disconnected.clone(),
+            false,
+            ScriptedFakeSession::usb(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory);
+
+        let error = manager
+            .resolve_device(None, TransportSelection::Exact(TransportKind::Wired))
+            .await
+            .expect_err("no connected candidates must be reported");
+        match error {
+            ManagerError::NoDevice { selection } => {
+                assert_eq!(selection, TransportSelection::Exact(TransportKind::Wired));
+            }
+            other => panic!("expected NoDevice, got {other:?}"),
+        }
+        assert!(
+            manager
+                .store()
+                .load()
+                .unwrap()
+                .devices
+                .contains_key(&disconnected.id)
+        );
+        assert_eq!(manager.selected_device().unwrap(), None);
+    }
     #[tokio::test]
     async fn register_device_inserts_and_selects_first() {
         let dir = tempfile::tempdir().unwrap();

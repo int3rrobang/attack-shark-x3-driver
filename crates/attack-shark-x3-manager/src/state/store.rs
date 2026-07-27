@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
@@ -81,27 +82,57 @@ fn non_empty_var(name: &str) -> Option<String> {
         _ => None,
     }
 }
+/// Access to durable state.
+///
+/// Disk stores use the resolved state and lock paths. Memory stores keep the
+/// complete state behind an in-process mutex; cloning a memory store therefore
+/// shares both its state and transaction serialization.
+#[derive(Debug)]
+enum StoreBackend {
+    Disk,
+    Memory(Mutex<StateFile>),
+}
 
-/// Access to the durable state file guarded by a cross-process lock.
 #[derive(Debug, Clone)]
 pub struct StateStore {
     paths: StatePaths,
+    backend: Arc<StoreBackend>,
 }
 
 impl StateStore {
-    /// Create a store for explicitly resolved paths.
+    /// Create a disk-backed store for explicitly resolved paths.
     pub fn open(paths: StatePaths) -> Self {
-        Self { paths }
+        Self {
+            paths,
+            backend: Arc::new(StoreBackend::Disk),
+        }
     }
 
     /// Create a store using the default platform-resolved paths.
     pub fn with_default_paths() -> Result<Self, StateError> {
-        Ok(Self {
-            paths: StatePaths::resolve()?,
-        })
+        let paths = StatePaths::resolve()?;
+        Ok(Self::open(paths))
+    }
+
+    /// Create a shared in-memory store.
+    ///
+    /// This constructor does not resolve a path, read a file, create a lock,
+    /// or perform any other filesystem operation. Clones share the same
+    /// state and serialize transactions through one in-process mutex.
+    pub fn memory() -> Self {
+        Self {
+            paths: StatePaths {
+                state_file: PathBuf::from("<memory>/state.json"),
+                lock_file: PathBuf::from("<memory>/state.lock"),
+            },
+            backend: Arc::new(StoreBackend::Memory(Mutex::new(StateFile::default()))),
+        }
     }
 
     /// The resolved paths this store reads and writes.
+    ///
+    /// Memory stores expose synthetic paths for compatibility with the disk
+    /// store API; they are never passed to filesystem APIs.
     pub fn paths(&self) -> &StatePaths {
         &self.paths
     }
@@ -111,24 +142,52 @@ impl StateStore {
     /// A missing file yields `StateFile::default()`. A present file whose
     /// schema is not `SCHEMA_VERSION` is rejected.
     pub fn load(&self) -> Result<StateFile, StateError> {
-        load_state(&self.paths.state_file)
+        match self.backend.as_ref() {
+            StoreBackend::Disk => load_state(&self.paths.state_file),
+            StoreBackend::Memory(shared) => {
+                let state = lock_memory(shared);
+                state.validate()?;
+                Ok(state.clone())
+            }
+        }
     }
 
-    /// Acquire the cross-process lock, reload the latest state, and return a
-    /// transaction guard. Dropping the guard without committing leaves the
-    /// on-disk state unchanged; committing atomically replaces `state.json`.
+    /// Acquire the cross-process or in-process lock, reload the latest state,
+    /// and return a transaction guard. Dropping the guard without committing
+    /// leaves the state unchanged; committing atomically replaces the disk
+    /// file or the shared in-memory snapshot.
     pub fn transaction(&self) -> Result<StateTransaction<'_>, StateError> {
-        let lock = LockGuard::acquire(&self.paths.lock_file)?;
-        let state = self.load()?;
-        Ok(StateTransaction {
-            store: self,
-            _lock: lock,
-            state,
-        })
+        match self.backend.as_ref() {
+            StoreBackend::Disk => {
+                let lock = LockGuard::acquire(&self.paths.lock_file)?;
+                let state = self.load()?;
+                Ok(StateTransaction {
+                    store: self,
+                    _lock: TransactionLock::Disk(lock),
+                    state,
+                })
+            }
+            StoreBackend::Memory(shared) => {
+                let lock = lock_memory(shared);
+                let state = lock.clone();
+                Ok(StateTransaction {
+                    store: self,
+                    _lock: TransactionLock::Memory(lock),
+                    state,
+                })
+            }
+        }
     }
 
     fn write_atomic(&self, state: &StateFile) -> Result<(), StateError> {
         write_atomic(&self.paths.state_file, state)
+    }
+}
+
+fn lock_memory<'a>(state: &'a Mutex<StateFile>) -> MutexGuard<'a, StateFile> {
+    match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
     }
 }
 
@@ -197,14 +256,21 @@ impl Drop for LockGuard {
     }
 }
 
+/// A held disk or in-process transaction lock.
+#[derive(Debug)]
+enum TransactionLock<'a> {
+    Disk(LockGuard),
+    Memory(MutexGuard<'a, StateFile>),
+}
+
 /// A serialized state mutation. Holds the lock and the latest `StateFile`.
 ///
-/// Commit consumes the guard and performs exactly one atomic write. Dropping
-/// without committing performs no write.
+/// Commit consumes the guard and performs exactly one atomic write or shared
+/// in-memory replacement. Dropping without committing performs no write.
 #[derive(Debug)]
 pub struct StateTransaction<'a> {
     store: &'a StateStore,
-    _lock: LockGuard,
+    _lock: TransactionLock<'a>,
     state: StateFile,
 }
 
@@ -221,7 +287,19 @@ impl<'a> StateTransaction<'a> {
 
     /// Atomically persist the current state and release the lock.
     pub fn commit(self) -> Result<(), StateError> {
-        self.store.write_atomic(&self.state)
+        let Self {
+            store,
+            _lock: lock,
+            state,
+        } = self;
+        match lock {
+            TransactionLock::Disk(_lock) => store.write_atomic(&state),
+            TransactionLock::Memory(mut shared) => {
+                state.validate()?;
+                *shared = state;
+                Ok(())
+            }
+        }
     }
 }
 
@@ -399,6 +477,38 @@ mod tests {
         txn.commit().unwrap();
 
         assert_eq!(store.load().unwrap(), updated);
+    }
+    #[test]
+    fn memory_store_clones_share_state_but_separate_stores_do_not() {
+        let store = StateStore::memory();
+        let clone = store.clone();
+        let separate = StateStore::memory();
+        let identity =
+            DeviceIdentity::ble("memory-test-device", None).expect("valid test identity");
+        let id = identity.id.clone();
+
+        let mut transaction = store.transaction().unwrap();
+        transaction
+            .state_mut()
+            .devices
+            .insert(id.clone(), DeviceState::new(identity));
+        transaction.state_mut().selected_device = Some(id);
+        transaction.commit().unwrap();
+
+        assert_eq!(clone.load().unwrap(), store.load().unwrap());
+        assert_eq!(separate.load().unwrap(), StateFile::default());
+        assert!(!store.paths().state_file.exists());
+        assert!(!store.paths().lock_file.exists());
+    }
+
+    #[test]
+    fn dropped_memory_transaction_does_not_commit() {
+        let store = StateStore::memory();
+        let mut transaction = store.transaction().unwrap();
+        transaction.state_mut().schema_version = 1;
+        drop(transaction);
+
+        assert_eq!(store.load().unwrap(), StateFile::default());
     }
 
     #[test]

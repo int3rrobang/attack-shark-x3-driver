@@ -125,6 +125,8 @@ pub enum DriverError {
 
 /// A complete profile observation from one uninterrupted worker command.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ProfileSnapshot {
     pub persistent_metadata: ProfileMetadata,
     pub target_profile: ProfileId,

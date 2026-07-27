@@ -1,7 +1,7 @@
 use std::time::Duration;
 #[cfg(test)]
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -493,6 +493,8 @@ pub(crate) struct ScriptedFakeSession {
     write_mode: FakeWriteMode,
     metadata: Arc<Mutex<Option<ProfileMetadata>>>,
     profiles: Arc<Mutex<BTreeMap<ProfileId, ProfileSnapshot>>>,
+    profile_sequences: Arc<Mutex<BTreeMap<ProfileId, VecDeque<ProfileSnapshot>>>>,
+    last_profiles: Arc<Mutex<BTreeMap<ProfileId, ProfileSnapshot>>>,
     polling_rate: Arc<Mutex<Option<PollingRate>>>,
     battery: Arc<Mutex<Option<u8>>>,
     writes: Arc<Mutex<Vec<ScriptedWrite>>>,
@@ -515,6 +517,8 @@ impl ScriptedFakeSession {
             write_mode,
             metadata: Arc::new(Mutex::new(None)),
             profiles: Arc::new(Mutex::new(BTreeMap::new())),
+            profile_sequences: Arc::new(Mutex::new(BTreeMap::new())),
+            last_profiles: Arc::new(Mutex::new(BTreeMap::new())),
             polling_rate: Arc::new(Mutex::new(None)),
             battery: Arc::new(Mutex::new(None)),
             writes: Arc::new(Mutex::new(Vec::new())),
@@ -538,6 +542,18 @@ impl ScriptedFakeSession {
 
     pub(crate) fn with_profile(self, snapshot: ProfileSnapshot) -> Self {
         lock_scripted(&self.profiles).insert(snapshot.target_profile, snapshot);
+        self
+    }
+    pub(crate) fn with_profile_sequence(self, sequence: Vec<ProfileSnapshot>) -> Self {
+        {
+            let mut queues = lock_scripted(&self.profile_sequences);
+            let mut last_profiles = lock_scripted(&self.last_profiles);
+            for snapshot in sequence {
+                let profile = snapshot.target_profile;
+                queues.entry(profile).or_default().push_back(snapshot);
+                last_profiles.remove(&profile);
+            }
+        }
         self
     }
 
@@ -594,12 +610,22 @@ impl DeviceSession for ScriptedFakeSession {
         if self.is_ble() {
             return self.unsupported("read_profile");
         }
-        let mut snapshot = lock_scripted(&self.profiles).get(&profile).cloned().ok_or(
-            ManagerError::MissingBaseline {
-                resource: "profile",
-                profile: Some(profile),
-            },
-        )?;
+        let queued = lock_scripted(&self.profile_sequences)
+            .get_mut(&profile)
+            .and_then(VecDeque::pop_front);
+        let mut snapshot = if let Some(snapshot) = queued {
+            lock_scripted(&self.last_profiles).insert(profile, snapshot.clone());
+            snapshot
+        } else if let Some(snapshot) = lock_scripted(&self.last_profiles).get(&profile).cloned() {
+            snapshot
+        } else {
+            lock_scripted(&self.profiles).get(&profile).cloned().ok_or(
+                ManagerError::MissingBaseline {
+                    resource: "profile",
+                    profile: Some(profile),
+                },
+            )?
+        };
         if let Some(metadata) = lock_scripted(&self.metadata).as_ref().copied() {
             snapshot.persistent_metadata = metadata;
         }
@@ -747,12 +773,25 @@ impl DeviceSession for ScriptedFakeSession {
 pub(crate) struct ScriptedFakeFactory {
     devices: Arc<Mutex<BTreeMap<crate::device::DeviceId, DiscoveredDevice>>>,
     sessions: Arc<Mutex<BTreeMap<crate::device::DeviceId, ScriptedFakeSession>>>,
+    discovery_queue: Arc<Mutex<VecDeque<Vec<DiscoveredDevice>>>>,
+    last_discovery: Arc<Mutex<Option<Vec<DiscoveredDevice>>>>,
+    list_calls: Arc<Mutex<Vec<TransportSelection>>>,
 }
 
 #[cfg(test)]
 impl ScriptedFakeFactory {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn with_discovery_sequence(self, sequence: Vec<Vec<DiscoveredDevice>>) -> Self {
+        *lock_scripted(&self.discovery_queue) = VecDeque::from(sequence);
+        *lock_scripted(&self.last_discovery) = None;
+        self
+    }
+
+    pub(crate) fn list_calls(&self) -> Vec<TransportSelection> {
+        lock_scripted(&self.list_calls).clone()
     }
 
     pub(crate) fn with_device(
@@ -793,14 +832,21 @@ impl SessionFactory for ScriptedFakeFactory {
         &self,
         selection: TransportSelection,
     ) -> Result<Vec<DiscoveredDevice>, ManagerError> {
-        let devices = lock_scripted(&self.devices);
-        Ok(devices
-            .values()
+        lock_scripted(&self.list_calls).push(selection);
+        let candidates = if let Some(next) = lock_scripted(&self.discovery_queue).pop_front() {
+            *lock_scripted(&self.last_discovery) = Some(next.clone());
+            next
+        } else if let Some(last) = lock_scripted(&self.last_discovery).clone() {
+            last
+        } else {
+            lock_scripted(&self.devices).values().cloned().collect()
+        };
+        Ok(candidates
+            .into_iter()
             .filter(|device| match selection {
                 TransportSelection::Auto => true,
                 TransportSelection::Exact(transport) => device.identity.transport == transport,
             })
-            .cloned()
             .collect())
     }
 
