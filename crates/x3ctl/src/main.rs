@@ -43,6 +43,7 @@ enum Action {
     },
     ProfileSet {
         profile: ProfileId,
+        maximum: Option<ProfileId>,
     },
     DpiGet {
         profile: ProfileId,
@@ -147,8 +148,9 @@ fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
             ProfileCommand::Get => Ok(Action::ProfileGet {
                 profile: parse_profile(cli.profile)?,
             }),
-            ProfileCommand::Set(ProfileSetArgs { profile }) => Ok(Action::ProfileSet {
+            ProfileCommand::Set(ProfileSetArgs { profile, maximum }) => Ok(Action::ProfileSet {
                 profile: parse_profile(profile.unwrap_or(cli.profile))?,
+                maximum: maximum.map(parse_profile).transpose()?,
             }),
         },
         Command::Dpi(command) => match command {
@@ -347,12 +349,19 @@ async fn dispatch(
                 .map_err(|error| error.to_string())?;
             output.print(format!("Profile {profile}"), &snapshot)
         }
-        Action::ProfileSet { profile } => {
+        Action::ProfileSet { profile, maximum } => {
             let device = resolve_hardware(manager, cli, selection).await?;
-            let metadata = manager
-                .activate_profile(&device, profile)
-                .await
-                .map_err(|error| error.to_string())?;
+            let metadata = if let Some(maximum) = maximum {
+                manager
+                    .set_profile_metadata(&device, profile, maximum)
+                    .await
+                    .map_err(|error| error.to_string())?
+            } else {
+                manager
+                    .activate_profile(&device, profile)
+                    .await
+                    .map_err(|error| error.to_string())?
+            };
             output.print(format!("Activated profile {profile}"), &metadata)
         }
         Action::DpiGet { profile } => {

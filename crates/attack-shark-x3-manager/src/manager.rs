@@ -252,6 +252,32 @@ impl DeviceManager {
         }
     }
 
+    /// Writes exact profile metadata, allowing the maximum to be raised or
+    /// lowered. Unlike [`activate_profile`](Self::activate_profile), this does
+    /// not clamp the maximum upward.
+    pub async fn set_profile_metadata(
+        &self,
+        device: &DeviceId,
+        current: ProfileId,
+        maximum: ProfileId,
+    ) -> Result<ProfileMetadata, ManagerError> {
+        let (_identity, session) = self.open_session(device).await?;
+        let usb = is_usb_transport(session.transport());
+
+        let target = ProfileMetadata::new(current, maximum)
+            .map_err(|error| ManagerError::Driver(error.into()))?;
+
+        match session.write_profile_metadata(target).await? {
+            SessionWrite::ReadbackVerified(actual) => {
+                if usb {
+                    self.update_observed_profile_metadata(device, actual)?;
+                }
+                Ok(actual)
+            }
+            SessionWrite::Acknowledged => Ok(target),
+        }
+    }
+
     /// Returns the stored identity for an exact device ID.
     pub fn device_identity(&self, device: &DeviceId) -> Result<DeviceIdentity, ManagerError> {
         let state = self.store.load()?;

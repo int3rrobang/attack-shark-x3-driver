@@ -154,6 +154,9 @@ pub enum ProfileCommand {
 pub struct ProfileSetArgs {
     #[arg(value_parser = clap::value_parser!(u8).range(1..=5))]
     pub profile: Option<u8>,
+    /// Set the maximum enabled profile count (1..=5).
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=5))]
+    pub maximum: Option<u8>,
 }
 
 #[derive(Debug, Subcommand)]

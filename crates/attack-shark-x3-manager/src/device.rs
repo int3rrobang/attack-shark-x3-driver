@@ -256,17 +256,6 @@ mod tests {
         assert!(DeviceId::new("  ").is_err());
         assert!(DeviceIdentity::ble("\t", None).is_err());
         assert!(
-            DeviceIdentity::usb(
-                TransportKind::Wired,
-                0x1d57,
-                0xfa61,
-                Some("  "),
-                "/dev/hidraw0",
-                None,
-            )
-            .is_err()
-        );
-        assert!(
             DeviceIdentity::usb(TransportKind::Wired, 0x1d57, 0xfa61, None, "  ", None,).is_err()
         );
         assert!(
@@ -280,6 +269,21 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn blank_usb_serial_falls_through_to_path_key() {
+        let identity = DeviceIdentity::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            Some("  "),
+            r"\\?\hid#VID_1D57&PID_FA61#path",
+            None,
+        )
+        .expect("blank serial should be treated as absent");
+        assert!(identity.id.as_str().contains("path:"));
+        assert_eq!(identity.serial_number, None);
     }
 
     #[test]
