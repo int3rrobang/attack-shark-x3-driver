@@ -7,6 +7,7 @@ Report `0x0c` carries persistent current/maximum profile metadata on the X3/M600
 | Variant | Transport | Status | Evidence |
 |:--------|:----------|:-------|:---------|
 | X11 wired / adapter | USB HID | Load/reset supported | implementation |
+| X3/M600 via FA60 receiver | USB HID | Ten-byte profile control and `0xa0` readback | binary report + implementation |
 | X3/FA61 wired | USB HID | Edge-triggered metadata update live-confirmed; targeted section reads corrected | live-confirmed + static-analysis |
 | X3/M600 BLE | BLE FEE3 | Same shared metadata and targeted-section dispatcher | live-confirmed + static-analysis |
 
@@ -39,6 +40,18 @@ The FA61 `0xa0` readback sequence returns a ten-byte normalized metadata image:
 The tested device returned `0c 0a 01 02 fd 05 fa 00 00 00` after the six-byte profile-2
 write. This proves the metadata update, not completion of a live profile load.
 
+The FA60 receiver returns the same ten-byte metadata image with byte 1 set to
+`0x0c`:
+
+```text
+0c 0c 01 PP ~PP AA ~AA 00 00 00
+```
+
+The canonical ten-byte receiver write still uses `0x0a`. A serialized live
+probe decoded `current=1, maximum=5` through the FA60 form before and after
+reversible rate/DPI/preferences writes, with exact final-state equality.
+\[live-confirmed]
+
 ### Rust codec status
 
 The reusable Rust crate implements the pure packet boundary for profile work:
@@ -46,15 +59,70 @@ The reusable Rust crate implements the pure packet boundary for profile work:
 - `ProfileMetadata::new` enforces `1 <= current <= maximum <= 5`;
 - `ProfileControlReport` emits the six-byte compact write or an explicitly requested
   ten-byte padded image;
-- `ProfileMetadataReport` validates the normalized readback header, subtype, complement
-  pairs, profile relationship, and reserved bytes;
+- `ProfileMetadataReport` validates the normalized wired `0x0a` or FA60
+  readback `0x0c` declaration, subtype, complement pairs, profile relationship,
+  and reserved bytes;
 - `ReadSelector` requires an explicit `ProfileId` for DPI, preferences, and button reads;
 - `ReadinessStatus` validates the one-shot `0xa0` mailbox image.
 
-The padded framing option is a wire-shape codec, not a claim of live-confirmed FA60
-behavior. Device opening, selector/read serialization, bounded retries, and edge-triggered
-switch sequencing remain transport-layer work; the codec does not expose an unsafe
-standalone reset operation.
+The ten-byte framing is required by the X3/M600 FA60 helper path; the six-byte
+form is the wired X3 form. This is supported by the recovered helper read
+lengths and the X3 dongle writer; current Rust transport selection emits the
+model-correct form. The Rust driver serializes reads, profile activation, and
+bounded maximum-profile updates through one worker. A maximum update reads the
+persistent current profile, preserves it, rejects a lower maximum, sends the
+model-correct edge, waits 500 ms without target-section traffic, and verifies
+metadata. An unchanged maximum is a read-only no-op. Neither operation is a
+general metadata write or standalone reset.
+
+The BLE CLI also exposes `activate-profile` and `set-max-profile`. Because BLE
+cannot read persistent metadata first, activation uses maximum profile `5` by
+default, while maximum-profile updates use current profile `1` by default.
+These commands report FEE4 parser acceptance only; they do not verify profile
+application or persistence.
+
+### Maximum-profile reduction and re-enablement — 2026-07-20
+
+**Live-confirmed on an X3/FA61 wired USB device:** `set-max-profile --maximum N`
+changes the enabled-slot limit without reinitializing the profile records above that
+limit. The test began at `current_profile: 1`, `maximum_profile: 5`, and captured a
+complete readback of profiles 1 through 5 (DPI, preferences, and all 18 button slots).
+
+The bounded maximum update to one sent the compact profile-control image:
+
+```text
+0c 0a 01 fe 01 fe
+```
+
+The CLI verified `current_profile: 1`, `maximum_profile: 1`. After a physical
+unplug/replug, metadata still read `current_profile: 1`, `maximum_profile: 1`.
+Profile 1's settings also survived the power cycle.
+
+Before reducing the maximum, the test wrote one reversible preference marker to each
+profile, then independently read it back:
+
+| Profile | Preference marker |
+|:-------:|:------------------|
+| 1 | LED speed `1` |
+| 2 | Deep-sleep timeout `11` minutes |
+| 3 | Normal sleep timeout `1.0` minute |
+| 4 | Debounce `10` ms |
+| 5 | LED speed `5` |
+
+After the power cycle, the maximum was raised one slot at a time from 1 through 5.
+Each newly enabled profile returned its marker, its original DPI state, and its
+original button table. Profile 2 was additionally given a unique active-stage marker
+before the reduction; that marker survived the reduction and power cycle, ruling out
+copying profile 1 or reinitializing profile 2 to a default image.
+
+Therefore, for the tested X3/FA61 wired device, `maximum_profile` acts as an
+enablement limit over five persistent profile records. Lowering it hides higher
+profiles but does not erase or regenerate them. The test restored the original
+settings and ended at `current_profile: 1`, `maximum_profile: 5`.
+
+The test read and preserved the opaque light-mode value (`0x70`) but did not write it,
+because the current CLI enum cannot reproduce that value exactly. Button mappings were
+read and verified but not written; unsafe remaps remain outside this test.
 
 ### Edge-triggered load semantics
 
@@ -84,6 +152,10 @@ The `M600-5.2` and `M600-5.4` BLE names are unrelated to these profile indices; 
 RF/host slots. See the [correction ledger](../research/corrections.md).
 
 ## Reset safety
+
+A current-profile activation that preserves the existing maximum is distinct from reset.
+The Rust API exposes only that constrained operation and holds a 500 ms quiet period before
+metadata verification. It does not claim that metadata readback proves persistence.
 
 The production reset flow sends `0c 0a 01 fe 01 fe` before reapplying every configuration
 section with target byte `01`. Preserve that complete sequence for reset operations.

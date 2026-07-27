@@ -1,6 +1,6 @@
 use attack_shark_x3::{
     ProfileControlFraming, ProfileControlReport, ProfileId, ProfileMetadata, ProfileMetadataReport,
-    ProtocolError, ReadSelector, ReadbackRequest, ReadinessStatus,
+    ProtocolError, ReadSelector, ReadbackRequest, ReadinessStatus, TransportKind,
 };
 use serde::Deserialize;
 
@@ -209,6 +209,15 @@ fn metadata_readbacks_decode_without_conflating_working_state() {
             fixture.name
         );
     }
+}
+
+#[test]
+fn receiver_metadata_readback_accepts_fa60_declaration() {
+    let packet = decode_hex("0c0c0101fe05fa000000");
+    let decoded = ProfileMetadataReport::decode_for_transport(&packet, TransportKind::Receiver)
+        .expect("FA60 receiver metadata must decode");
+    assert_eq!(decoded.metadata, metadata(1, 5));
+    assert!(ProfileMetadataReport::decode(&packet).is_err());
 }
 
 #[test]

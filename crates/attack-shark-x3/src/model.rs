@@ -6,6 +6,8 @@ use crate::error::ProtocolError;
 pub enum TransportKind {
     Wired,
     Receiver,
+    /// Bluetooth Low Energy GATT.
+    Ble,
 }
 
 /// A one-based X3 profile identifier.

@@ -7,7 +7,8 @@ Report `0x05` carries lighting fields, sleep timers, and debounce/key-response c
 | Variant | Transport | Status | Evidence |
 |:--------|:----------|:-------|:---------|
 | X11 wired / adapter | USB HID | Supported | implementation |
-| X3/FA61 wired | USB HID | Device behavior confirmed; builder checksum gap | live-confirmed + capture-confirmed |
+| X3/M600 via FA60 receiver | USB HID | 15-byte X3 full framing and `0xa0` readback | binary report + implementation |
+| X3/FA61 wired | USB HID | Device behavior confirmed; native Rust builder uses the 16-bit layout; legacy TypeScript builder remains on the X11 checksum | live-confirmed + capture-confirmed |
 | X3/M600 BLE | BLE FEE3 | Confirmed with safety restriction | live-confirmed |
 
 ## HID Report Parameters
@@ -43,14 +44,14 @@ X11 uses a 13-byte (wired) or 15-byte (wireless) payload with an 8-bit checksum 
 
 ## Payload Layout — X3
 
-X3 uses a fixed 13-byte payload with a **16-bit big-endian checksum** at bytes 11–12 and **no state-flag byte**.
+X3 uses a 13-byte functional payload with a **16-bit big-endian checksum** at bytes 11–12 and **no state-flag byte**. FA60 receiver transport appends two zero padding bytes.
 
 | Index | Name          | Description                                          |
 |:------|:--------------|:-----------------------------------------------------|
 | 0     | Header 1      | `0x05`                                               |
-| 1     | Header 2      | `0x0F`                                               |
+| 1     | Header 2      | Canonical write/wired declaration `0x0F`; FA60 prepared readback `0x11` |
 | 2     | Target Profile | X3 one-based working-profile target (`0x01`–`0x05`) |
-| 3     | Light Mode    | Selects the LED animation mode. **Warning: `0x00` crashes firmware over BLE.** \[live-confirmed] |
+| 3     | Light Mode    | Selects the LED animation mode. An earlier BLE crash report for `0x00` was not reproduced in a corrected same-hardware probe. \[corrected, live-confirmed] |
 | 4     | Configuration | Combined byte: `(Deep Sleep Bucket << 4) \| (LED Speed & 0x0F)` |
 | 5     | Deep Sleep    | Encoded deep sleep timer: `0x08 + (Minutes * 0x10)`. |
 | 6     | Host color byte 1 | Stock UI labels this as red; no X3 hardware effect is confirmed. |
@@ -59,11 +60,17 @@ X3 uses a fixed 13-byte payload with a **16-bit big-endian checksum** at bytes 1
 | 9     | Sleep Timer   | Sleep timer in half-minutes: `Minutes * 2`.          |
 | 10    | Debounce      | Encoded key response time: `((ms - 4) / 2) + 2`.     |
 | 11–12 | Checksum      | **16-bit big-endian**: sum of bytes 3..10, masked to 16 bits. |
-|       | *(no padding)* | X3 wired is always 13 bytes.                       |
+| 13–14 | Receiver padding | FA60 writes/readbacks use a 15-byte image with zero padding; wired writes use 13 bytes. |
 
 For X3/M600, the same target profile must be supplied at byte 4 of an armed `0xa0`
 preferences read. A read targeted at another profile can load that profile's working
 image without changing persistent report-`0x0c` metadata.
+
+The FA60 readback remains 15 HID report bytes; `0x11` includes the recovered
+WebDriver's two-byte method/model envelope. Receiver writes retain `0x0f`.
+The serialized hardware probe rewrote the captured preferences unchanged,
+verified the full-frame readback, and matched the final preferences to the
+backup. \[live-confirmed + static-analysis]
 
 ### X3 checksum formula
 
@@ -82,7 +89,25 @@ checksum = sum(bytes[3..10]) & 0xffff   // 16-bit big-endian at bytes[11..12]
 
 > The production X3 builder emits this 16-bit big-endian checksum. Parser acceptance does not establish that the host-labeled lighting fields have a hardware effect.
 
+### Same-hardware transport probe (2026-07-22)
+
+The same physical X3/M600 mouse was tested first as FA61 USB and then as
+`M600-5.2` BLE. The corrected, well-formed light-off packet was:
+
+```text
+05 0f 01 00 03 a8 00 00 ff 01 04 01 af
+```
+
+USB accepted the write and a subsequent preferences write. BLE returned
+`10 50 00 05`, remained connected, and accepted a legacy-checksum rejection
+followed by a valid X3-checksum preferences write on the same connection.
+A later BLE reconnect also succeeded. This supersedes the unqualified claim
+that light mode `0x00` crashes this hardware. The source of the earlier
+observation is unresolved; a packet-contract or test-harness mistake remains
+a possible explanation, not a confirmed one. \[corrected, live-confirmed]
+
 ---
+
 
 ## Field Details
 
@@ -90,7 +115,7 @@ checksum = sum(bytes[3..10]) & 0xffff   // 16-bit big-endian at bytes[11..12]
 
 | Mode            | Hex Value | Description                               |
 |:----------------|:----------|:------------------------------------------|
-| Off             | `0x00`    | LEDs disabled. **Unsafe over BLE on X3** — `0x00` causes firmware crash. Use `0x10` or higher. \[live-confirmed] |
+| Off             | `0x00`    | LEDs disabled. Valid over USB and BLE in a well-formed X3 packet. \[corrected, live-confirmed] |
 | Static          | `0x10`    | Fixed color.                              |
 | Breathing       | `0x20`    | Pulse animation with single color.        |
 | Neon            | `0x30`    | Cycling rainbow effect.                   |
@@ -123,6 +148,21 @@ The mouse enters a deep power-saving mode after a period of inactivity.
     - Speed 5 (Fastest) -> `1`
 - The current builder uses value `3`, matching the captured empty-profile image. This is not established as a factory or firmware default.
 - **X3 note**: No visible effect on this hardware. Preserve the field when updating an existing profile.
+
+The native Rust FA61 CLI preserves the complete readback image before applying a
+requested preference change. It accepts the documented semantic modes through
+`--light-mode`; `--light-mode-raw 0xNN` is available when a caller must preserve
+or reproduce an observed opaque mode byte such as `0x70`. The raw form is
+mutually exclusive with `--light-mode` and does not claim that the byte has a
+confirmed hardware effect. This preference read-modify-write command remains
+USB-only because BLE does not expose configuration readback. A 2026-07-22
+same-hardware USB/BLE probe accepted the corrected `0x00` packet over both
+transports and accepted subsequent BLE commands; the earlier crash attribution
+is corrected.
+
+The BLE CLI can still send a complete validated preference packet for
+`set-preferences`, but warns that fields unavailable from CLI arguments are
+replaced with zero/default values rather than preserved from the device.
 
 ### 4. Host-labeled color bytes (Index 6, 7, 8)
 

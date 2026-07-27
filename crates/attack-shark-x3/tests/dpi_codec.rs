@@ -195,6 +195,15 @@ fn captured_and_implementation_fixtures_round_trip_byte_for_byte() {
 }
 
 #[test]
+fn receiver_readback_accepts_webdriver_length_declaration() {
+    let mut packet = from_hex(&fixtures().fixtures[1].packet_hex);
+    packet[1] = 0x3a;
+    let decoded = DpiReport::decode(&packet, TransportKind::Receiver, profile(1))
+        .expect("captured FA60 readback declaration must decode");
+    assert_eq!(decoded.state.profile, profile(1));
+}
+
+#[test]
 fn profile_five_round_trips_with_an_explicit_caller_supplied_tail() {
     let preserved_tail = [0xa5; 25];
     let state = DpiState::new(

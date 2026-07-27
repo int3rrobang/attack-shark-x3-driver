@@ -1,0 +1,100 @@
+{
+  "startedAt": "2026-07-25T00:00:00.000Z",
+  "label": "X3-profiles-3-5-cycling",
+  "transport": "wired",
+  "device": {
+    "path": "\\\\?\\HID#VID_1D57&PID_FA61&MI_02&Col04#8&219d702f&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+    "product": "USB Gaming Mouse",
+    "vendorId": 7511,
+    "productId": 64097
+  },
+  "settings": {
+    "profileDpi": {
+      "1": 800,
+      "2": 1600,
+      "3": 3200,
+      "4": 6400,
+      "5": 12800
+    },
+    "maximum": 5
+  },
+  "events": [
+    {
+      "step": "software-activation",
+      "result": "all 5 profiles activate correctly via software (profile use 1-5)",
+      "confirmed": [1, 2, 3, 4, 5]
+    },
+    {
+      "step": "physical-cycle-binding",
+      "button": "Forward (slot 6)",
+      "action": "0x34 (profile-cycle)",
+      "note": "binding must be written to ALL profiles for cycling to work across transitions"
+    },
+    {
+      "step": "physical-cycle-full-wrap",
+      "sequence": "1→2→3→4→5→1",
+      "result": "profile-cycle wraps from max back to 1",
+      "confirmed": true
+    },
+    {
+      "step": "physical-plus-binding",
+      "button": "Forward (slot 6)",
+      "action": "0x35 (profile-plus)"
+    },
+    {
+      "step": "physical-plus-increment",
+      "sequence": "1→2",
+      "result": "profile-plus increments correctly",
+      "confirmed": true
+    },
+    {
+      "step": "physical-plus-at-max",
+      "startProfile": 5,
+      "max": 5,
+      "result": "profile-plus clamps at maximum (stays at 5, no wrap)",
+      "confirmed": true
+    },
+    {
+      "step": "physical-minus-binding",
+      "button": "Backward (slot 7)",
+      "action": "0x36 (profile-minus)"
+    },
+    {
+      "step": "physical-minus-decrement",
+      "sequence": "5→4",
+      "result": "profile-minus decrements correctly",
+      "confirmed": true
+    },
+    {
+      "step": "physical-minus-at-min",
+      "startProfile": 1,
+      "result": "profile-minus clamps at minimum (stays at 1, no wrap)",
+      "confirmed": true
+    },
+    {
+      "step": "cycle-respects-maximum",
+      "max": 3,
+      "sequence": "1→2→3→1",
+      "result": "profile-cycle wraps within enabled range (1..max), does not escape to profiles 4-5",
+      "confirmed": true
+    }
+  ],
+  "bugsFixed": [
+    {
+      "file": "crates/attack-shark-x3/src/bin/x3ctl.rs",
+      "issue": "button-to-slot mapping was wrong: Forward→3, Backward→4",
+      "fix": "Forward→6, Backward→7, added Dpi→3 (confirmed by old binary and live evidence)"
+    },
+    {
+      "file": "crates/attack-shark-x3/src/bin/x3ctl.rs",
+      "issue": "action bytes were wrong: used bitflag-style encoding (0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80)",
+      "fix": "corrected to firmware encoding: Disable=0x01, Left=0x02, Right=0x03, Middle=0x04, Backward=0x05, Forward=0x06, DoubleClick=0x07, DpiCycle=0x0d, DpiPlus=0x0e, DpiMinus=0x0f, ProfileCycle=0x34, ProfilePlus=0x35, ProfileMinus=0x36"
+    },
+    {
+      "file": "crates/attack-shark-x3/src/bin/x3ctl/executor.rs",
+      "issue": "usb_device_to_wire classifies transport by interface_number==2 → Receiver, but both wired and receiver use interface 2",
+      "fix": "not yet fixed (cosmetic labeling issue in devices output)"
+    }
+  ],
+  "outcome": "all 5 profiles confirmed end-to-end: software activation, distinct DPI persistence, physical cycling (cycle/plus/minus), wrap/clamp behavior, and maximum-profile enforcement"
+}

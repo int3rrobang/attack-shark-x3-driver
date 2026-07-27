@@ -283,9 +283,12 @@
 		</div>
 
 		<div class="warning">
-			<strong>Hard-blocks:</strong> Report 0x06 is blocked over BLE.
-			Report 0x05 with byte 3 = 0x00 is blocked (known BLE firmware crash risk —
-			LightMode.Off). No FFC0/FFC1/FFC2 access is exposed.<br />
+			<strong>Hard-blocks:</strong> Report 0x06 remains blocked in the browser
+			because the stock app skips it; the exact nine-byte X3 packet was accepted
+			and changed the rate in the corrected same-hardware probe. Report 0x05
+			with byte 3 = 0x00 remains blocked by a conservative guard based on a
+			historical BLE firmware crash report that was not reproduced in the
+			same-hardware probe. No FFC0/FFC1/FFC2 access is exposed.<br />
 			<strong>ACK correlation:</strong> correlation is by report ID only
 			(no transaction ID). Same-RID packets may mis-correlate stale ACKs.
 			FEE1 reads before/after are observational snapshots only, not proof.

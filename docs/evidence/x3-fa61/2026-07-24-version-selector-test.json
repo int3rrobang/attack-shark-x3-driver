@@ -1,0 +1,41 @@
+{
+  "steps": [
+    {
+      "name": "DPI profiles 1 & 2",
+      "profile1": "profile=1, activeStage=1, stages=[1600], hex=04380100000100001f0000000000000000000000...",
+      "profile2": "profile=2, activeStage=1, stages=[800,1600,2400,3200,5000,26000], hex=04380200003f00000f1f2f3f6307000000000000..."
+    },
+    {
+      "name": "0x0B selector=profile1",
+      "version": "raw=0b08011010830101, declaredLen=0x08, profile=1, byte4=0x10, byte5=0x83, byte6=0x01, byte7=0x01"
+    },
+    {
+      "name": "0x0B selector=profile2",
+      "version": "raw=0b08021070830101, declaredLen=0x08, profile=2, byte4=0x70, byte5=0x83, byte6=0x01, byte7=0x01"
+    },
+    {
+      "name": "DPI profile 1 baseline",
+      "dpi": "profile=1, activeStage=1, stages=[1600], hex=04380100000100001f0000000000000000000000..."
+    },
+    {
+      "name": "0x0B selector=profile2 (again)",
+      "version": "raw=0b08021070830101, declaredLen=0x08, profile=2, byte4=0x70, byte5=0x83, byte6=0x01, byte7=0x01"
+    },
+    {
+      "name": "DPI profile 1 after 0x0B prof2 read",
+      "dpi": "profile=1, activeStage=1, stages=[1600], hex=04380100000100001f0000000000000000000000..."
+    },
+    {
+      "name": "0x0B selector=profile1 (final)",
+      "version": "raw=0b08011010830101, declaredLen=0x08, profile=1, byte4=0x10, byte5=0x83, byte6=0x01, byte7=0x01"
+    }
+  ],
+  "analysis": {
+    "byte4_p1": 16,
+    "byte4_p2": 112,
+    "byte4_p1_final": 16,
+    "byte4_differs": true,
+    "dpi_changed": false,
+    "wroteMarker": false
+  }
+}

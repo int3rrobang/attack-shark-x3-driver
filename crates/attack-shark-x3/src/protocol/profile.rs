@@ -2,6 +2,7 @@ use crate::{ProfileId, ProtocolError};
 
 pub const PROFILE_REPORT_ID: u8 = 0x0c;
 pub const PROFILE_DECLARED_LENGTH: u8 = 0x0a;
+const PROFILE_RECEIVER_DECLARED_LENGTH: u8 = 0x0c;
 pub const PROFILE_CONTROL_COMPACT_LENGTH: usize = 6;
 pub const PROFILE_REPORT_LENGTH: usize = 10;
 pub const READ_SELECTOR_REPORT_ID: u8 = 0xa0;
@@ -108,13 +109,40 @@ pub struct ProfileMetadataReport {
 }
 
 impl ProfileMetadataReport {
-    /// Decodes and validates a ten-byte report-`0x0c` metadata readback.
+    /// Decodes and validates a canonical ten-byte report-`0x0c` metadata readback.
     ///
     /// # Errors
     ///
     /// Rejects wrong lengths, headers, subtype, complement pairs, profile
     /// ranges, and nonzero reserved bytes.
     pub fn decode(packet: &[u8]) -> Result<Self, ProtocolError> {
+        Self::decode_with_declared_length(packet, PROFILE_DECLARED_LENGTH)
+    }
+
+    /// Decodes a profile-metadata readback using the selected transport dialect.
+    ///
+    /// FA60 receiver readbacks declare `0x0c`; wired and BLE packets use the
+    /// canonical `0x0a` declaration. Both report images remain ten bytes long.
+    ///
+    /// # Errors
+    ///
+    /// Rejects wrong lengths, headers, subtype, complement pairs, profile
+    /// ranges, and nonzero reserved bytes.
+    pub fn decode_for_transport(
+        packet: &[u8],
+        transport: crate::TransportKind,
+    ) -> Result<Self, ProtocolError> {
+        let declared_length = match transport {
+            crate::TransportKind::Receiver => PROFILE_RECEIVER_DECLARED_LENGTH,
+            crate::TransportKind::Wired | crate::TransportKind::Ble => PROFILE_DECLARED_LENGTH,
+        };
+        Self::decode_with_declared_length(packet, declared_length)
+    }
+
+    fn decode_with_declared_length(
+        packet: &[u8],
+        declared_length: u8,
+    ) -> Result<Self, ProtocolError> {
         if packet.len() != PROFILE_REPORT_LENGTH {
             return Err(ProtocolError::InvalidReportLength {
                 expected: PROFILE_REPORT_LENGTH,
@@ -127,9 +155,9 @@ impl ProfileMetadataReport {
                 actual: packet[0],
             });
         }
-        if packet[1] != PROFILE_DECLARED_LENGTH {
+        if packet[1] != declared_length {
             return Err(ProtocolError::UnexpectedDeclaredLength {
-                expected: PROFILE_DECLARED_LENGTH,
+                expected: declared_length,
                 actual: packet[1],
             });
         }
@@ -154,11 +182,12 @@ impl ProfileMetadataReport {
     }
 }
 
-/// Profile-aware reports supported by the one-shot FA61 read mailbox.
+/// Reports supported by the one-shot FA61 read mailbox.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReadbackRequest {
     Version,
     ProfileMetadata,
+    PollingRate,
     Dpi(ProfileId),
     Preferences(ProfileId),
     Buttons(ProfileId),
@@ -169,6 +198,7 @@ impl ReadbackRequest {
     pub const fn report_id(self) -> u8 {
         match self {
             Self::Version => 0x0b,
+            Self::PollingRate => 0x06,
             Self::ProfileMetadata => PROFILE_REPORT_ID,
             Self::Dpi(_) => 0x04,
             Self::Preferences(_) => 0x05,
@@ -181,6 +211,7 @@ impl ReadbackRequest {
         match self {
             Self::Version => 0x08,
             Self::ProfileMetadata => PROFILE_DECLARED_LENGTH,
+            Self::PollingRate => 0x09,
             Self::Dpi(_) => 0x38,
             Self::Preferences(_) => 0x0f,
             Self::Buttons(_) => 0x3b,
@@ -197,7 +228,7 @@ impl ReadbackRequest {
             Self::Dpi(profile) | Self::Preferences(profile) | Self::Buttons(profile) => {
                 Some(profile)
             }
-            Self::Version | Self::ProfileMetadata => None,
+            Self::Version | Self::ProfileMetadata | Self::PollingRate => None,
         }
     }
 

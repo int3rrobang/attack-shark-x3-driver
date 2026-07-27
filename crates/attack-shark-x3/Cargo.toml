@@ -6,26 +6,49 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+autobins = false
 
 [features]
 default = ["usb"]
-serde = ["dep:serde"]
-usb = ["dep:hidapi", "dep:tokio"]
+serde = []
+usb = ["dep:hidapi"]
+ble = ["dep:bluest", "dep:futures-lite", "dep:windows"]
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+bluest = { version = "0.6.9", features = ["serde"], optional = true }
 hidapi = { version = "2", optional = true }
-tokio = { version = "1", features = ["macros", "rt", "sync"], optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-thiserror = "2"
-
-[dev-dependencies]
+clap = { version = "4", features = ["derive"] }
+futures-lite = { version = "2", optional = true }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "io-util", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+thiserror = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.48", features = [
+	"Devices_Bluetooth",
+	"Devices_Enumeration",
+	"Foundation",
+	"Foundation_Collections",
+	"Storage_Streams",
+	"Devices_Bluetooth_GenericAttributeProfile",
+], optional = true }
+
 
 [lints]
 workspace = true
 
 [[bin]]
-name = "attack-shark-x3"
-path = "src/bin/attack-shark-x3.rs"
+name = "x3ctl"
+path = "src/bin/x3ctl.rs"
+
+
+[[example]]
+name = "receiver-smoke"
+path = "examples/receiver-smoke.rs"
+required-features = ["usb"]
+
+[[example]]
+name = "dpi-framing-probe"
+path = "examples/dpi-framing-probe.rs"
+required-features = ["usb"]

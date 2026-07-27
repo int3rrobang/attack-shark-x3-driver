@@ -1,56 +1,101 @@
 {
-  "schemaVersion": 1,
-  "fixtures": [
-    {
-      "name": "x3-profile-1-compact-reset",
-      "evidence": "capture-confirmed",
-      "source": "docs/evidence/x3-fa61/reset-packets.json",
-      "transport": "usb-hid",
-      "framing": "59-byte-compact-write",
-      "profile": 1,
-      "packetHex": "083b010200000300000400000d00003c00000f00000600000500003c00000100000100000100000100000100000100000100000a000009000000c2",
-      "knownState": {
-        "slots": [
-          [2, 0, 0], [3, 0, 0], [4, 0, 0], [13, 0, 0], [60, 0, 0], [15, 0, 0],
-          [6, 0, 0], [5, 0, 0], [60, 0, 0], [1, 0, 0], [1, 0, 0], [1, 0, 0],
-          [1, 0, 0], [1, 0, 0], [1, 0, 0], [1, 0, 0], [10, 0, 0], [9, 0, 0]
-        ],
-        "checksum": 194
-      }
-    },
-    {
-      "name": "x3-profile-1-full-readback",
-      "evidence": "live-confirmed",
-      "source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
-      "transport": "usb-hid",
-      "framing": "59-byte-full-readback",
-      "profile": 1,
-      "packetHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
-      "knownState": {
-        "slots": [
-          [2, 0, 0], [3, 0, 0], [4, 0, 0], [13, 0, 0], [60, 0, 0], [15, 0, 0], [18, 0, 7],
-          [5, 0, 0], [60, 0, 0], [1, 0, 0], [1, 0, 0], [1, 0, 0], [1, 0, 0], [1, 0, 0],
-          [1, 0, 0], [1, 0, 0], [10, 0, 0], [9, 0, 0]
-        ],
-        "checksum": 213
-      }
-    },
-    {
-      "name": "x3-profile-2-full-readback",
-      "evidence": "live-confirmed",
-      "source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
-      "transport": "usb-hid",
-      "framing": "59-byte-full-readback",
-      "profile": 2,
-      "packetHex": "083b020200000300000400000d00003c00000f00000600000500003c00000000000000000000000000000000000000000000000a000009000000bb",
-      "knownState": {
-        "slots": [
-          [2, 0, 0], [3, 0, 0], [4, 0, 0], [13, 0, 0], [60, 0, 0], [15, 0, 0], [6, 0, 0],
-          [5, 0, 0], [60, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0],
-          [0, 0, 0], [0, 0, 0], [10, 0, 0], [9, 0, 0]
-        ],
-        "checksum": 187
-      }
-    }
-  ]
+	"schemaVersion": 1,
+	"fixtures": [
+		{
+			"name": "x3-profile-1-compact-reset",
+			"evidence": "capture-confirmed",
+			"source": "docs/evidence/x3-fa61/reset-packets.json",
+			"transport": "usb-hid",
+			"framing": "59-byte-compact-write",
+			"profile": 1,
+			"packetHex": "083b010200000300000400000d00003c00000f00000600000500003c00000100000100000100000100000100000100000100000a000009000000c2",
+			"knownState": {
+				"slots": [
+					[2, 0, 0],
+					[3, 0, 0],
+					[4, 0, 0],
+					[13, 0, 0],
+					[60, 0, 0],
+					[15, 0, 0],
+					[6, 0, 0],
+					[5, 0, 0],
+					[60, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[10, 0, 0],
+					[9, 0, 0]
+				],
+				"checksum": 194
+			}
+		},
+		{
+			"name": "x3-profile-1-full-readback",
+			"evidence": "live-confirmed",
+			"source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
+			"transport": "usb-hid",
+			"framing": "59-byte-full-readback",
+			"profile": 1,
+			"packetHex": "083b010200000300000400000d00003c00000f00001200070500003c00000100000100000100000100000100000100000100000a000009000000d5",
+			"knownState": {
+				"slots": [
+					[2, 0, 0],
+					[3, 0, 0],
+					[4, 0, 0],
+					[13, 0, 0],
+					[60, 0, 0],
+					[15, 0, 0],
+					[18, 0, 7],
+					[5, 0, 0],
+					[60, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[1, 0, 0],
+					[10, 0, 0],
+					[9, 0, 0]
+				],
+				"checksum": 213
+			}
+		},
+		{
+			"name": "x3-profile-2-full-readback",
+			"evidence": "live-confirmed",
+			"source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
+			"transport": "usb-hid",
+			"framing": "59-byte-full-readback",
+			"profile": 2,
+			"packetHex": "083b020200000300000400000d00003c00000f00000600000500003c00000000000000000000000000000000000000000000000a000009000000bb",
+			"knownState": {
+				"slots": [
+					[2, 0, 0],
+					[3, 0, 0],
+					[4, 0, 0],
+					[13, 0, 0],
+					[60, 0, 0],
+					[15, 0, 0],
+					[6, 0, 0],
+					[5, 0, 0],
+					[60, 0, 0],
+					[0, 0, 0],
+					[0, 0, 0],
+					[0, 0, 0],
+					[0, 0, 0],
+					[0, 0, 0],
+					[0, 0, 0],
+					[0, 0, 0],
+					[10, 0, 0],
+					[9, 0, 0]
+				],
+				"checksum": 187
+			}
+		}
+	]
 }

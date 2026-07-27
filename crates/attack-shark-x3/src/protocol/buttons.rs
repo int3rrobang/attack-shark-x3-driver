@@ -1,9 +1,10 @@
-use crate::{ProfileId, ProtocolError};
+use crate::{ProfileId, ProtocolError, TransportKind};
 
 use super::checksum::sum16;
 
 pub const BUTTON_REPORT_ID: u8 = 0x08;
 pub const BUTTON_DECLARED_LENGTH: u8 = 0x3b;
+const BUTTON_RECEIVER_DECLARED_LENGTH: u8 = 0x3d;
 pub const BUTTON_REPORT_LENGTH: usize = 59;
 pub const BUTTON_SLOT_COUNT: usize = 18;
 
@@ -85,7 +86,7 @@ impl ButtonsReport {
         Self { bytes }
     }
 
-    /// Decodes and validates a complete 59-byte FA61 report-`0x08` packet.
+    /// Decodes and validates a canonical 59-byte FA61 report-`0x08` packet.
     ///
     /// The caller supplies the expected target profile explicitly; this
     /// prevents a read of one profile from being mistaken for another.
@@ -97,6 +98,32 @@ impl ButtonsReport {
     pub fn decode(
         packet: &[u8],
         expected_profile: ProfileId,
+    ) -> Result<DecodedButtonsReport, ProtocolError> {
+        Self::decode_with_declared_length(packet, expected_profile, BUTTON_DECLARED_LENGTH)
+    }
+
+    /// Decodes a button-table readback using the selected transport dialect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed lengths, report identity, declared length, target
+    /// profile, or checksum.
+    pub fn decode_for_transport(
+        packet: &[u8],
+        transport: TransportKind,
+        expected_profile: ProfileId,
+    ) -> Result<DecodedButtonsReport, ProtocolError> {
+        let declared_length = match transport {
+            TransportKind::Receiver => BUTTON_RECEIVER_DECLARED_LENGTH,
+            TransportKind::Wired | TransportKind::Ble => BUTTON_DECLARED_LENGTH,
+        };
+        Self::decode_with_declared_length(packet, expected_profile, declared_length)
+    }
+
+    fn decode_with_declared_length(
+        packet: &[u8],
+        expected_profile: ProfileId,
+        declared_length: u8,
     ) -> Result<DecodedButtonsReport, ProtocolError> {
         if packet.len() != BUTTON_REPORT_LENGTH {
             return Err(ProtocolError::InvalidReportLength {
@@ -110,9 +137,9 @@ impl ButtonsReport {
                 actual: packet[0],
             });
         }
-        if packet[1] != BUTTON_DECLARED_LENGTH {
+        if packet[1] != declared_length {
             return Err(ProtocolError::UnexpectedDeclaredLength {
-                expected: BUTTON_DECLARED_LENGTH,
+                expected: declared_length,
                 actual: packet[1],
             });
         }

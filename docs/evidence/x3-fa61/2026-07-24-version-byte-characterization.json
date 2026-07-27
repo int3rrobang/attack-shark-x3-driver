@@ -1,0 +1,67 @@
+{
+  "steps": [
+    {
+      "name": "Initial state",
+      "metadata": "hex=0c0a0101fe01fe000000, subtype=1, current=1, ~current=254, max=1, ~max=254",
+      "prefs1": "hex=050f011003a80000ff010401bf0000, profile=1, lightMode=0x10, config=0x03",
+      "prefs2": "hex=050f0270030800ff000104017f0000, profile=2, lightMode=0x70, config=0x03"
+    },
+    {
+      "name": "After 0x0C max=2",
+      "metadata": "hex=0c0a0101fe02fd000000, subtype=1, current=1, ~current=254, max=2, ~max=253"
+    },
+    {
+      "name": "After light mode writes",
+      "prefs1": "hex=050f011003a80000ff010401bf0000, profile=1, lightMode=0x10, config=0x03",
+      "prefs2": "hex=050f0270030800ff000104017f0000, profile=2, lightMode=0x70, config=0x03",
+      "verified": "YES"
+    },
+    {
+      "name": "0x0B selector=1",
+      "version": "hex=0b08011010830102, [0]=0x0b (reportId), [1]=0x08 (declaredLen), [2]=0x01 (selector echo), [3]=0x10, [4]=0x10, [5]=0x83, [6]=0x01, [7]=0x02"
+    },
+    {
+      "name": "0x0B selector=2",
+      "version": "hex=0b08021070830102, [0]=0x0b (reportId), [1]=0x08 (declaredLen), [2]=0x02 (selector echo), [3]=0x10, [4]=0x70, [5]=0x83, [6]=0x01, [7]=0x02"
+    },
+    {
+      "name": "0x0B selector=3 (beyond max)",
+      "version": "hex=0b08031070830102, [0]=0x0b (reportId), [1]=0x08 (declaredLen), [2]=0x03 (selector echo), [3]=0x10, [4]=0x70, [5]=0x83, [6]=0x01, [7]=0x02"
+    },
+    {
+      "name": "Restored state",
+      "metadata": "hex=0c0a0101fe01fe000000, subtype=1, current=1, ~current=254, max=1, ~max=254",
+      "prefs1": "hex=050f011003a80000ff010401bf0000, profile=1, lightMode=0x10, config=0x03"
+    }
+  ],
+  "analysis": {
+    "byte2_selector_echo": true,
+    "byte4_light_mode": true,
+    "bytes_3_5_6_7": {
+      "byte3": {
+        "sel1": 16,
+        "sel2": 16,
+        "sel3": 16,
+        "profile_dependent": false
+      },
+      "byte5": {
+        "sel1": 131,
+        "sel2": 131,
+        "sel3": 131,
+        "profile_dependent": false
+      },
+      "byte6": {
+        "sel1": 1,
+        "sel2": 1,
+        "sel3": 1,
+        "profile_dependent": false
+      },
+      "byte7": {
+        "sel1": 2,
+        "sel2": 2,
+        "sel3": 2,
+        "profile_dependent": false
+      }
+    }
+  }
+}

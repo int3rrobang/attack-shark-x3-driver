@@ -49,3 +49,8 @@ package-lock.json
 /ble-results.jsonl
 /ble-recovery-results.jsonl
 /NUL
+
+# Machine-local harness and test output
+/omp-session-*.html
+/test-artifacts/
+/todo.md

@@ -1,9 +1,10 @@
-use crate::{ProfileId, ProtocolError};
+use crate::{ProfileId, ProtocolError, TransportKind};
 
 use super::checksum::sum16;
 
 pub const PREFERENCES_REPORT_ID: u8 = 0x05;
 pub const PREFERENCES_DECLARED_LENGTH: u8 = 0x0f;
+const PREFERENCES_RECEIVER_DECLARED_LENGTH: u8 = 0x11;
 pub const PREFERENCES_COMPACT_LENGTH: usize = 13;
 pub const PREFERENCES_FULL_LENGTH: usize = 15;
 
@@ -121,7 +122,7 @@ impl PreferencesReport {
         }
     }
 
-    /// Decodes a compact write or full readback for the explicit target
+    /// Decodes a canonical compact write or full readback for the explicit
     /// profile. The packet length is the framing discriminator.
     ///
     /// # Errors
@@ -131,6 +132,32 @@ impl PreferencesReport {
     pub fn decode(
         packet: &[u8],
         expected_profile: ProfileId,
+    ) -> Result<DecodedPreferencesReport, ProtocolError> {
+        Self::decode_with_declared_length(packet, expected_profile, PREFERENCES_DECLARED_LENGTH)
+    }
+
+    /// Decodes a preferences readback using the selected transport dialect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, report identity, declared length, target
+    /// profile, checksum, or full-readback padding.
+    pub fn decode_for_transport(
+        packet: &[u8],
+        transport: TransportKind,
+        expected_profile: ProfileId,
+    ) -> Result<DecodedPreferencesReport, ProtocolError> {
+        let declared_length = match transport {
+            TransportKind::Receiver => PREFERENCES_RECEIVER_DECLARED_LENGTH,
+            TransportKind::Wired | TransportKind::Ble => PREFERENCES_DECLARED_LENGTH,
+        };
+        Self::decode_with_declared_length(packet, expected_profile, declared_length)
+    }
+
+    fn decode_with_declared_length(
+        packet: &[u8],
+        expected_profile: ProfileId,
+        declared_length: u8,
     ) -> Result<DecodedPreferencesReport, ProtocolError> {
         let framing = match packet.len() {
             PREFERENCES_COMPACT_LENGTH => PreferencesFraming::Compact,
@@ -148,9 +175,9 @@ impl PreferencesReport {
                 actual: packet[0],
             });
         }
-        if packet[1] != PREFERENCES_DECLARED_LENGTH {
+        if packet[1] != declared_length {
             return Err(ProtocolError::UnexpectedDeclaredLength {
-                expected: PREFERENCES_DECLARED_LENGTH,
+                expected: declared_length,
                 actual: packet[1],
             });
         }

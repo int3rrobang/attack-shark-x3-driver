@@ -18,7 +18,7 @@ This is the canonical reference for X3-family BLE services, writes, and ACK beha
 |--------|-----------------|
 | `Update.exe` (M600 firmware update tool) | Firmware debug strings → GM0x protocol layer, BLE stack internals, service UUIDs |
 | `Attack_SharkX3Mouse.exe` (stock config app) | USB HID report formats via strings |
-| `X3.exe` (same app, binary analysis) | Concrete packet builders at specific addresses, transport dispatcher, BLE exclusion of 0x06 |
+| `X3.exe` (same app, binary analysis) | Concrete packet builders at specific addresses and transport dispatcher; malformed BLE queries were rejected, while valid report `0x06` acceptance was later live-confirmed |
 | Live BLE probing (`bleak` + Python) | GATT service discovery, write/ACK behavior, packet validation |
 | Live USB probing (`node-hid`) | Profile persistence testing |
 | `attack-shark-x11-edit` driver codebase | Reference packet builders (DpiBuilder, UserPreferencesBuilder, etc.) |
@@ -27,7 +27,37 @@ This is the canonical reference for X3-family BLE services, writes, and ACK beha
 
 ## BLE GATT services
 
-When in BLE pairing mode, the mouse advertises as `"M600-5.2"` or `"M600-5.4"` (depending on the selected RF-mode slot) and exposes:
+The mouse may be already paired and connected to the host OS; the production Rust transport does not invoke pairing. When advertising, it uses `"M600-5.2"` or `"M600-5.4"` depending on the selected RF-mode slot.
+
+`x3ctl --transport ble devices` queries devices that the operating system
+already reports as connected. The Windows transport reopens FEE0 with WinRT
+`GattSharingMode::SharedReadAndWrite` before enumerating its characteristics.
+Without that explicit service open, Bluest 0.6.9's uncached FEE0 characteristic
+query returned `GattCommunicationStatus::AccessDenied`, even though the mouse
+was paired and connected and `GattDeviceService::RequestAccessAsync` returned
+`Allowed`. The shared open, FEE4 subscription, FEE3 write, and matching ACK were
+live-confirmed on an already-paired X3 on 2026-07-23. No pairing API was invoked.
+
+The production transport keeps the native device, FEE0 service, FEE3/FEE4
+characteristics, and FEE4 notification subscription alive for the lifetime of
+one `BleHandle`. Serialized writes reuse that subscription rather than toggling
+the CCCD for each report. Before a write, notifications received while no
+transaction was active are discarded; a notification-queue overflow or any
+transaction failure closes the session because FEE4 ACKs have no transaction
+identifier beyond the report ID. `BleHandle::disconnect` explicitly disables
+the subscription before releasing the session. Two consecutive report `0x06`
+writes over one subscription both received matching `10 50 00 06` ACKs on an
+already-paired X3 on 2026-07-23. [live-confirmed]
+
+The Rust `x3ctl` CLI can send validated reports `0x04`, `0x05`, `0x06`, `0x08`, and
+`0x0c` over BLE and reports FEE4 parser acceptance. BLE has no configuration
+readback, so durable state for BLE devices lacks `usb-readback` provenance.
+DPI, preferences, button, and profile writes require a complete trusted
+baseline; `state init-defaults` creates an explicit desired-state baseline
+without reading or writing hardware, and `--replace-defaults` authorizes its
+use for omitted fields. Without an authorized baseline, the command fails
+before writing. BLE has no live configuration reads; `x3ctl` may display
+clearly labeled cached desired state.
 
 ### Standard services
 
@@ -45,20 +75,15 @@ This is the GM0x parameter layer. Same protocol as USB HID.
 
 | Char | Handle | Properties | Purpose |
 |------|--------|-----------|---------|
-| FEE1 | `0x0013` | read | 10-byte opaque readable value. Observed to change with reads and connection activity; semantics unknown. Not config. |
-| FEE2 | `0x0016` | write-without-response | Fire-and-forget commands (unused by stock app) |
-| **FEE3** | `0x0018` | **write** | **Config write pipe.** Accepts report IDs including 0x04, 0x05, 0x08, 0x09, 0x0c (non-exhaustive). |
-| FEE4 | `0x001A` | **notify** | **ACK pipe.** After every FEE3 write, notifies with `10 50 <status> <report_id>`. |
-| FEE5 | `0x001D` | indicate | Indication pipe. Rarely fires; stock app subscribes to it. |
+| FEE1 | `0x0013` | read | 10-byte scratch value; not configuration readback. |
+| FEE2 | `0x0016` | write-without-response | Command pipe; production transport never accesses it. |
+| **FEE3** | `0x0018` | **write** | **Config write pipe.** Valid X3 reports use the same bytes as USB HID. |
+| FEE4 | `0x001A` | **notify** | **ACK pipe.** After a valid FEE3 write, notifies with `10 50 <status> <report_id>`. |
+| FEE5 | `0x001D` | indicate | Alternate output pipe; production transport does not use it. |
 
-### FFC0 — Data service (handle `0x0059`)
+### FFC0 — OAD firmware-update service
 
-| Char | Handle | Properties | Notes |
-|------|--------|-----------|-------|
-| FFC1 | `0x005A` | write, notify | **Speculative** — possibly firmware updates or macro streaming; not accessed during normal probing |
-| FFC2 | `0x005E` | write, notify | **Speculative** — possibly firmware updates or macro streaming; not accessed during normal probing |
-
-**FFC0 was never accessed during normal probing.** No code references to these UUIDs exist in the stock `X3.exe` binary. Speculated to be used by the separate firmware updater tool (`Update.exe`). Purely speculative — no safe-use evidence exists. \[inference]
+FFC1 and FFC2 are firmware-update/OAD characteristics. They are outside the production configuration API and must never be accessed during normal probing or configuration.
 
 ### GATT write wire format (confirmed via binary analysis)
 
@@ -92,13 +117,13 @@ BLE:  write_gatt_char(FEE3,   [0x04, 0x38, 0x01, ...52 bytes...])
 | Report | BLE result | Canonical packet reference | Transport notes |
 |:-------|:-----------|:---------------------------|:----------------|
 | [`0x04`](../protocols/04-dpi.md) DPI | `status=0x00` | X3 dialect | Same packet bytes as USB; 52- and 56-byte forms accepted |
-| [`0x05`](../protocols/05-preferences.md) preferences | `status=0x00` | X3 dialect | Light-mode byte `0x00` crashes firmware over BLE; do not send |
-| [`0x06`](../protocols/06-polling-rate.md) polling | `status=0x01` | Shared USB layout | Firmware rejects it; stock app explicitly skips BLE |
 | [`0x07`](../protocols/07-wakeup-mode.md) wakeup | Untested | Static format only | Behavior remains unconfirmed |
 | [`0x08`](../protocols/08-button-mapping.md) buttons | `status=0x00` | X3 dialect | Correct 16-bit checksum accepted; legacy checksum rejected |
 | [`0x09`](../protocols/09-custom-macros.md) macro | `status=0x00` | X3 dialect | One packet accepted; full multi-page BLE behavior untested |
-| `0x0b` version | No ACK/data | Unknown | One-byte query sent; device name is not a firmware version |
-| [`0x0c`](../protocols/0c-profile-reset.md) profile | `status=0x00` | Shared action format | Load confirmed; save parser-accepted but persistence unconfirmed |
+| [`0x05`](../protocols/05-preferences.md) preferences | `status=0x00` | X3 dialect | Corrected same-hardware probes accepted light-mode `0x00` over USB and BLE; no BLE-specific value rejection |
+| [`0x06`](../protocols/06-polling-rate.md) polling | `status=0x00` for the exact nine-byte X3 packet; malformed legacy-shaped packets were rejected | Shared USB layout | Acceptance and later USB readback persistence are live-confirmed; immediate effective BLE polling behavior remains unconfirmed |
+| `0x0b` version | No ACK/data | Unknown | No useful BLE response; device name is not a firmware version |
+| [`0x0c`](../protocols/0c-profile-reset.md) profile | `status=0x00` | Shared action format | Parser acceptance only; persistence and completion are not proven |
 
 ---
 
@@ -195,10 +220,39 @@ Key insight: the builder/transport separation remains valid — builders produce
 | 0x09 multi-packet macro protocol over BLE | Probable: single packet accepted with `status=0x00` |
 | FFC0 service purpose | Speculative: possibly firmware updates or factory calibration; not accessed during normal probing |
 | Read-back path for settings | Not found: FEE1 is opaque, no other readable config char discovered |
-| BLE bonding impact | Untested: native access to an already-connected/bonded device through the OS BLE stack |
+| Native access to an already-paired device | Live-confirmed on Windows: open FEE0 with shared read/write access; do not pair or unpair |
 | Stock app's `BeginReliableWrite` significance | Unclear: app wraps writes in reliable-write pair but passes NULL context |
 
 ---
+
+
+## x3ctl BLE usage
+
+```bash
+# List already-connected BLE configuration devices
+x3ctl --transport ble devices
+
+# Seed explicit hardware defaults as a BLE baseline
+x3ctl --transport ble state init-defaults
+
+# Write config with explicit default fallback (no readback available)
+x3ctl --transport ble --replace-defaults dpi --active 2
+x3ctl --transport ble --replace-defaults prefs --debounce 8
+x3ctl --transport ble --replace-defaults bind forward profile-cycle
+
+# Commands that do not require --replace-defaults (no omitted fields)
+x3ctl --transport ble rate 500
+x3ctl --transport ble profile use 2
+
+# Dry-run: validate without touching hardware
+x3ctl --transport ble --dry-run dpi 800,1600,2400 --active 2
+```
+
+Every FEE3 write is acknowledged through FEE4 with `10 50 <status> <report_id>`.
+Status `0x00` proves the parser accepted the packet; it does not prove the change
+took effect or persisted to EEPROM.  The broker serialises requests and maintains
+the FEE4 subscription across CLI calls.  Use `--direct` to bypass the broker and
+talk to the BLE device in-process.
 
 ## Tooling
 

@@ -1,7 +1,7 @@
 use attack_shark_x3::protocol::buttons::{
     BUTTON_REPORT_LENGTH, BUTTON_SLOT_COUNT, ButtonAssignment, ButtonsReport, ButtonsState,
 };
-use attack_shark_x3::{ProfileId, ProtocolError};
+use attack_shark_x3::{ProfileId, ProtocolError, TransportKind};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +109,16 @@ fn live_profile_fixtures_round_trip_without_normalizing_slots() {
             fixture.name
         );
     }
+}
+
+#[test]
+fn receiver_readback_accepts_webdriver_envelope_declaration() {
+    let mut packet = from_hex(&fixtures().fixtures[0].packet_hex);
+    packet[1] = 0x3d;
+    let decoded = ButtonsReport::decode_for_transport(&packet, TransportKind::Receiver, profile(1))
+        .expect("FA60 prepared button readback must decode");
+    assert_eq!(decoded.state.profile, profile(1));
+    assert!(ButtonsReport::decode(&packet, profile(1)).is_err());
 }
 
 #[test]

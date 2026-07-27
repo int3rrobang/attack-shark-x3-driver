@@ -586,14 +586,18 @@ function validatePacket(hexStr) {
 
   // ── Hard-block dangerous reports ──
   if (reportId === 0x06) {
-    return { error: 'Report 0x06 is hard-blocked over BLE. The stock app explicitly skips BLE for report 0x06.' };
+    return {
+      error: 'Report 0x06 remains hard-blocked in the browser: the stock app skips it, ' +
+        'although the exact nine-byte X3 packet was accepted and changed the rate in the ' +
+        'corrected same-hardware probe. A production BLE writer contract is still pending.'
+    };
   }
 
   if (reportId === 0x05 && bytes.length > 3 && bytes[3] === 0x00) {
     return {
-      error: 'Report 0x05 with byte 3 = 0x00 is hard-blocked: ' +
-        'this writes LED mode 0x00 (LightMode.Off), which is known to crash X3 firmware over BLE. ' +
-        'Use byte 3 >= 0x10 for safe LED modes.'
+      error: 'Report 0x05 with byte 3 = 0x00 remains hard-blocked by the conservative safety guard: ' +
+        'a historical BLE firmware crash was not reproduced in the corrected same-hardware probe. ' +
+        'Use byte 3 >= 0x10 for ordinary BLE writes.'
     };
   }
 

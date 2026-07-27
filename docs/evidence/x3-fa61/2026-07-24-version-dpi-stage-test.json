@@ -1,0 +1,37 @@
+{
+  "steps": [
+    {
+      "name": "Current DPI state",
+      "profile1": "profile=1, activeStage=1, stageCount=1, hex=04380100000100001f0000000000000000000000...",
+      "profile2": "profile=2, activeStage=1, stageCount=6, hex=04380200003f00000f1f2f3f6307000000000000..."
+    },
+    {
+      "name": "0x0B at current DPI stage",
+      "version": "hex=0b08011010830101, [2]=1, [3]=0x10, [4]=0x10, [5]=0x83, [6]=0x01, [7]=0x01",
+      "dpi_active_stage": 1
+    },
+    {
+      "name": "DPI after active stage write",
+      "dpi": "profile=1, activeStage=2, stageCount=1, hex=04380100000100001f0000000000000000000000...",
+      "verified": "YES"
+    },
+    {
+      "name": "0x0B at new DPI stage",
+      "version": "hex=0b08011010830101, [2]=1, [3]=0x10, [4]=0x10, [5]=0x83, [6]=0x01, [7]=0x01",
+      "dpi_active_stage": 2
+    },
+    {
+      "name": "0x0B after DPI stage restore",
+      "version": "hex=0b08011010830101, [2]=1, [3]=0x10, [4]=0x10, [5]=0x83, [6]=0x01, [7]=0x01",
+      "dpi_active_stage": 1
+    }
+  ],
+  "analysis": {
+    "byte6_before": 1,
+    "byte6_after": 1,
+    "byte6_restored": 1,
+    "byte6_tracks_dpi_stage": false,
+    "dpi_stage_before": 1,
+    "dpi_stage_after": 2
+  }
+}

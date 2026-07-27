@@ -41,6 +41,12 @@ pub enum ProtocolError {
     )]
     InvalidDpi { value: u16 },
 
+    #[error("invalid polling rate {value} Hz; expected 125, 250, 500, or 1000")]
+    InvalidPollingRate { value: u16 },
+
+    #[error("invalid polling-rate code 0x{value:02x}; expected 0x01, 0x02, 0x04, or 0x08")]
+    InvalidPollingRateCode { value: u8 },
+
     #[error("invalid report length: expected {expected} bytes, got {actual}")]
     InvalidReportLength { expected: usize, actual: usize },
 

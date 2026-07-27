@@ -1,0 +1,860 @@
+{
+  "startedAt": "2026-07-24T13:58:44.146Z",
+  "phases": [
+    {
+      "phaseName": "receiver:X3",
+      "transport": "receiver",
+      "deviceLabel": "X3",
+      "hidPid": 64096,
+      "hidPath": "\\\\?\\HID#VID_1D57&PID_FA60&MI_02&Col04#8&1be981bb&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+      "hidProduct": "2.4G Wireless Device",
+      "reads": [
+        {
+          "index": 0,
+          "timestamp": "2026-07-24T13:55:37.456Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 1,
+          "timestamp": "2026-07-24T13:55:40.233Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 2,
+          "timestamp": "2026-07-24T13:55:42.998Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 3,
+          "timestamp": "2026-07-24T13:55:45.763Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 4,
+          "timestamp": "2026-07-24T13:55:48.539Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 5,
+          "timestamp": "2026-07-24T13:55:51.317Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 6,
+          "timestamp": "2026-07-24T13:55:54.082Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 7,
+          "timestamp": "2026-07-24T13:55:56.863Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 8,
+          "timestamp": "2026-07-24T13:55:59.630Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 9,
+          "timestamp": "2026-07-24T13:56:02.406Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        }
+      ],
+      "distinctPayloads": [
+        "0b0c0110008301050000"
+      ]
+    },
+    {
+      "phaseName": "receiver:X3",
+      "transport": "receiver",
+      "deviceLabel": "X3",
+      "hidPid": 64096,
+      "hidPath": "\\\\?\\HID#VID_1D57&PID_FA60&MI_02&Col04#8&1be981bb&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+      "hidProduct": "2.4G Wireless Device",
+      "reads": [
+        {
+          "index": 0,
+          "timestamp": "2026-07-24T13:56:45.788Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 1,
+          "timestamp": "2026-07-24T13:56:48.561Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 2,
+          "timestamp": "2026-07-24T13:56:51.331Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 3,
+          "timestamp": "2026-07-24T13:56:54.107Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 4,
+          "timestamp": "2026-07-24T13:56:56.872Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 5,
+          "timestamp": "2026-07-24T13:56:59.652Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 6,
+          "timestamp": "2026-07-24T13:57:02.426Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 7,
+          "timestamp": "2026-07-24T13:57:05.208Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 8,
+          "timestamp": "2026-07-24T13:57:07.987Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        },
+        {
+          "index": 9,
+          "timestamp": "2026-07-24T13:57:10.766Z",
+          "rawHex": "0b0c0110008301050000",
+          "bytes": [
+            11,
+            12,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5,
+            0,
+            0
+          ],
+          "declaredLength": 12,
+          "currentProfile": 1,
+          "versionField": "0110008301050000",
+          "ok": true
+        }
+      ],
+      "distinctPayloads": [
+        "0b0c0110008301050000"
+      ],
+      "subPhase": "post-rf-toggle"
+    },
+    {
+      "phaseName": "wired:X3",
+      "transport": "wired",
+      "deviceLabel": "X3",
+      "hidPid": 64097,
+      "hidPath": "\\\\?\\HID#VID_1D57&PID_FA61&MI_02&Col04#8&219d702f&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+      "hidProduct": "USB Gaming Mouse",
+      "reads": [
+        {
+          "index": 0,
+          "timestamp": "2026-07-24T13:57:28.261Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 1,
+          "timestamp": "2026-07-24T13:57:31.028Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 2,
+          "timestamp": "2026-07-24T13:57:33.801Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 3,
+          "timestamp": "2026-07-24T13:57:36.579Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 4,
+          "timestamp": "2026-07-24T13:57:39.346Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 5,
+          "timestamp": "2026-07-24T13:57:42.124Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 6,
+          "timestamp": "2026-07-24T13:57:44.906Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 7,
+          "timestamp": "2026-07-24T13:57:47.683Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 8,
+          "timestamp": "2026-07-24T13:57:50.447Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 9,
+          "timestamp": "2026-07-24T13:57:53.223Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        }
+      ],
+      "distinctPayloads": [
+        "0b08011000830105"
+      ]
+    },
+    {
+      "phaseName": "wired:X3",
+      "transport": "wired",
+      "deviceLabel": "X3",
+      "hidPid": 64097,
+      "hidPath": "\\\\?\\HID#VID_1D57&PID_FA61&MI_02&Col04#8&219d702f&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+      "hidProduct": "USB Gaming Mouse",
+      "reads": [
+        {
+          "index": 0,
+          "timestamp": "2026-07-24T13:58:19.182Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 1,
+          "timestamp": "2026-07-24T13:58:21.955Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 2,
+          "timestamp": "2026-07-24T13:58:24.733Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 3,
+          "timestamp": "2026-07-24T13:58:27.508Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 4,
+          "timestamp": "2026-07-24T13:58:30.284Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 5,
+          "timestamp": "2026-07-24T13:58:33.049Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 6,
+          "timestamp": "2026-07-24T13:58:35.811Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 7,
+          "timestamp": "2026-07-24T13:58:38.588Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 8,
+          "timestamp": "2026-07-24T13:58:41.365Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        },
+        {
+          "index": 9,
+          "timestamp": "2026-07-24T13:58:44.143Z",
+          "rawHex": "0b08011000830105",
+          "bytes": [
+            11,
+            8,
+            1,
+            16,
+            0,
+            131,
+            1,
+            5
+          ],
+          "declaredLength": 8,
+          "currentProfile": 1,
+          "versionField": "011000830105",
+          "ok": true
+        }
+      ],
+      "distinctPayloads": [
+        "0b08011000830105"
+      ],
+      "subPhase": "post-rf-toggle"
+    }
+  ],
+  "completedAt": "2026-07-24T13:58:44.146Z"
+}

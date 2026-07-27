@@ -1,6 +1,7 @@
 use attack_shark_x3::protocol::checksum::sum16;
 use attack_shark_x3::{
     PreferencesFraming, PreferencesReport, PreferencesState, ProfileId, ProtocolError,
+    TransportKind,
 };
 use serde::Deserialize;
 
@@ -131,6 +132,16 @@ fn captured_and_live_fixtures_round_trip_byte_for_byte() {
             fixture.name
         );
     }
+}
+
+#[test]
+fn receiver_readback_accepts_captured_webdriver_declaration() {
+    let packet = from_hex("0511010003a80000ff010401af0000");
+    let decoded =
+        PreferencesReport::decode_for_transport(&packet, TransportKind::Receiver, profile(1))
+            .expect("captured FA60 preferences readback must decode");
+    assert_eq!(decoded.state.profile, profile(1));
+    assert!(PreferencesReport::decode(&packet, profile(1)).is_err());
 }
 
 #[test]

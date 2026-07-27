@@ -49,6 +49,8 @@ FEE1_UUID = "0000fee1-0000-1000-8000-00805f9b34fb"
 ACK_TIMEOUT_DEFAULT = 2.0   # seconds to wait for FEE4 ACK per write
 CONNECT_TIMEOUT_DEFAULT = 10.0  # seconds for BleakClient connection
 SCAN_DURATION = 8  # seconds to scan for device
+HID_SERVICE_UUID = "00001812-0000-1000-8000-00805f9b34fb"
+HID_REPORT_UUID = "00002a4d-0000-1000-8000-00805f9b34fb"
 
 # ── ACK parser ─────────────────────────────────────────────────────
 
@@ -197,28 +199,24 @@ def _mk_dpi() -> bytes:
     return bytes(p)
 
 
-def _mk_polling(hz: int = 1000, wired: bool = True) -> bytes:
-    """Polling rate packet. hz=125|250|500|1000."""
+def _mk_polling(hz: int = 1000) -> bytes:
+    """Well-formed X3 report-0x06 packet. hz=125|250|500|1000."""
     rate = {125: 0x08, 250: 0x04, 500: 0x02, 1000: 0x01}[hz]
-    p = bytearray(9)
-    p[0] = 0x06; p[1] = rate
-    if wired:
-        p[8] = (0xff - rate) & 0xff
-    return bytes(p)
+    return bytes([0x06, 0x09, 0x01, rate, (0xFF - rate) & 0xFF, 0x00, 0x00, 0x00, 0x00])
 
 
 def _mk_prefs_default() -> bytes:
-    """Known-good prefs (0x05) for X3 wired — LED off (mode 0x00), all RGB 0."""
-    mode = 0x00               # LightMode.Off — known to crash firmware over BLE
-    bucket_speed = 0x05       # bucket 0 << 4 | hardwareSpeed(led=1 => 6-1=5)
-    deep_sleep = 0xA8         # 10 minutes = 0x08 + 10*0x10
-    r, g, b = 0x00, 0x00, 0x00
-    sleep_raw = 0x0A          # 5 minutes * 2
-    debounce = 0x02           # 4ms = (4-4)/2 + 2
-    dynamic = 0x01
-    payload = bytes([mode, bucket_speed, deep_sleep, r, g, b, sleep_raw, debounce])
-    cs = sum(payload) & 0xff
-    return bytes([0x05, 0x0f, 0x01]) + payload + bytes([dynamic, cs])
+    """Known-good X3 prefs with light mode 0x00 and a 16-bit checksum."""
+    payload = bytes([
+        0x00,  # LightMode.Off — historically reported as crashing BLE firmware; accepted in the corrected same-hardware probe
+        0x03,  # Captured bucket/speed byte
+        0xA8,  # 10 minutes deep sleep
+        0x00, 0x00, 0xFF,  # Captured host-labeled color bytes
+        0x01,  # 0.5 minutes normal sleep
+        0x04,  # 4 ms debounce
+    ])
+    checksum = sum(payload) & 0xFFFF
+    return bytes([0x05, 0x0F, 0x01]) + payload + checksum.to_bytes(2, "big")
 
 
 # ── experiment registry ────────────────────────────────────────────
@@ -241,7 +239,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         description=(
             "Write prefs (0x05) with LED mode 0x10 using two checksum formats: "
             "X11 8-bit legacy (expect reject 0x01) then X3 16-bit (expect accept 0x00). "
-            "LOW RISK — uses LED mode 0x10 (>= 0x10 avoids firmware crash), "
+            "LOW RISK — uses LED mode 0x10 (>= 0x10 remains the conservative guard), "
             "but writes preference bytes (deep sleep, RGB, debounce, sleep timer). "
             "May change settings."
         ),
@@ -260,18 +258,20 @@ EXPERIMENTS: dict[str, Experiment] = {
     "polling-write": Experiment(
         name="polling-write",
         description=(
-            "Write polling rate 1000 Hz (0x06). Known to be rejected (0x01) over BLE. "
-            "Stock app explicitly skips BLE for report 0x06."
+            "Write polling rate 1000 Hz (0x06) using the well-formed nine-byte X3 packet. "
+            "This changes global polling state and is accepted over BLE on the tested M600; "
+            "requires --danger. The stock app nevertheless skips BLE for report 0x06."
         ),
         dangerous=True,
-        steps=[ExperimentStep(packet=_mk_polling(1000), label="polling 1000Hz", expected_ack_status=0x01)],
+        steps=[ExperimentStep(packet=_mk_polling(1000), label="polling 1000Hz", expected_ack_status=0x00)],
     ),
     "prefs-led-off": Experiment(
         name="prefs-led-off",
         description=(
             "Write prefs (0x05) with LED mode 0x00 (LightMode.Off). "
-            "**Known to crash firmware over BLE.** Requires --danger. "
-            "If firmware crashes, ACK will be missing (timeout=error). "
+            "**Historically reported to crash firmware over BLE, but not reproduced "
+            "in the corrected same-hardware probe.** Requires --danger. "
+            "If firmware rejects or stops responding, ACK may be missing (timeout=error). "
             "If firmware accepts, ACK status 0x00 is expected but any "
             "status is accepted for pass/fail."
         ),
@@ -591,6 +591,7 @@ async def _connect_and_run(
     ack_timeout: float,
     requires_write: bool,
     run_fn: Callable[[Any, ProbeState], int],
+    pair: bool = False,
 ) -> int:
     """Scan for device if no address, connect, run callback, disconnect.
 
@@ -622,7 +623,7 @@ async def _connect_and_run(
 
     print(f"Connecting {address} ...")
     try:
-        async with BleakClient(address, timeout=connect_timeout) as client:
+        async with BleakClient(address, timeout=connect_timeout, pair=pair) as client:
             st = ProbeState(client=client, correlator=AckCorrelator(ack_timeout))
             await _map_characteristics(client, st)
 
@@ -717,6 +718,61 @@ async def _run_experiments(
 
 async def _read_fee1_only(client: Any, st: ProbeState) -> int:
     await _read_fee1(client, "fee1", st)
+    return 0
+
+async def _measure_input(client: Any, _st: ProbeState, duration: float) -> int:
+    """Capture timestamped BLE HID input notifications without writing."""
+    report_chars: list[Any] = []
+    for service in client.services:
+        if str(service.uuid).lower() != HID_SERVICE_UUID:
+            continue
+        report_chars.extend(
+            ch for ch in service.characteristics
+            if str(ch.uuid).lower() == HID_REPORT_UUID and "notify" in ch.properties
+        )
+
+    if not report_chars:
+        print(f"ERROR: no notifying HID Report ({HID_REPORT_UUID}) characteristic found")
+        print("  discovered GATT services:")
+        for service in client.services:
+            print(f"    service {service.uuid}")
+            for ch in service.characteristics:
+                print(f"      characteristic {ch.uuid} properties={','.join(ch.properties)}")
+        return 2
+
+    timestamps: dict[str, list[float]] = {}
+    callbacks: list[tuple[Any, Callable[..., None]]] = []
+    for ch in report_chars:
+        key = f"{ch.handle}:{ch.uuid}"
+        timestamps[key] = []
+
+        def _on_report(_sender: Any, _data: bytearray, *, _key: str = key) -> None:
+            timestamps[_key].append(time.perf_counter())
+
+        await client.start_notify(ch, _on_report)
+        callbacks.append((ch, _on_report))
+        print(f"  subscribed HID input report {key}")
+
+    print(f"  capturing BLE HID input for {duration:.1f}s; move the mouse continuously")
+    started = time.perf_counter()
+    try:
+        await asyncio.sleep(duration)
+    finally:
+        for ch, _callback in callbacks:
+            try:
+                await client.stop_notify(ch)
+            except Exception as error:
+                print(f"  HID report unsubscribe ERROR ({ch.handle}): {error}")
+    elapsed = time.perf_counter() - started
+
+    all_times = [stamp for values in timestamps.values() for stamp in values]
+    print("\n  HID input measurement:")
+    for key, values in timestamps.items():
+        span = values[-1] - values[0] if len(values) > 1 else 0.0
+        hz = (len(values) - 1) / span if span > 0 else 0.0
+        print(f"    {key}: {len(values)} notifications, {hz:.2f} Hz effective")
+    total_hz = len(all_times) / elapsed if elapsed > 0 else 0.0
+    print(f"    aggregate: {len(all_times)} notifications over {elapsed:.2f}s, {total_hz:.2f} Hz")
     return 0
 
 
@@ -820,6 +876,14 @@ def _self_test() -> int:
 
     ack5 = Ack.parse(bytes([0x19, 0x64]))
     check("reject non-ACK (battery notification)", ack5 is None, f"got {ack5}")
+    print("\n── Polling packets (0x06) ──")
+    polling_500 = _mk_polling(500)
+    check("polling packet uses the nine-byte X3 contract",
+          polling_500 == bytes.fromhex("06090102fd00000000"),
+          f"got {polling_500.hex()}")
+    check("polling-write expects BLE success for the corrected packet",
+          EXPERIMENTS["polling-write"].steps[0].expected_ack_status == 0x00)
+
 
     print("\n── Checksum packets ──")
 
@@ -922,6 +986,8 @@ def _self_test() -> int:
     lo = EXPERIMENTS["prefs-led-off"]
     check("prefs-led-off expected_ack_status is None (ACK required, any status accepted)",
           lo.steps[0].expected_ack_status is None)
+    check("prefs-led-off packet is the well-formed X3 light-off image",
+          lo.steps[0].packet == bytes.fromhex("050f010003a80000ff010401af"))
 
     print("\n── Registry invariants (post-removal) ──")
 
@@ -1115,8 +1181,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Read FEE1 counter and exit (no writes; does not require FEE3/FEE4)",
     )
     p.add_argument(
+        "--pair", action="store_true",
+        help="Request OS BLE pairing before service discovery (useful for HID input measurement)",
+    )
+    p.add_argument(
         "--cmd", default=None, metavar="HEX",
         help="Send raw hex packet to FEE3 (requires --danger or --dry-run)",
+    )
+    p.add_argument(
+        "--measure-input", type=float, default=None, metavar="SECONDS",
+        help="Capture BLE HID input notifications for SECONDS without writing; move the mouse continuously",
     )
     p.add_argument(
         "--fail-fast", action="store_true",
@@ -1179,6 +1253,23 @@ async def _async_main(args: argparse.Namespace) -> int:
             print("ERROR: --cmd writes to device. Use --danger to confirm, or --dry-run to preview.")
             return 1
         selected.append(cmd_exp)
+
+    if args.measure_input is not None:
+        if args.measure_input <= 0:
+            print("ERROR: --measure-input requires a positive duration")
+            return 1
+        if selected or args.read_fee1:
+            print("ERROR: --measure-input cannot be combined with writes or --read-fee1")
+            return 1
+        if args.dry_run:
+            print(f"DRY RUN: would capture BLE HID input for {args.measure_input:.1f}s — no BLE connection")
+            return 0
+        return await _connect_and_run(
+            device_name, address, connect_timeout, ack_timeout,
+            requires_write=False,
+            run_fn=lambda c, s: _measure_input(c, s, args.measure_input),
+            pair=args.pair,
+        )
 
     # ── Dry-run (bypasses danger gate — no BLE connection occurs) ──
     if args.dry_run:

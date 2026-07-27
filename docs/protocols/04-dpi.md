@@ -7,6 +7,7 @@ Report `0x04` configures DPI stages and model-specific sensor fields. The driver
 | Variant | Transport | Status | Evidence |
 |:--------|:----------|:-------|:---------|
 | X11 wired / adapter | USB HID | Supported | implementation + X11 samples |
+| X3/M600 via FA60 receiver | USB HID | 52-byte compact writes, 56-byte full readbacks, `0xa0` selector | capture-confirmed + live-confirmed |
 | X3/FA61 wired | USB HID | 1–8 stages and sensor fields confirmed | live-confirmed + capture-confirmed |
 | X3/M600 BLE | BLE FEE3 | Same X3 payload confirmed | live-confirmed |
 | X11 Bluetooth | — | Not tested | — |
@@ -22,12 +23,12 @@ To apply DPI settings, a `SET_REPORT` request is sent via USB with the following
 
 ## Data Buffer Structure
 
-The payload consists of a 56-byte buffer. In wired mode, only the first 52 bytes are typically sent. Field definitions below combine evidence from stock-software captures, live testing, and the driver codebase.
+The internal report is 56 bytes. Writes always send the first 52 bytes (compact framing) regardless of transport — live-confirmed for both FA61 wired and FA60 receiver via stock-software USB captures. The 56-byte full framing (with 4 trailing zero bytes) appears only in `hid_get_feature_report` readbacks. The firmware tolerates a 56-byte write without corrupting state (live-confirmed via probe), but the stock app never sends one. Field definitions below combine evidence from stock-software captures, live testing, and the driver codebase.
 
 | Offset | Field          | Type        | Description                                                      | Source |
 |:-------|:---------------|:------------|:-----------------------------------------------------------------|:-------|
 | 0      | Header 1       | `uint8`     | Fixed value `0x04`                                               | static |
-| 1      | Header 2       | `uint8`     | Fixed value `0x38`                                               | static |
+| 1      | Header 2       | `uint8`     | Canonical write/wired declaration `0x38`; FA60 prepared readback `0x3a` | live-confirmed + static-analysis |
 | 2      | Profile / Header 3 | `uint8` | X11 fixed `0x01`; X3 one-based target profile (`0x01`–`0x05`) | static-analysis |
 | 3      | Angle Snap / LOD | `uint8`   | X11 angle snap; X3 LOD (`0x00` = 1mm, `0x01` = 2mm)              | live-confirmed |
 | 4      | Ripple Control | `uint8`     | `0x01` to enable, `0x00` to disable                              | live-confirmed |
@@ -52,7 +53,13 @@ The payload consists of a 56-byte buffer. In wired mode, only the first 52 bytes
 | 25-49  | Fixed Data     | `uint8[25]` | Captured from stock software; individual field meanings unknown. X11 last byte = `0x02`, X3 last byte = `0x01`. | static |
 | 50     | Checksum High  | `uint8`     | High byte of the 16-bit checksum                                 | static |
 | 51     | Checksum Low   | `uint8`     | Low byte of the 16-bit checksum                                  | static |
-| 52-55  | Padding        | `uint8[4]`  | Wireless mode padding (fixed `0x00`)                             | static |
+| 52-55  | Padding        | `uint8[4]`  | Readback-only trailing zeros (fixed `0x00`); not sent in writes  | live-confirmed |
+
+The FA60 readback remains 56 HID report bytes; `0x3a` is the length including
+the WebDriver's two-byte method/model envelope. Receiver writes retain the
+canonical `0x38` declaration. A serialized hardware probe read this dialect,
+changed the active stage from 800 to 850 DPI, verified it, restored 800 DPI,
+and matched the complete final profile snapshot to the backup. \[live-confirmed]
 
 ### X3 target-profile behavior
 

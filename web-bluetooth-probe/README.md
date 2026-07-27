@@ -106,9 +106,14 @@ ACK timeout defaults to 2 seconds (configurable).
   1. The risk-acknowledgment checkbox checked.
   2. The text `WRITE` typed into the confirmation field.
 - Hard-blocked packets:
-  - **Report 0x06** — the stock app explicitly skips BLE for this report.
-  - **Report 0x05 with byte 3 = 0x00** — writes `LightMode.Off`, which is
-    known to crash X3 firmware over BLE. Use LED mode >= 0x10 instead.
+  - **Report 0x06** — the stock app skips this report. The exact nine-byte X3
+    packet was accepted in the corrected same-hardware probe and changed the
+    rate observed after USB reconnect; the browser still blocks it pending a
+    production BLE writer contract.
+  - **Report 0x05 with byte 3 = 0x00** — writes `LightMode.Off`. A historical
+    crash report was not reproduced in the corrected same-hardware USB/BLE
+    probe; the browser still blocks it conservatively. Use LED mode >= 0x10
+    unless an explicitly authorized diagnostic test is being performed.
 - Packet preview shows length, report ID, and hex before sending.
 - Writes prefer `writeValueWithResponse` and fall back to `writeValue` with
   a visible warning.

@@ -1,88 +1,88 @@
 {
-  "schemaVersion": 1,
-  "fixtures": [
-    {
-      "name": "captured-empty-profile-1-fa61-write-compact",
-      "evidence": "inference",
-      "source": "__tests__/DpiBuilder.test.ts",
-      "transport": "wired",
-      "framing": "compact",
-      "profile": 1,
-      "packetHex": "04380100003f00000f1f2f3f63070000000000000002000002ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7d",
-      "knownState": {
-        "lod": "1mm",
-        "rippleControl": false,
-        "stageMask": 63,
-        "enabledStages": 6,
-        "angleSnap": false,
-        "motionSync": false,
-        "dpiValues": [800, 1600, 2400, 3200, 5000, 26000],
-        "activeStage": 2,
-        "fixedTailLastByte": 1
-      }
-    },
-    {
-      "name": "captured-empty-profile-1-fa60-write-full-inferred",
-      "evidence": "inference",
-      "source": "__tests__/DpiBuilder.test.ts",
-      "transport": "receiver",
-      "framing": "full",
-      "profile": 1,
-      "packetHex": "04380100003f00000f1f2f3f63070000000000000002000002ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7d00000000",
-      "knownState": {
-        "lod": "1mm",
-        "rippleControl": false,
-        "stageMask": 63,
-        "enabledStages": 6,
-        "angleSnap": false,
-        "motionSync": false,
-        "dpiValues": [800, 1600, 2400, 3200, 5000, 26000],
-        "activeStage": 2,
-        "fixedTailLastByte": 1,
-        "padding": [0, 0, 0, 0]
-      }
-    },
-    {
-      "name": "profile-1-fa61-readback-full",
-      "evidence": "live-confirmed",
-      "source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
-      "transport": "wired",
-      "framing": "full",
-      "profile": 1,
-      "packetHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
-      "knownState": {
-        "lod": "1mm",
-        "rippleControl": false,
-        "stageMask": 63,
-        "enabledStages": 6,
-        "angleSnap": false,
-        "motionSync": false,
-        "dpiValues": [800, 1600, 2400, 3200, 5000, 26000],
-        "activeStage": 1,
-        "fixedTailLastByte": 1,
-        "padding": [0, 0, 0, 0]
-      }
-    },
-    {
-      "name": "profile-2-fa61-readback-full",
-      "evidence": "live-confirmed",
-      "source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
-      "transport": "wired",
-      "framing": "full",
-      "profile": 2,
-      "packetHex": "04380200003f00000f1f2f3f63070000000000000002000002ff000000ff000000ffffff0000ffffff00ffff4000ffffff030e7f00000000",
-      "knownState": {
-        "lod": "1mm",
-        "rippleControl": false,
-        "stageMask": 63,
-        "enabledStages": 6,
-        "angleSnap": false,
-        "motionSync": false,
-        "dpiValues": [800, 1600, 2400, 3200, 5000, 26000],
-        "activeStage": 2,
-        "fixedTailLastByte": 3,
-        "padding": [0, 0, 0, 0]
-      }
-    }
-  ]
+	"schemaVersion": 1,
+	"fixtures": [
+		{
+			"name": "captured-empty-profile-1-fa61-write-compact",
+			"evidence": "inference",
+			"source": "__tests__/DpiBuilder.test.ts",
+			"transport": "wired",
+			"framing": "compact",
+			"profile": 1,
+			"packetHex": "04380100003f00000f1f2f3f63070000000000000002000002ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7d",
+			"knownState": {
+				"lod": "1mm",
+				"rippleControl": false,
+				"stageMask": 63,
+				"enabledStages": 6,
+				"angleSnap": false,
+				"motionSync": false,
+				"dpiValues": [800, 1600, 2400, 3200, 5000, 26000],
+				"activeStage": 2,
+				"fixedTailLastByte": 1
+			}
+		},
+		{
+			"name": "captured-empty-profile-1-fa60-write-full-inferred",
+			"evidence": "inference",
+			"source": "__tests__/DpiBuilder.test.ts",
+			"transport": "receiver",
+			"framing": "full",
+			"profile": 1,
+			"packetHex": "04380100003f00000f1f2f3f63070000000000000002000002ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7d00000000",
+			"knownState": {
+				"lod": "1mm",
+				"rippleControl": false,
+				"stageMask": 63,
+				"enabledStages": 6,
+				"angleSnap": false,
+				"motionSync": false,
+				"dpiValues": [800, 1600, 2400, 3200, 5000, 26000],
+				"activeStage": 2,
+				"fixedTailLastByte": 1,
+				"padding": [0, 0, 0, 0]
+			}
+		},
+		{
+			"name": "profile-1-fa61-readback-full",
+			"evidence": "live-confirmed",
+			"source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
+			"transport": "wired",
+			"framing": "full",
+			"profile": 1,
+			"packetHex": "04380100003f00000f1f2f3f63070000000000000002000001ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7c00000000",
+			"knownState": {
+				"lod": "1mm",
+				"rippleControl": false,
+				"stageMask": 63,
+				"enabledStages": 6,
+				"angleSnap": false,
+				"motionSync": false,
+				"dpiValues": [800, 1600, 2400, 3200, 5000, 26000],
+				"activeStage": 1,
+				"fixedTailLastByte": 1,
+				"padding": [0, 0, 0, 0]
+			}
+		},
+		{
+			"name": "profile-2-fa61-readback-full",
+			"evidence": "live-confirmed",
+			"source": "docs/evidence/x3-fa61/2026-07-17-x3-profile-targeted.json",
+			"transport": "wired",
+			"framing": "full",
+			"profile": 2,
+			"packetHex": "04380200003f00000f1f2f3f63070000000000000002000002ff000000ff000000ffffff0000ffffff00ffff4000ffffff030e7f00000000",
+			"knownState": {
+				"lod": "1mm",
+				"rippleControl": false,
+				"stageMask": 63,
+				"enabledStages": 6,
+				"angleSnap": false,
+				"motionSync": false,
+				"dpiValues": [800, 1600, 2400, 3200, 5000, 26000],
+				"activeStage": 2,
+				"fixedTailLastByte": 3,
+				"padding": [0, 0, 0, 0]
+			}
+		}
+	]
 }

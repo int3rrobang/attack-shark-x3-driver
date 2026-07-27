@@ -4,6 +4,7 @@ use super::checksum::sum16;
 
 pub const DPI_REPORT_ID: u8 = 0x04;
 pub const DPI_DECLARED_LENGTH: u8 = 0x38;
+const DPI_RECEIVER_DECLARED_LENGTH: u8 = 0x3a;
 pub const DPI_WIRED_LENGTH: usize = 52;
 pub const DPI_RECEIVER_LENGTH: usize = 56;
 
@@ -125,8 +126,9 @@ impl DpiReport {
     /// Returns an error when the stage count or active stage is invalid.
     pub fn encode(state: &DpiState, transport: TransportKind) -> Result<Self, ProtocolError> {
         let framing = match transport {
-            TransportKind::Wired => DpiFraming::Compact,
-            TransportKind::Receiver => DpiFraming::Full,
+            TransportKind::Wired | TransportKind::Ble | TransportKind::Receiver => {
+                DpiFraming::Compact
+            }
         };
         Self::encode_framed(state, framing)
     }
@@ -190,9 +192,15 @@ impl DpiReport {
                 actual: packet[0],
             });
         }
-        if packet[1] != DPI_DECLARED_LENGTH {
+        let expected_declared_length = match transport {
+            TransportKind::Receiver => DPI_RECEIVER_DECLARED_LENGTH,
+            TransportKind::Wired | TransportKind::Ble => DPI_DECLARED_LENGTH,
+        };
+        let declared_length_is_valid = packet[1] == expected_declared_length
+            || (transport == TransportKind::Receiver && packet[1] == DPI_DECLARED_LENGTH);
+        if !declared_length_is_valid {
             return Err(ProtocolError::UnexpectedDeclaredLength {
-                expected: DPI_DECLARED_LENGTH,
+                expected: expected_declared_length,
                 actual: packet[1],
             });
         }
@@ -293,7 +301,9 @@ impl DpiReport {
 
 fn decode_framing(transport: TransportKind, actual: usize) -> Result<DpiFraming, ProtocolError> {
     match (transport, actual) {
-        (TransportKind::Wired, DPI_WIRED_LENGTH) => Ok(DpiFraming::Compact),
+        (TransportKind::Wired | TransportKind::Ble | TransportKind::Receiver, DPI_WIRED_LENGTH) => {
+            Ok(DpiFraming::Compact)
+        }
         (TransportKind::Wired | TransportKind::Receiver, DPI_RECEIVER_LENGTH) => {
             Ok(DpiFraming::Full)
         }
@@ -306,8 +316,7 @@ fn decode_framing(transport: TransportKind, actual: usize) -> Result<DpiFraming,
 
 const fn expected_write_length(transport: TransportKind) -> usize {
     match transport {
-        TransportKind::Wired => DPI_WIRED_LENGTH,
-        TransportKind::Receiver => DPI_RECEIVER_LENGTH,
+        TransportKind::Wired | TransportKind::Ble | TransportKind::Receiver => DPI_WIRED_LENGTH,
     }
 }
 

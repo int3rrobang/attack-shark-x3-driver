@@ -13,7 +13,7 @@ The binary contains a **byte-identical USB/BLE transport dispatcher**: the same 
 
 Key findings:
 
-- Report `0x06` is explicitly excluded from BLE; the stable transport restriction is documented in [`../protocols/06-polling-rate.md`](../protocols/06-polling-rate.md).
+- The stock app explicitly excludes report `0x06` from BLE. A corrected same-hardware probe later accepted the exact nine-byte X3 packet over BLE and changed the rate observed after USB reconnect; shorter legacy-shaped packets were rejected.
 - Reports `0x05` and `0x08` use X3-specific 16-bit checksums. Canonical formulas and live ACK evidence are maintained in [`05-preferences.md`](../protocols/05-preferences.md) and [`08-button-mapping.md`](../protocols/08-button-mapping.md).
 - Report `0x0c` uses complement-pair integrity checks and reads, but does not write, RF mode. Canonical action semantics are maintained in [`0c-profile-reset.md`](../protocols/0c-profile-reset.md).
 

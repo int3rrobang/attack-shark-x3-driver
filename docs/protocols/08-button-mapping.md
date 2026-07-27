@@ -7,7 +7,8 @@ Report `0x08` writes the complete button-assignment table. The driver implements
 | Variant | Transport | Status | Evidence |
 |:--------|:----------|:-------|:---------|
 | X11 wired / adapter | USB HID | Supported | implementation and existing samples |
-| X3/FA61 wired | USB HID | Normal buttons live-confirmed; checksum implementation gap | live-confirmed + capture-confirmed |
+| X3/M600 via FA60 receiver | USB HID | 59-byte X3 full report and `0xa0` readback | binary report + implementation |
+| X3/FA61 wired | USB HID | Normal buttons live-confirmed; native Rust codec and selected-slot CLI are available; legacy TypeScript builder remains on the X11 checksum | live-confirmed + capture-confirmed |
 | X3/M600 BLE | BLE FEE3 | 16-bit checksum acceptance confirmed | live-confirmed |
 
 ## HID framing and payload
@@ -18,22 +19,33 @@ Report `0x08` writes the complete button-assignment table. The driver implements
 | `wIndex` | `0x0002` |
 | Payload length | 59 bytes |
 
-Bytes 0–1 are `08 3b`. On X11, byte 2 is the fixed header value `01`; on X3/M600 it is the one-based target profile. Bytes 3–56 contain eighteen three-byte assignment slots. Each populated slot is encoded as:
+Writes use bytes 0–1 `08 3b`; FA60 prepared readbacks use `08 3d` while remaining 59 HID report bytes long. On X11, byte 2 is the fixed header value `01`; on X3/M600 it is the one-based target profile. Bytes 3–56 contain eighteen three-byte assignment slots. Each populated slot is encoded as:
 
 ```text
 <firmware action> <modifier> <key code or action value>
 ```
 
-A write replaces the full table. The driver starts from model defaults and applies requested overrides; unspecified buttons do not preserve the current live device state.
+A write replaces the full table. The historical TypeScript builder starts from
+model defaults and applies requested overrides; unspecified buttons therefore do
+not preserve the current live device state. The native Rust FA61 CLI instead
+reads the complete target table, changes one explicitly selected safe button
+slot, and writes the resulting complete table back. It does not expose arbitrary
+raw slots or scroll remaps.
 
 An armed X3/M600 read also carries its one-based target at selector byte 4. Reading a
 different target can replace the working button map without changing persistent
 report-`0x0c` metadata, so profile changes and button read/write traffic must be
 serialized.
 
+The serialized FA60 hardware probe decoded and validated all eighteen slots
+with the `0x3d` receiver readback declaration, then matched the complete final
+button table to its pre-write backup. The probe did not modify any button slot.
+\[live-confirmed]
+
 ## Logical button slots
 
-The implemented X11 offsets for common controls are:
+The slot offsets for common controls are shared between X11 and X3
+(capture-confirmed 2026-07-24 for X3/FA60 receiver):
 
 | Button | Offset |
 |:-------|:-------|
@@ -82,3 +94,36 @@ The Rust codec and X3-only production builder use this 16-bit checksum. The hist
 ## Custom macro binding
 
 An assignment with firmware action `0x12` points a button at custom macro content identified by the third slot byte. The corresponding event pages must then be written with report [`0x09`](09-custom-macros.md).
+
+## X3 firmware action codes
+
+The following action bytes are confirmed on X3/FA61 wired (live-confirmed 2026-07-25):
+
+| Action | Byte | Notes |
+|:-------|:-----|:------|
+| Disable | `0x01` | |
+| Left click | `0x02` | |
+| Right click | `0x03` | |
+| Middle click | `0x04` | |
+| Backward | `0x05` | |
+| Forward | `0x06` | |
+| Double click | `0x07` | |
+| DPI cycle | `0x0d` | |
+| DPI plus | `0x0e` | |
+| DPI minus | `0x0f` | |
+| Profile cycle | `0x34` | Wraps within 1..max |
+| Profile plus | `0x35` | Clamps at max |
+| Profile minus | `0x36` | Clamps at 1 |
+
+Profile cycling actions are X3-specific and not present in the X11 `FirmwareAction` enum. Button bindings are per-profile: the cycle/plus/minus binding must be written to every profile that should respond to the physical button.
+
+Confirmed slot indices on X3/FA61 wired:
+
+| Button | Slot index | Byte offset |
+|:-------|:-----------|:------------|
+| Left | 0 | 3 |
+| Right | 1 | 6 |
+| Middle | 2 | 9 |
+| DPI | 3 | 12 |
+| Forward | 6 | 21 |
+| Backward | 7 | 24 |

@@ -4,8 +4,8 @@ This directory separates model support, packet formats, transports, research pro
 
 ## Choose a device
 
-- **[Attack Shark X11](devices/x11.md)** — X11 wired (`0xfa55`) and 2.4 GHz adapter (`0xfa60`). Production support is preserved from implementation, captures, and prior reverse-engineering; the current maintainer does not have X11 hardware for new live tests.
-- **[X3 / FA61 protocol target](devices/x3-fa61.md)** — X3, FA61, and Kysona M600-family findings for USB PID `0xfa61` and experimental BLE. This is the current live-tested hardware path.
+- **[Attack Shark X11](devices/x11.md)** — X11 wired (`0xfa55`) and historical X11 2.4 GHz adapter evidence. PID `0xfa60` identifies a shared receiver and is not, by itself, an X11 model identifier.
+- **[X3 / FA61 protocol target](devices/x3-fa61.md)** — X3, FA61, and Kysona M600-family findings for USB PID `0xfa61`, X3 through the shared `0xfa60` receiver, and experimental BLE. This is the current live-tested hardware path.
 
 Brand aliases do not by themselves prove identical firmware. Each technical claim must remain qualified by model, transport, and evidence.
 
@@ -18,6 +18,8 @@ Brand aliases do not by themselves prove identical firmware. Each technical clai
 | [`transports/`](transports/README.md) | USB HID, BLE GATT, and browser transport behavior |
 | [`research/`](research/README.md) | Dated investigations, binary-analysis provenance, and corrections |
 | [`evidence/`](evidence/README.md) | Raw descriptors, captures, packet dumps, and model-specific analyses |
+| [`ui-driver-spec.md`](ui-driver-spec.md) | Rust FA61 user-interface integration contract |
+| [`refactor-roadmap.md`](refactor-roadmap.md) | Rust-only architecture, durable-state model, GUI boundary, and phased implementation plan |
 | [`safety.md`](safety.md) | Shared hardware-test and recovery restrictions |
 
 ## Packet reports
@@ -30,8 +32,9 @@ Brand aliases do not by themselves prove identical firmware. Each technical clai
 | [`0x07`](protocols/07-wakeup-mode.md) | Partially characterized wakeup mode |
 | [`0x08`](protocols/08-button-mapping.md) | Button mapping |
 | [`0x09`](protocols/09-custom-macros.md) | Custom macro event pages |
+| [`0x0b`](protocols/0b-version.md) | Version and profile-state composite; byte [4] mirrors light mode |
 | [`0x0c`](protocols/0c-profile-reset.md) | Profile actions and reset preparation |
-| [Battery](protocols/battery.md) | X11 adapter interrupt report and X3 BLE battery path |
+| [Battery](protocols/battery.md) | X11 adapter interrupt report; unconfirmed FA60 X3/M600 candidate; X3 BLE battery path |
 
 ## Evidence vocabulary
 

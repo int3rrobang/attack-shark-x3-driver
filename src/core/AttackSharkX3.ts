@@ -152,13 +152,19 @@ export class AttackSharkX3 extends EventEmitter<AttackSharkX3Events> {
 	}
 
 	private handleData = (data: Buffer): void => {
-		if (bufferStartsWith(data, Buffer.from([0x03, 0x55, 0x40, 0x01]))) {
-			if (data.length < 5) return;
-			const battery = data[4];
-			if (battery !== undefined && battery !== this.lastBattery) {
-				this.lastBattery = battery;
-				this.emit('batteryChange', battery);
+		if (data.length < 5) return;
+		let battery: number | undefined;
+		if (bufferStartsWith(data, Buffer.from([0x03, 0x10, 0x40, 0x01]))) {
+			const raw = data[4];
+			if (raw !== undefined && raw >= 1 && raw <= 10) {
+				battery = raw * 10;
 			}
+		} else if (bufferStartsWith(data, Buffer.from([0x03, 0x55, 0x40, 0x01]))) {
+			battery = data[4];
+		}
+		if (battery !== undefined && battery !== this.lastBattery) {
+			this.lastBattery = battery;
+			this.emit('batteryChange', battery);
 		}
 	};
 

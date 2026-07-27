@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-#[cfg(feature = "usb")]
+#[cfg(any(feature = "usb", feature = "ble"))]
 pub mod driver;
 pub mod error;
 pub mod model;
@@ -9,12 +9,24 @@ pub mod protocol;
 #[cfg(feature = "usb")]
 pub use driver::{
     DeviceInfo, DeviceSelector, DriverError, MouseHandle, ProfileSnapshot, ReadFailure, ReadPolicy,
-    list_devices,
+    UsbDeviceKind, list_devices, list_devices_for,
+};
+
+#[cfg(feature = "ble")]
+pub use driver::ble::{
+    BleAck, BleDeviceId, BleDeviceInfo, BleError, BleHandle, BlePolicy, BleReport, BleSelector,
+    BleWriteReceipt, decode_ack, fee0_service, fee3_write, fee4_ack,
 };
 pub use error::ProtocolError;
 pub use model::{DpiValue, ProfileId, StageIndex, TransportKind};
 pub use protocol::buttons::{ButtonAssignment, ButtonsReport, ButtonsState, DecodedButtonsReport};
 pub use protocol::dpi::{DecodedDpiReport, DpiFraming, DpiReport, DpiState, SensorOptions};
+pub use protocol::input::{
+    BATTERY_REPORT_LENGTH, BATTERY_REPORT_PREFIX, BATTERY_REPORT_PREFIX_X3, BatteryEvent,
+    DPI_BUTTON_REPORT_LENGTH, DPI_BUTTON_REPORT_PREFIX, DPI_BUTTON_REPORT_TRAILING_BYTE,
+    DpiButtonEvent, decode_battery_report, decode_dpi_button_report,
+};
+pub use protocol::polling_rate::{DecodedPollingRateReport, PollingRate, PollingRateReport};
 pub use protocol::preferences::{
     DecodedPreferencesReport, PreferencesFraming, PreferencesReport, PreferencesState,
 };

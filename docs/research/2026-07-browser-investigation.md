@@ -117,11 +117,36 @@ FEE1 is **opaque**. Observed values change between consecutive reads and across 
 
 | Restriction | Source |
 |-------------|--------|
-| Report 0x06 blocked on BLE | Stock app `cmp [eax],0x6; je skip_ble` |
-| Report 0x05 byte 3 = 0x00 crashes firmware over BLE | Live-confirmed |
+| Report 0x06 skipped on BLE | Stock app `cmp [eax],0x6; je skip_ble`; exact nine-byte packet was later accepted in a same-hardware probe, while shorter legacy-shaped forms were rejected |
+| Report 0x05 byte 3 = 0x00 crashes firmware over BLE | Historical live report; superseded by the corrected same-hardware probe on 2026-07-22, which accepted the well-formed packet and subsequent BLE commands |
 | No FFC0/FFC1/FFC2 access | Stock app never references these; no evidence of safe use |
 
 The web-bluetooth-probe JS enforces these blocks at the UI validation layer.
+
+### 6.6 Subsequent same-hardware correction (2026-07-22)
+
+The same physical mouse was tested first through its FA61 USB configuration
+collection and then as the `M600-5.2` BLE identity. The corrected packet
+`05 0f 01 00 03 a8 00 00 ff 01 04 01 af` was accepted over USB and BLE.
+BLE returned `10 50 00 05`, accepted subsequent same-RID commands, remained
+connected, and accepted a later reconnect. The earlier crash report is
+therefore not reproducible on this hardware. Its cause remains unresolved;
+an error in the packet contract or test harness is possible but unconfirmed.
+
+The conservative BLE guard remains in the diagnostic and browser tools while
+the historical failure is treated as unresolved rather than as a current
+hardware fact. \[corrected, live-confirmed]
+
+### 6.7 Subsequent polling-rate contract correction (2026-07-22)
+
+The exact nine-byte X3 report-`0x06` packet
+`06 09 01 02 fd 00 00 00 00` returned BLE ACK `10 50 00 06`.
+After USB reconnect, the same mouse reported `500 Hz`. The shorter packets
+`06 01 00 00 00 00 00 00 fe` and `06 02 00 00 00 00 00 00 fd` returned
+`10 50 01 06` and did not change the USB-observed rate. The stock application
+still skips BLE report `0x06`; the reason for that policy is unresolved.
+\[corrected, live-confirmed]
+
 
 > The `web-bluetooth-probe/` files are currently untracked in git.
 
