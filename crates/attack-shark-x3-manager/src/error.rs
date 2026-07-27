@@ -2,7 +2,8 @@ use std::{io, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::state::SCHEMA_VERSION;
+use crate::{device::DeviceId, state::SCHEMA_VERSION};
+use attack_shark_x3::{ProfileId, TransportKind};
 
 /// Errors returned while loading, validating, or storing durable manager state.
 #[derive(Debug, Error)]
@@ -68,4 +69,58 @@ impl StateError {
     pub fn invalid_state(detail: impl Into<String>) -> Self {
         Self::InvalidState(detail.into())
     }
+}
+
+/// Errors returned by typed manager operations.
+#[derive(Debug, Error)]
+pub enum ManagerError {
+    /// Durable manager state could not be loaded or stored.
+    #[error(transparent)]
+    State(#[from] StateError),
+
+    /// A transport worker or USB driver operation failed.
+    #[cfg(any(feature = "usb", feature = "ble"))]
+    #[error(transparent)]
+    Driver(#[from] attack_shark_x3::driver::DriverError),
+
+    /// A BLE transport operation failed.
+    #[cfg(feature = "ble")]
+    #[error(transparent)]
+    Ble(#[from] attack_shark_x3::BleError),
+
+    /// The selected transport cannot perform the requested operation.
+    #[error("operation {operation} is unsupported on {transport:?}")]
+    UnsupportedOperation {
+        operation: &'static str,
+        transport: TransportKind,
+    },
+
+    /// A partial update has no complete baseline to merge against.
+    #[error("missing {resource} baseline for profile {profile:?}")]
+    MissingBaseline {
+        resource: &'static str,
+        profile: Option<ProfileId>,
+    },
+
+    /// The requested exact device is not currently available.
+    #[error("device not found: {0}")]
+    DeviceNotFound(DeviceId),
+
+    /// Profile-reload verification has no distinct enabled profile to use.
+    #[error("no alternate profile available for target {target} (maximum {maximum})")]
+    NoAlternateProfile {
+        target: ProfileId,
+        maximum: ProfileId,
+    },
+
+    /// A normalized readback differs from the requested value.
+    #[error("verification mismatch for {resource} on profile {profile:?}")]
+    VerificationMismatch {
+        resource: &'static str,
+        profile: Option<ProfileId>,
+    },
+
+    /// The requested update is invalid before reaching a transport.
+    #[error("invalid update: {0}")]
+    InvalidUpdate(String),
 }

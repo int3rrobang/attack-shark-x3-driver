@@ -105,12 +105,14 @@ dependencies = [
 name = "attack-shark-x3-manager"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "attack-shark-x3",
  "fs2",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

@@ -1,11 +1,25 @@
 #![forbid(unsafe_code)]
 
+#[cfg(any(feature = "usb", feature = "ble"))]
+mod backend;
 pub mod device;
 pub mod error;
+#[cfg(any(feature = "usb", feature = "ble"))]
+pub(crate) mod events;
+#[cfg(any(feature = "usb", feature = "ble"))]
+pub mod manager;
+pub mod operation;
+#[cfg(any(feature = "usb", feature = "ble"))]
+pub(crate) mod resources;
 pub mod state;
+#[cfg(any(feature = "usb", feature = "ble"))]
+pub(crate) mod verification;
 
 pub use device::*;
-pub use error::StateError;
+pub use error::{ManagerError, StateError};
+#[cfg(any(feature = "usb", feature = "ble"))]
+pub use manager::DeviceManager;
+pub use operation::*;
 pub use state::{
     ApplicationVerification, DesiredSource, DesiredState, DeviceState, ObservationSource,
     ObservedState, PersistenceVerification, ProfileState, ResourceState, SCHEMA_VERSION, StateFile,
