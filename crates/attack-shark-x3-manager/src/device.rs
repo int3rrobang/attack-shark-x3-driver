@@ -119,6 +119,7 @@ impl DeviceIdentity {
         }
 
         let normalized_serial = serial_number
+            .filter(|serial| !serial.trim().is_empty())
             .map(|serial| normalize_key(serial, "USB serial number"))
             .transpose()?;
         let key_suffix = match normalized_serial.as_deref() {
