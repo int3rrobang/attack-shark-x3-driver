@@ -1,31 +1,10 @@
-/tmp
-/out-tsc
-
-/node_modules
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-/.pnp
-.pnp.js
-
 .vscode/*
-./dist
 .DS_Store
 .idea
-dist
-parse.ts
-tests.ts
-scratch.txt
-debug_test.ts
-webhid-probe/
-
-.eslintcache
-dist/
 build/
 out/
 .tmp/
 .cache/
-coverage/
 logs/
 *.log
 
@@ -35,15 +14,11 @@ logs/
 *.orig
 Thumbs.db
 
-node_modules/
-bun.lockb
-pnpm-debug.log*
-package-lock.json
 .env.*
 !.env.example
 
 !.idea/dictionaries
-/target
+/target/
 
 # Machine-local probe output and Windows shell artifacts
 /ble-results.jsonl
@@ -54,3 +29,6 @@ package-lock.json
 /omp-session-*.html
 /test-artifacts/
 /todo.md
+/node_modules/
+/dist/
+/.omp-prompts/

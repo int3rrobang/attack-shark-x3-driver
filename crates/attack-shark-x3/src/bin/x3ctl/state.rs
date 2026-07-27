@@ -261,7 +261,7 @@ impl Default for StoredPreferencesState {
 // ── buttons ─────────────────────────────────────────────────────────────────
 
 /// A single button-assignment slot in wire-safe form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredButtonSlot {
     /// Raw action byte.
     pub action: u8,
@@ -285,16 +285,6 @@ impl Default for StoredButtonsState {
         Self {
             profile: 1,
             slots: [StoredButtonSlot::default(); BUTTON_SLOT_COUNT],
-        }
-    }
-}
-
-impl Default for StoredButtonSlot {
-    fn default() -> Self {
-        Self {
-            action: 0x00,
-            modifier: 0x00,
-            key_code: 0x00,
         }
     }
 }
@@ -1065,6 +1055,20 @@ pub fn merge_prefs_delta(
     Ok(())
 }
 
+/// Cohesive input for a single button-slot merge operation.
+#[cfg(any(feature = "ble", test))]
+#[derive(Debug, Clone, Copy)]
+pub struct ButtonSlotDelta {
+    /// Slot index within the button table.
+    pub slot_index: usize,
+    /// Raw action byte.
+    pub action: u8,
+    /// Raw modifier byte.
+    pub modifier: u8,
+    /// Raw key / action-value byte.
+    pub key_code: u8,
+}
+
 /// Merge a single button-slot update into the stored state for a profile.
 ///
 /// Partial updates preserve the complete baseline: only the specified slot
@@ -1085,10 +1089,7 @@ pub fn merge_button_delta(
     state: &mut StateFile,
     device_key: &str,
     profile_id: u8,
-    slot_index: usize,
-    action: u8,
-    modifier: u8,
-    key_code: u8,
+    delta: ButtonSlotDelta,
     source: StateSource,
     verification: StateVerification,
     explicit_defaults_allowed: bool,
@@ -1112,11 +1113,11 @@ pub fn merge_button_delta(
         StoredButtonsState::default(),
     )?;
 
-    if slot_index < BUTTON_SLOT_COUNT {
-        merged.slots[slot_index] = StoredButtonSlot {
-            action,
-            modifier,
-            key_code,
+    if delta.slot_index < BUTTON_SLOT_COUNT {
+        merged.slots[delta.slot_index] = StoredButtonSlot {
+            action: delta.action,
+            modifier: delta.modifier,
+            key_code: delta.key_code,
         };
     }
 
@@ -1237,8 +1238,10 @@ mod tests {
         let path = temp_state_path("roundtrip");
         clean(&path);
 
-        let mut state = StateFile::default();
-        state.selected_device = Some("my-x3".to_owned());
+        let mut state = StateFile {
+            selected_device: Some("my-x3".to_owned()),
+            ..StateFile::default()
+        };
 
         let dev = ensure_device(
             &mut state,
@@ -1492,7 +1495,7 @@ mod tests {
 
         let removed = forget_device(&mut state, "dev-a");
         assert!(removed);
-        assert!(state.devices.get("dev-a").is_none());
+        assert!(!state.devices.contains_key("dev-a"));
         assert!(selected_device(&state).is_none());
     }
 
@@ -1579,8 +1582,8 @@ mod tests {
             StoredSelector::BleName("Attack Shark X3".to_owned()),
         );
 
-        assert!(state.devices.get("dev1").is_some());
-        assert!(state.devices.get("dev2").is_none());
+        assert!(state.devices.contains_key("dev1"));
+        assert!(!state.devices.contains_key("dev2"));
     }
 
     // ── profile lookup ──────────────────────────────────────────────────
@@ -1865,10 +1868,10 @@ mod tests {
         assert_eq!(stored.value.stages[1].dpi, 800);
         assert_eq!(stored.value.active_stage, 2);
         assert_eq!(stored.value.sensor_options.lift_off_distance, 2);
-        assert_eq!(stored.value.sensor_options.angle_snap, true);
+        assert!(stored.value.sensor_options.angle_snap);
         // Unchanged fields from baseline.
-        assert_eq!(stored.value.sensor_options.ripple_control, false);
-        assert_eq!(stored.value.sensor_options.motion_sync, false);
+        assert!(!stored.value.sensor_options.ripple_control);
+        assert!(!stored.value.sensor_options.motion_sync);
         // preserved_tail carried from baseline.
         assert_eq!(stored.value.preserved_tail, [0u8; 25]);
     }
@@ -2119,10 +2122,12 @@ mod tests {
             &mut state,
             "dev1",
             1,
-            5,
-            0x02,
-            0x01,
-            0x44,
+            ButtonSlotDelta {
+                slot_index: 5,
+                action: 0x02,
+                modifier: 0x01,
+                key_code: 0x44,
+            },
             StateSource::LocallyWritten,
             StateVerification::ApplicationUnknown,
             false,
@@ -2149,10 +2154,12 @@ mod tests {
             &mut state,
             "dev1",
             1,
-            99,
-            0xFF,
-            0xFF,
-            0xFF,
+            ButtonSlotDelta {
+                slot_index: 99,
+                action: 0xFF,
+                modifier: 0xFF,
+                key_code: 0xFF,
+            },
             StateSource::LocallyWritten,
             StateVerification::ApplicationUnknown,
             false,
@@ -2182,10 +2189,12 @@ mod tests {
             &mut state,
             "dev1",
             1,
-            0,
-            0x01,
-            0x00,
-            0x30,
+            ButtonSlotDelta {
+                slot_index: 0,
+                action: 0x01,
+                modifier: 0x00,
+                key_code: 0x30,
+            },
             StateSource::LocallyWritten,
             StateVerification::ApplicationUnknown,
             false,
@@ -2214,10 +2223,12 @@ mod tests {
             &mut state,
             "dev1",
             1,
-            0,
-            0x01,
-            0x00,
-            0x30,
+            ButtonSlotDelta {
+                slot_index: 0,
+                action: 0x01,
+                modifier: 0x00,
+                key_code: 0x30,
+            },
             StateSource::LocallyWritten,
             StateVerification::ApplicationUnknown,
             true,
@@ -2337,8 +2348,8 @@ mod tests {
     #[test]
     fn preserved_tail_hex_round_trips() {
         let mut tail = [0u8; 25];
-        for i in 0..25 {
-            tail[i] = i as u8;
+        for (i, byte) in tail.iter_mut().enumerate() {
+            *byte = i as u8;
         }
         let dpi = StoredDpiState {
             profile: 1,
@@ -2539,10 +2550,12 @@ mod tests {
             &mut state,
             "dev1",
             1,
-            0,
-            0x01,
-            0x00,
-            0x30,
+            ButtonSlotDelta {
+                slot_index: 0,
+                action: 0x01,
+                modifier: 0x00,
+                key_code: 0x30,
+            },
             StateSource::LocallyWritten,
             StateVerification::ApplicationUnknown,
             false,

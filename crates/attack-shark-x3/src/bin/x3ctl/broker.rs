@@ -690,8 +690,8 @@ mod tests {
         assert!(big.len() > MAX_MESSAGE_BYTES);
         // The read_one_message function enforces the bound; we test the
         // constant is reasonable.
-        assert!(MAX_MESSAGE_BYTES >= 4096);
-        assert!(MAX_MESSAGE_BYTES <= 16 * 1024 * 1024);
+        const { assert!(MAX_MESSAGE_BYTES >= 4096) };
+        const { assert!(MAX_MESSAGE_BYTES <= 16 * 1024 * 1024) };
     }
 
     #[test]

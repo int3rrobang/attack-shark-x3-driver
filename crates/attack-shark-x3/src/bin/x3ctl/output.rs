@@ -241,9 +241,9 @@ impl Output {
             n => &format!("{n}"),
         };
         self.human_kv("    Lift-off distance", lod_str);
-        self.human_kv("    Ripple control", &on_off(dpi.sensor.ripple_control));
-        self.human_kv("    Angle snap", &on_off(dpi.sensor.angle_snap));
-        self.human_kv("    Motion sync", &on_off(dpi.sensor.motion_sync));
+        self.human_kv("    Ripple control", on_off(dpi.sensor.ripple_control));
+        self.human_kv("    Angle snap", on_off(dpi.sensor.angle_snap));
+        self.human_kv("    Motion sync", on_off(dpi.sensor.motion_sync));
         self.render_provenance(provenance);
     }
 
@@ -337,7 +337,7 @@ impl Output {
         self.human_section("Daemon");
         self.human_kv("PID", &info.pid.to_string());
         self.human_kv("Uptime", &format!("{} s", info.uptime_secs));
-        self.human_kv("Connected", &yes_no(info.connected));
+        self.human_kv("Connected", yes_no(info.connected));
         if let Some(path) = &info.device_path {
             self.human_kv("Device", path);
         }

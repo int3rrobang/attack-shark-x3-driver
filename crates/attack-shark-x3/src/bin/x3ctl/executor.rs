@@ -597,7 +597,7 @@ impl ExecutorInner {
                 match usb_list_devices_for(UsbDeviceKind::Wired) {
                     Ok(devs) => {
                         for d in &devs {
-                            entries.push(usb_device_to_wire(&d));
+                            entries.push(usb_device_to_wire(d));
                         }
                     }
                     Err(e) => {
@@ -609,7 +609,7 @@ impl ExecutorInner {
                 match usb_list_devices_for(UsbDeviceKind::Receiver) {
                     Ok(devs) => {
                         for d in &devs {
-                            entries.push(usb_device_to_wire(&d));
+                            entries.push(usb_device_to_wire(d));
                         }
                     }
                     Err(e) => {
@@ -764,9 +764,9 @@ impl ExecutorInner {
         let rate = handle.read_polling_rate().await.ok();
 
         // Build payloads.
-        let dpi_payload = dpi.as_ref().map(|d| dpi_state_to_payload(d));
-        let prefs_payload = prefs.as_ref().map(|p| prefs_state_to_payload(p));
-        let buttons_payload = buttons.as_ref().map(|b| buttons_state_to_payload(b));
+        let dpi_payload = dpi.as_ref().map(dpi_state_to_payload);
+        let prefs_payload = prefs.as_ref().map(prefs_state_to_payload);
+        let buttons_payload = buttons.as_ref().map(buttons_state_to_payload);
 
         // Persist to state.
         if let Some(ref mut state) = self.state {
@@ -1725,7 +1725,7 @@ impl ExecutorInner {
             Err(e) => return e,
         };
 
-        match handle.write_preferences(merged.clone()).await {
+        match handle.write_preferences(merged).await {
             Ok(_receipt) => {
                 if self.state.is_some() {
                     let _ = self.save_state();
@@ -1774,7 +1774,7 @@ impl ExecutorInner {
             Err(e) => return error_response(map_driver_error_code(&e), e.to_string()),
         };
         merge_prefs_delta_into(&mut current, delta);
-        match handle.write_preferences(current.clone()).await {
+        match handle.write_preferences(current).await {
             Ok(verified) => {
                 let payload = prefs_state_to_payload(&verified);
                 if let Some(ref mut state) = self.state {
@@ -1895,7 +1895,7 @@ impl ExecutorInner {
             modifier: assignment.modifier,
             key_code: assignment.key_code,
         };
-        match handle.write_buttons(current.clone()).await {
+        match handle.write_buttons(current).await {
             Ok(verified) => {
                 if let Some(ref mut state) = self.state {
                     state::patch_buttons(
@@ -1951,10 +1951,12 @@ impl ExecutorInner {
                     state,
                     device_key,
                     profile_id,
-                    slot_idx,
-                    assignment.action,
-                    assignment.modifier,
-                    assignment.key_code,
+                    state::ButtonSlotDelta {
+                        slot_index: slot_idx,
+                        action: assignment.action,
+                        modifier: assignment.modifier,
+                        key_code: assignment.key_code,
+                    },
                     StateSource::LocallyWritten,
                     StateVerification::AckAccepted,
                     ctx.explicit_defaults,
@@ -1994,10 +1996,12 @@ impl ExecutorInner {
                     &mut temp,
                     device_key,
                     profile_id,
-                    slot_idx,
-                    assignment.action,
-                    assignment.modifier,
-                    assignment.key_code,
+                    state::ButtonSlotDelta {
+                        slot_index: slot_idx,
+                        action: assignment.action,
+                        modifier: assignment.modifier,
+                        key_code: assignment.key_code,
+                    },
                     StateSource::LocallyWritten,
                     StateVerification::AckAccepted,
                     true,
@@ -2025,7 +2029,7 @@ impl ExecutorInner {
             Err(e) => return e,
         };
 
-        match handle.write_buttons(merged.clone()).await {
+        match handle.write_buttons(merged).await {
             Ok(_receipt) => {
                 if self.state.is_some() {
                     let _ = self.save_state();

@@ -19,8 +19,6 @@ $DriverRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $CargoManifest = Join-Path $DriverRoot 'Cargo.toml'
 $RunRoot = Join-Path $OutputRoot (Get-Date -Format 'yyyyMMdd-HHmmss')
 $LogRoot = Join-Path $RunRoot 'logs'
-$NativeExe = Join-Path $DriverRoot 'target\debug\attack-shark-x3.exe'
-$TsCli = Join-Path $DriverRoot 'src\cli.ts'
 
 function Show-Plan {
     @"
@@ -29,25 +27,19 @@ X3/M600 test suite
 This runner is deliberately observational for hardware. It never sends configuration
 writes, reset packets, firmware updates, BLE writes, lighting settings, scroll remaps,
 or button-table changes. The physical DPI button and ordinary input reports are tested
-through USBPcap capture. Hardware mode intentionally limits itself to discovery,
-open/close, and battery behavior; use the native receiver smoke example for validated
-configuration readback and reversible write coverage.
+through USBPcap capture. Hardware mode intentionally limits itself to discovery;
+use capture-manual to exercise physical reports and record evidence.
 
 Offline coverage (no device access):
-  * Bun unit tests, TypeScript typecheck/build, ESLint/Prettier checks
-  * Rust workspace tests/checks/clippy/fmt
-  * TypeScript CLI help and offline packet builders:
-      exactly six DPI slots on wired and receiver, all four polling rates, safe binding,
-      and reset packet generation (reset is never sent by this suite)
-  * Six-slot boundary rejection: an attempted seventh active stage must fail
-  * Native Rust CLI help and offline DPI/profile/read-selector packet generation
-  * Preference/lighting builders remain covered only by existing offline unit tests;
-    they are not treated as X3 hardware features.
+  * Rust workspace fmt/check/clippy/test
+  * x3ctl --help and debug subcommand help (dpi, profile-control, read-selector)
+  * Offline packet builders via 'cargo run -p attack-shark-x3 --bin x3ctl -- <args>':
+      exactly six DPI slots on wired and receiver, profile-control framing (compact/full),
+      and read-selector report generation for all report types
+  * Six-slot boundary rejection: an attempted seventh active stage must fail (exit code 1)
 
 Hardware discovery coverage:
-  * Native FA61 wired and/or FA60 receiver discovery for the selected transport
-  * TypeScript wired open/close and wired battery-unavailable behavior
-  * TypeScript FA60 receiver open/close and battery telemetry when a receiver is present
+  * x3ctl devices on wired and/or receiver for the selected transport
   * No configuration writes or targeted profile reads in this observational suite
 
 Manual USBPcap coverage uses the safe driver-validation preset:
@@ -127,105 +119,74 @@ function Invoke-Step {
     return $text
 }
 
-function Invoke-BunCli {
+function Invoke-X3Ctl {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [int[]]$ExpectedExitCodes = @(0)
     )
-    return Invoke-Step -Name $Name -Executable 'bun' -Arguments (@('run', 'cli') + $Arguments) -ExpectedExitCodes $ExpectedExitCodes
-}
-
-function Invoke-Native {
-    param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [int[]]$ExpectedExitCodes = @(0)
-    )
-    $prefix = @('run', '--quiet', '--manifest-path', $CargoManifest, '-p', 'attack-shark-x3', '--')
+    $prefix = @('run', '--quiet', '--manifest-path', $CargoManifest, '-p', 'attack-shark-x3', '--bin', 'x3ctl', '--')
     return Invoke-Step -Name $Name -Executable 'cargo' -Arguments ($prefix + $Arguments) -ExpectedExitCodes $ExpectedExitCodes
-}
-
-function Ensure-NativeBuild {
-    if ($SkipBuild) {
-        if (-not (Test-Path $NativeExe)) {
-            throw "-SkipBuild was supplied but $NativeExe does not exist."
-        }
-        return
-    }
-    Invoke-Step -Name 'cargo-build-native-cli' -Executable 'cargo' -Arguments @(
-        'build', '--quiet', '--manifest-path', $CargoManifest, '-p', 'attack-shark-x3'
-    ) | Out-Null
 }
 
 function Run-OfflineSuite {
     $script:ContinueOnFailure = $true
     $script:Failures = @()
     try {
-    $staticSteps = @(
-        @{ Name = 'bun-test'; Executable = 'bun'; Arguments = @('test') },
-        @{ Name = 'bun-typecheck'; Executable = 'bun'; Arguments = @('run', 'typecheck') },
-        @{ Name = 'bun-build'; Executable = 'bun'; Arguments = @('run', 'build') },
-        @{ Name = 'bun-lint'; Executable = 'bun'; Arguments = @('run', 'lint') },
-        @{ Name = 'bun-format-check'; Executable = 'bun'; Arguments = @('run', 'format') },
-        @{ Name = 'cargo-test'; Executable = 'cargo'; Arguments = @('test', '--workspace', '--all-targets', '--all-features') },
-        @{ Name = 'cargo-check'; Executable = 'cargo'; Arguments = @('check', '--workspace', '--all-targets', '--all-features') },
-        @{ Name = 'cargo-clippy'; Executable = 'cargo'; Arguments = @('clippy', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings') },
-        @{ Name = 'cargo-format-check'; Executable = 'cargo'; Arguments = @('fmt', '--all', '--', '--check') }
-    )
-    foreach ($step in $staticSteps) {
-        Invoke-Step -Name $step.Name -Executable $step.Executable -Arguments $step.Arguments | Out-Null
-    }
+        Invoke-Step -Name 'cargo-fmt-check' -Executable 'cargo' -Arguments @('fmt', '--all', '--', '--check') | Out-Null
+        Invoke-Step -Name 'cargo-check' -Executable 'cargo' -Arguments @('check', '--workspace', '--all-targets', '--all-features') | Out-Null
+        Invoke-Step -Name 'cargo-clippy' -Executable 'cargo' -Arguments @('clippy', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings') | Out-Null
+        Invoke-Step -Name 'cargo-test' -Executable 'cargo' -Arguments @('test', '--workspace', '--all-targets', '--all-features') | Out-Null
 
-    foreach ($step in @(
-        @{ Name = 'typescript-cli-help'; Arguments = @('--help') },
-        @{ Name = 'typescript-cli-hex-help'; Arguments = @('hex', '--help') },
-        @{ Name = 'typescript-cli-bind-actions'; Arguments = @('bind', '--list-actions') },
-        @{ Name = 'typescript-cli-bind-buttons'; Arguments = @('bind', '--list-buttons') }
-    )) {
-        Invoke-BunCli -Name $step.Name -Arguments $step.Arguments | Out-Null
-    }
+        Invoke-X3Ctl -Name 'x3ctl-help' -Arguments @('--help') | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-help' -Arguments @('debug', '--help') | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-dpi-help' -Arguments @('debug', 'dpi', '--help') | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-profile-control-help' -Arguments @('debug', 'profile-control', '--help') | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-help' -Arguments @('debug', 'read-selector', '--help') | Out-Null
 
-    # Six slots are the hardware contract. The builders may support broader protocol
-    # ranges for historical devices, but this suite never proposes 7 or 8 to X3/M600.
-    $sixStages = '50,800,1600,2400,3200,26000'
-    foreach ($transportName in @('wired', 'receiver')) {
-        Invoke-BunCli -Name "typescript-hex-dpi-$transportName" -Arguments @(
-            'hex', 'dpi', '--transport', $transportName, '--stages', $sixStages, '--active', '6',
-            '--lod', '2', '--ripple', 'on', '--angle-snap', 'on', '--motion-sync', 'on'
+        $sixStages = '50,800,1600,2400,3200,26000'
+        Invoke-X3Ctl -Name 'x3ctl-debug-dpi-wired-six-slots' -Arguments @(
+            '--no-state', 'debug', 'dpi', '--transport', 'wired', '--profile', '1',
+            '--stages', $sixStages, '--active', '6', '--lod', '2',
+            '--ripple-control', '--angle-snap', '--motion-sync'
         ) | Out-Null
-        Invoke-BunCli -Name "typescript-hex-reset-$transportName" -Arguments @('hex', 'reset', '--transport', $transportName) | Out-Null
-        foreach ($rate in @(125, 250, 500, 1000)) {
-            Invoke-BunCli -Name "typescript-hex-rate-$transportName-$rate" -Arguments @(
-                'hex', 'rate', '--transport', $transportName, '--rate', [string]$rate
-            ) | Out-Null
-        }
-    }
-    Invoke-BunCli -Name 'typescript-six-slot-active-stage-rejection' -Arguments @(
-        'hex', 'dpi', '--transport', 'wired', '--stages', $sixStages, '--active', '7'
-    ) -ExpectedExitCodes @(1) | Out-Null
-    Invoke-BunCli -Name 'typescript-hex-bind-safe' -Arguments @(
-        'hex', 'bind', '--transport', 'wired', '--button', 'forward', '--action', 'shortcut-swap-window'
-    ) | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-dpi-receiver-six-slots' -Arguments @(
+            '--no-state', 'debug', 'dpi', '--transport', 'receiver', '--profile', '1',
+            '--stages', $sixStages, '--active', '6'
+        ) | Out-Null
 
-    $nativeOffline = @(
-        @{ Name = 'native-cli-help'; Arguments = @('--help') },
-        @{ Name = 'native-read-help'; Arguments = @('read', '--help') },
-        @{ Name = 'native-hex-help'; Arguments = @('hex', '--help') },
-        @{ Name = 'native-hex-dpi-wired-six-slots'; Arguments = @('hex', 'dpi', '--transport', 'wired', '--stages', $sixStages, '--active', '6', '--lod', 'two', '--ripple-control', '--angle-snap', '--motion-sync') },
-        @{ Name = 'native-hex-dpi-receiver-six-slots'; Arguments = @('hex', 'dpi', '--transport', 'receiver', '--stages', $sixStages, '--active', '6') },
-        @{ Name = 'native-hex-profile-compact'; Arguments = @('hex', 'profile-control', '--current', '2', '--maximum', '5', '--framing', 'compact') },
-        @{ Name = 'native-hex-profile-full'; Arguments = @('hex', 'profile-control', '--current', '2', '--maximum', '5', '--framing', 'full') }
-    )
-    foreach ($report in @('version', 'profile-metadata', 'polling-rate')) {
-        $nativeOffline += @{ Name = "native-hex-selector-$report"; Arguments = @('hex', 'read-selector', '--report', $report) }
-    }
-    foreach ($report in @('dpi', 'preferences', 'buttons')) {
-        $nativeOffline += @{ Name = "native-hex-selector-$report"; Arguments = @('hex', 'read-selector', '--report', $report, '--profile', '1') }
-    }
-    foreach ($step in $nativeOffline) {
-        Invoke-Native -Name $step.Name -Arguments $step.Arguments | Out-Null
-    }
+        Invoke-X3Ctl -Name 'x3ctl-debug-profile-control-compact' -Arguments @(
+            '--no-state', 'debug', 'profile-control', '--current', '2', '--maximum', '5',
+            '--framing', 'compact'
+        ) | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-profile-control-full' -Arguments @(
+            '--no-state', 'debug', 'profile-control', '--current', '2', '--maximum', '5',
+            '--framing', 'full'
+        ) | Out-Null
+
+        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-version' -Arguments @(
+            '--no-state', 'debug', 'read-selector', '--report', 'version'
+        ) | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-profile-metadata' -Arguments @(
+            '--no-state', 'debug', 'read-selector', '--report', 'profile-metadata'
+        ) | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-polling-rate' -Arguments @(
+            '--no-state', 'debug', 'read-selector', '--report', 'polling-rate'
+        ) | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-dpi' -Arguments @(
+            '--no-state', 'debug', 'read-selector', '--report', 'dpi', '--profile', '1'
+        ) | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-preferences' -Arguments @(
+            '--no-state', 'debug', 'read-selector', '--report', 'preferences', '--profile', '1'
+        ) | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-buttons' -Arguments @(
+            '--no-state', 'debug', 'read-selector', '--report', 'buttons', '--profile', '1'
+        ) | Out-Null
+
+        Invoke-X3Ctl -Name 'x3ctl-six-slot-boundary-rejection' -Arguments @(
+            '--no-state', 'debug', 'dpi', '--transport', 'wired', '--stages', $sixStages,
+            '--active', '7'
+        ) -ExpectedExitCodes @(1) | Out-Null
     }
     finally {
         $script:ContinueOnFailure = $false
@@ -237,20 +198,11 @@ function Run-OfflineSuite {
 }
 
 function Run-HardwareChecks {
-    Ensure-NativeBuild
     if ($Transport -in @('wired', 'both')) {
-        Invoke-Native -Name 'native-fa61-discovery' -Arguments @('--transport', 'wired', 'list') | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-fa61-discovery' -Arguments @('--transport', 'wired', '--no-state', 'devices') | Out-Null
     }
     if ($Transport -in @('receiver', 'both')) {
-        Invoke-Native -Name 'native-fa60-discovery' -Arguments @('--transport', 'receiver', 'list') | Out-Null
-    }
-    if ($Transport -in @('wired', 'both')) {
-        Invoke-BunCli -Name 'typescript-wired-open-close' -Arguments @('--transport', 'wired', 'open') | Out-Null
-        Invoke-BunCli -Name 'typescript-wired-battery-unavailable' -Arguments @('--transport', 'wired', 'battery') | Out-Null
-    }
-    if ($Transport -in @('receiver', 'both')) {
-        Invoke-BunCli -Name 'typescript-fa60-open-close' -Arguments @('--transport', 'receiver', 'open') | Out-Null
-        Invoke-BunCli -Name 'typescript-fa60-battery' -Arguments @('--transport', 'receiver', 'battery') | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-fa60-discovery' -Arguments @('--transport', 'receiver', '--no-state', 'devices') | Out-Null
     }
 
     Write-Host "`nNo configuration readback or hardware writes were attempted."

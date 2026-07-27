@@ -819,7 +819,6 @@ impl ImportValidationError {
 ///
 /// Returns `Ok(())` when the document is structurally valid.  Returns
 /// [`ImportValidationError`] with [`ErrorCode::InvalidRequest`] otherwise.
-#[must_use]
 pub fn validate_export_document(doc: &ExportDocument) -> Result<(), ImportValidationError> {
     if doc.format_version != EXPORT_FORMAT_VERSION {
         return Err(ImportValidationError::new(
@@ -1625,8 +1624,8 @@ mod tests {
     #[test]
     fn preserved_tail_round_trips() {
         let mut tail = [0u8; 25];
-        for i in 0..25 {
-            tail[i] = i as u8;
+        for (i, item) in tail.iter_mut().enumerate() {
+            *item = u8::try_from(i).expect("tail index fits in u8");
         }
         let payload = DpiStatePayload {
             profile: 1,
@@ -1727,8 +1726,8 @@ mod tests {
 
     #[test]
     fn oversized_message_rejected() {
-        assert!(MAX_MESSAGE_BYTES > 1024);
-        assert!(MAX_MESSAGE_BYTES < 16 * 1024 * 1024);
+        const { assert!(MAX_MESSAGE_BYTES > 1024) };
+        const { assert!(MAX_MESSAGE_BYTES < 16 * 1024 * 1024) };
     }
 
     #[test]

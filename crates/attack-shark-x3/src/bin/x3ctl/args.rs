@@ -477,7 +477,6 @@ impl BindArgs {
 
     /// Validates that button and action are either both present or both absent.
     /// Returns an error message when only one is provided.
-    #[must_use]
     pub fn validate(&self) -> Result<(), String> {
         match (self.button, self.action) {
             (Some(_), Some(_)) | (None, None) => Ok(()),
