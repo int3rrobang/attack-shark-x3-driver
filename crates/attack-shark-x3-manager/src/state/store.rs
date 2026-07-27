@@ -364,6 +364,15 @@ fn create_temp_file(target: &Path) -> io::Result<(PathBuf, File)> {
     ))
 }
 
+/// Replace `target` by renaming the fully-written, fsynced `temp` over it.
+///
+/// On Unix this is a single `rename(2)` (atomic within a filesystem). On
+/// Windows `std::fs::rename` resolves to `MoveFileExW` with
+/// `MOVEFILE_REPLACE_EXISTING`, which atomically swaps the destination in a
+/// single metadata operation; the temp content was already `sync_all`'d and
+/// its handle dropped before this call, so there is no torn-write window. NTFS
+/// journals metadata operations, so the rename is durable across crashes
+/// without an explicit directory `fsync` (see the Windows `sync_parent` below).
 fn atomic_replace(temp: &Path, target: &Path) -> io::Result<()> {
     fs::rename(temp, target)
 }
@@ -381,6 +390,8 @@ fn sync_parent(path: &Path) -> io::Result<()> {
 
 #[cfg(not(unix))]
 fn sync_parent(_path: &Path) -> io::Result<()> {
+    // No explicit directory fsync on Windows: NTFS journals the rename performed
+    // by `atomic_replace`, so the metadata change is durable once it returns.
     Ok(())
 }
 

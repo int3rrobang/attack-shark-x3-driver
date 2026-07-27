@@ -32,15 +32,16 @@ use capture-manual to exercise physical reports and record evidence.
 
 Offline coverage (no device access):
   * Rust workspace fmt/check/clippy/test
-  * x3ctl --help and debug subcommand help (dpi, profile-control, read-selector)
+  * x3ctl --help and debug subcommand help (dpi, prefs, buttons)
   * Offline packet builders via 'cargo run -p x3ctl -- <args>':
-      exactly six DPI slots on wired and receiver, profile-control framing (compact/full),
-      and read-selector report generation for all report types
-  * Six-slot boundary rejection: an attempted seventh active stage must fail (exit code 1)
+      DPI packet generation with exactly six stages on wired and receiver transports,
+      preferences packet generation with compact and full framing,
+      and buttons packet generation with 18 zero-filled slots
+  * Six-stage boundary rejection: --active-stage 7 must fail (exit code 1)
 
 Hardware discovery coverage:
   * x3ctl devices on wired and/or receiver for the selected transport
-  * No configuration writes or targeted profile reads in this observational suite
+  * Discovery performs no configuration reads or writes in this observational suite
 
 Manual USBPcap coverage uses the safe driver-validation preset:
   * receiver/mouse initialization, idle baselines, motion, wheel, normal buttons,
@@ -141,51 +142,35 @@ function Run-OfflineSuite {
         Invoke-X3Ctl -Name 'x3ctl-help' -Arguments @('--help') | Out-Null
         Invoke-X3Ctl -Name 'x3ctl-debug-help' -Arguments @('debug', '--help') | Out-Null
         Invoke-X3Ctl -Name 'x3ctl-debug-dpi-help' -Arguments @('debug', 'dpi', '--help') | Out-Null
-        Invoke-X3Ctl -Name 'x3ctl-debug-profile-control-help' -Arguments @('debug', 'profile-control', '--help') | Out-Null
-        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-help' -Arguments @('debug', 'read-selector', '--help') | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-prefs-help' -Arguments @('debug', 'prefs', '--help') | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-debug-buttons-help' -Arguments @('debug', 'buttons', '--help') | Out-Null
 
         $sixStages = '50,800,1600,2400,3200,26000'
         Invoke-X3Ctl -Name 'x3ctl-debug-dpi-wired-six-slots' -Arguments @(
-            '--no-state', 'debug', 'dpi', '--transport', 'wired', '--profile', '1',
-            '--stages', $sixStages, '--active', '6', '--lod', '2',
+            '--stateless', 'debug', 'dpi', '--transport', 'wired', '--profile', '1',
+            '--stages', $sixStages, '--active-stage', '6', '--lod', 'two',
             '--ripple-control', '--angle-snap', '--motion-sync'
         ) | Out-Null
         Invoke-X3Ctl -Name 'x3ctl-debug-dpi-receiver-six-slots' -Arguments @(
-            '--no-state', 'debug', 'dpi', '--transport', 'receiver', '--profile', '1',
-            '--stages', $sixStages, '--active', '6'
+            '--stateless', 'debug', 'dpi', '--transport', 'receiver', '--profile', '1',
+            '--stages', $sixStages, '--active-stage', '6'
         ) | Out-Null
 
-        Invoke-X3Ctl -Name 'x3ctl-debug-profile-control-compact' -Arguments @(
-            '--no-state', 'debug', 'profile-control', '--current', '2', '--maximum', '5',
-            '--framing', 'compact'
+        Invoke-X3Ctl -Name 'x3ctl-debug-prefs-compact' -Arguments @(
+            '--stateless', 'debug', 'prefs', '--profile', '2', '--framing', 'compact'
         ) | Out-Null
-        Invoke-X3Ctl -Name 'x3ctl-debug-profile-control-full' -Arguments @(
-            '--no-state', 'debug', 'profile-control', '--current', '2', '--maximum', '5',
-            '--framing', 'full'
+        Invoke-X3Ctl -Name 'x3ctl-debug-prefs-full' -Arguments @(
+            '--stateless', 'debug', 'prefs', '--profile', '2', '--framing', 'full'
         ) | Out-Null
 
-        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-version' -Arguments @(
-            '--no-state', 'debug', 'read-selector', '--report', 'version'
-        ) | Out-Null
-        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-profile-metadata' -Arguments @(
-            '--no-state', 'debug', 'read-selector', '--report', 'profile-metadata'
-        ) | Out-Null
-        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-polling-rate' -Arguments @(
-            '--no-state', 'debug', 'read-selector', '--report', 'polling-rate'
-        ) | Out-Null
-        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-dpi' -Arguments @(
-            '--no-state', 'debug', 'read-selector', '--report', 'dpi', '--profile', '1'
-        ) | Out-Null
-        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-preferences' -Arguments @(
-            '--no-state', 'debug', 'read-selector', '--report', 'preferences', '--profile', '1'
-        ) | Out-Null
-        Invoke-X3Ctl -Name 'x3ctl-debug-read-selector-buttons' -Arguments @(
-            '--no-state', 'debug', 'read-selector', '--report', 'buttons', '--profile', '1'
+        Invoke-X3Ctl -Name 'x3ctl-debug-buttons-full' -Arguments @(
+            '--stateless', 'debug', 'buttons', '--profile', '1',
+            '--slots', (('0,' * 53) + '0')
         ) | Out-Null
 
-        Invoke-X3Ctl -Name 'x3ctl-six-slot-boundary-rejection' -Arguments @(
-            '--no-state', 'debug', 'dpi', '--transport', 'wired', '--stages', $sixStages,
-            '--active', '7'
+        Invoke-X3Ctl -Name 'x3ctl-six-stage-boundary-rejection' -Arguments @(
+            '--stateless', 'debug', 'dpi', '--transport', 'wired', '--stages', $sixStages,
+            '--active-stage', '7'
         ) -ExpectedExitCodes @(1) | Out-Null
     }
     finally {
@@ -199,13 +184,13 @@ function Run-OfflineSuite {
 
 function Run-HardwareChecks {
     if ($Transport -in @('wired', 'both')) {
-        Invoke-X3Ctl -Name 'x3ctl-fa61-discovery' -Arguments @('--transport', 'wired', '--no-state', 'devices') | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-fa61-discovery' -Arguments @('--transport', 'wired', '--stateless', 'devices') | Out-Null
     }
     if ($Transport -in @('receiver', 'both')) {
-        Invoke-X3Ctl -Name 'x3ctl-fa60-discovery' -Arguments @('--transport', 'receiver', '--no-state', 'devices') | Out-Null
+        Invoke-X3Ctl -Name 'x3ctl-fa60-discovery' -Arguments @('--transport', 'receiver', '--stateless', 'devices') | Out-Null
     }
 
-    Write-Host "`nNo configuration readback or hardware writes were attempted."
+    Write-Host "`nDiscovery performs no configuration reads or writes."
     Write-Host 'Use capture-manual to exercise physical reports and record evidence.'
 }
 

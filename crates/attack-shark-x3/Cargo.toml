@@ -46,3 +46,8 @@ required-features = ["usb"]
 name = "dpi-framing-probe"
 path = "examples/dpi-framing-probe.rs"
 required-features = ["usb"]
+
+[[example]]
+name = "hid-enum"
+path = "examples/hid-enum.rs"
+required-features = ["usb"]

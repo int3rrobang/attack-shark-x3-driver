@@ -38,6 +38,10 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SessionWrite<T> {
     ReadbackVerified(T),
+    #[cfg_attr(
+        not(feature = "ble"),
+        expect(dead_code, reason = "USB sessions always return readback evidence")
+    )]
     Acknowledged,
 }
 
