@@ -9,6 +9,29 @@ generalized to X11 without independent evidence.
 |:-----|:------------|:---------|
 | `reset-packets.json` | Byte-for-byte USBPcap JSON export of a stock X3/FA61 factory reset: reports `0x0c`, `0x04`, `0x05`, `0x06`, and `0x08` | capture-confirmed |
 
+## Guided USBPcap sessions — 2026-07-24
+
+The following byte-for-byte USBPcap sessions were preserved from the historical
+`scripts/fa61-test-suite.ps1` runner and its sibling `tshark_mouse` capture
+repository. Each directory contains the combined capture plus the individual
+time-sliced capture for every guided step.
+
+For a handoff-oriented session index and inspection commands, see
+[`captures/README.md`](captures/README.md).
+
+| Path | Transport | Description | Evidence |
+|:-----|:----------|:------------|:---------|
+| [`captures/2026-07-24-fa60-safe/`](captures/2026-07-24-fa60-safe/) | FA60 receiver | Safe guided preset: receiver initialization, idle and battery observation, motion and wheel input, normal buttons, six DPI-button presses, and reversible Profile 1 controls | capture-confirmed; live-confirmed |
+| [`captures/2026-07-24-fa61-safe/`](captures/2026-07-24-fa61-safe/) | FA61 wired | Safe guided preset: wired initialization, idle and input baselines, normal buttons, six DPI-button presses, and reversible Profile 1 controls | capture-confirmed; live-confirmed |
+
+The combined artifacts are `fa60-manual-all.pcapng` and
+`fa61-manual-all.pcapng`. The guided presets intentionally excluded reset,
+macros, lighting, profile switching, maximum-profile changes, scroll remaps,
+and multi-field changes. The capture session was observational with respect to
+the Rust driver; configuration changes were made through the stock application
+and each reversible change was restored during the guided run.
+
+
 ## Probing sessions 2026-07-17
 
 All sessions used the wired FA61 Col04 path. They were driven by the historical (now-deleted) TypeScript scripts `scripts/fa61-profile-ab.ts` and `scripts/fa61-readback-benchmark.ts` and must not be generalized to BLE or to non-Col04 interfaces. The script references are provenance records — the raw JSON captures below are the authoritative evidence. Equivalent experiments can be reproduced using the Rust `x3ctl` CLI.
