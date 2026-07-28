@@ -3,15 +3,15 @@ use serde::{Deserialize, Serialize};
 
 /// Physical button slot exposed by the safe public API.
 ///
-/// Only slots with confirmed safe remapping are exposed. DPI (index 3) and
-/// scroll (indices 4, 5) slots are intentionally excluded because direct
-/// remaps may produce unsafe or ignored behavior on X3/FA61 firmware.
+/// Scroll slots (indices 4, 5) are intentionally excluded because direct
+/// scroll remaps may repeat until unplug or reboot on some firmware.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SafeButtonSlot {
     Left,
     Right,
     Middle,
+    Dpi,
     Forward,
     Backward,
 }
@@ -24,6 +24,7 @@ impl SafeButtonSlot {
             Self::Left => 0,
             Self::Right => 1,
             Self::Middle => 2,
+            Self::Dpi => 3,
             Self::Forward => 6,
             Self::Backward => 7,
         }
@@ -90,7 +91,7 @@ use crate::state::{
     ApplicationVerification, DesiredSource, DesiredState, ObservationSource, ObservedState,
     PersistenceVerification, ResourceState, Verification,
 };
-
+#[allow(unused_imports)]
 pub use attack_shark_x3::protocol::buttons::BUTTON_SLOT_COUNT;
 
 /// A bounded, typed update to one safe button slot.
@@ -324,10 +325,7 @@ impl DeviceManager {
         }
 
         if allow_explicit_defaults {
-            return Ok(ButtonsState::new(
-                profile,
-                [ButtonAssignment::default(); BUTTON_SLOT_COUNT],
-            ));
+            return Ok(ButtonsState::default_for_profile(profile));
         }
 
         Err(ManagerError::MissingBaseline {

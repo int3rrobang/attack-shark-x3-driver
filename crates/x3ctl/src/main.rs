@@ -261,6 +261,7 @@ fn build_bind_action(cli: &Cli, args: &BindSetArgs) -> Result<Action, String> {
         SlotArg::Left => SafeButtonSlot::Left,
         SlotArg::Right => SafeButtonSlot::Right,
         SlotArg::Middle => SafeButtonSlot::Middle,
+        SlotArg::Dpi => SafeButtonSlot::Dpi,
         SlotArg::Forward => SafeButtonSlot::Forward,
         SlotArg::Backward => SafeButtonSlot::Backward,
     };

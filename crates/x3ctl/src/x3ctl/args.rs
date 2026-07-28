@@ -6,6 +6,7 @@ pub enum SlotArg {
     Left,
     Right,
     Middle,
+    Dpi,
     Forward,
     Backward,
 }
@@ -392,6 +393,7 @@ mod tests {
                 SlotArg::Middle,
                 ActionArg::MiddleClick,
             ),
+            ("dpi", "dpi-cycle", SlotArg::Dpi, ActionArg::DpiCycle),
             ("forward", "forward", SlotArg::Forward, ActionArg::Forward),
             (
                 "backward",
@@ -477,7 +479,7 @@ mod tests {
             ])
             .is_err()
         );
-        // No dpi slot exposed
+        // DPI slot IS now exposed (slot 3 is safe)
         assert!(
             Cli::try_parse_from([
                 "x3ctl",
@@ -485,6 +487,19 @@ mod tests {
                 "set",
                 "--slot",
                 "dpi",
+                "--action",
+                "left-click",
+            ])
+            .is_ok()
+        );
+        // Scroll slots still excluded
+        assert!(
+            Cli::try_parse_from([
+                "x3ctl",
+                "bind",
+                "set",
+                "--slot",
+                "scroll-up",
                 "--action",
                 "left-click"
             ])
