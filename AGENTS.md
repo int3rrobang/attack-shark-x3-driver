@@ -202,5 +202,7 @@ Full safety checklist is in `docs/safety.md`. Read it before any hardware write.
 - Do not modify `Cargo.lock` unless dependencies intentionally change.
 - Do not commit probe logs, captures, binaries, or extracted artifacts without explicit direction.
 - Do not commit, amend, push, or create a pull request unless requested.
-- `origin` is the upstream repository. `x3-private` is the private fork. Never push X3 work to `origin` accidentally.
+- Remote names and URLs are checkout-specific. Before pushing, inspect the configured remotes and target branch, and push only to an explicitly authorized destination.
+- This repository is an independent Rust implementation for the X3/M600 protocol family. The historical X11 repository is reference material, not an active implementation upstream or a runtime dependency.
+- If the historical X11 remote is retained for provenance, name it `historical-x11` rather than `upstream` to avoid implying an active synchronization target.
 - Keep unrelated existing working-tree changes intact.
