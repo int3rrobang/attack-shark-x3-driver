@@ -146,8 +146,13 @@ impl DeviceIdentity {
     /// The advertised name is display metadata only and never contributes to
     /// the identity key.
     pub fn ble(stable_platform_id: &str, display_name: Option<&str>) -> Result<Self, StateError> {
-        let normalized_id = normalize_key(stable_platform_id, "BLE platform device ID")?;
-        let id = DeviceId::new(format!("ble:{normalized_id}"))?;
+        let trimmed = stable_platform_id.trim();
+        if trimmed.is_empty() {
+            return Err(StateError::invalid_state(
+                "BLE platform device ID must not be blank",
+            ));
+        }
+        let id = DeviceId::new(format!("ble:{trimmed}"))?;
 
         Ok(Self {
             id,
@@ -155,7 +160,7 @@ impl DeviceIdentity {
             vendor_id: None,
             product_id: None,
             serial_number: None,
-            locator: DeviceLocator::BlePlatformId(normalized_id),
+            locator: DeviceLocator::BlePlatformId(trimmed.to_owned()),
             display_name: display_name.map(str::to_owned),
         })
     }
@@ -243,12 +248,17 @@ mod tests {
     #[test]
     fn ble_name_does_not_change_identity() {
         let named = DeviceIdentity::ble("  AA\\BB  ", Some("Office Mouse")).expect("BLE identity");
-        let renamed = DeviceIdentity::ble("aa/bb", Some("Travel Mouse")).expect("BLE identity");
+        let renamed =
+            DeviceIdentity::ble("  AA\\BB  ", Some("Travel Mouse")).expect("BLE identity");
 
         assert_eq!(named.id, renamed.id);
-        assert_eq!(named.id.as_str(), "ble:aa/bb");
+        assert_eq!(named.id.as_str(), "ble:AA\\BB");
         assert_eq!(named.transport, TransportKind::Ble);
         assert_eq!(renamed.transport, TransportKind::Ble);
+        assert_eq!(
+            named.locator,
+            DeviceLocator::BlePlatformId("AA\\BB".to_owned())
+        );
     }
 
     #[test]
