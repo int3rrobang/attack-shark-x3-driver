@@ -1,5 +1,6 @@
 use attack_shark_x3::protocol::buttons::{
     BUTTON_REPORT_LENGTH, BUTTON_SLOT_COUNT, ButtonAssignment, ButtonsReport, ButtonsState,
+    HidKeyboardUsage, KeyboardModifiers, X3ButtonAction,
 };
 use attack_shark_x3::{ProfileId, ProtocolError, TransportKind};
 use serde::Deserialize;
@@ -136,6 +137,33 @@ fn every_slot_and_unresolved_values_survive_round_trip() {
     assert_eq!(
         ButtonsReport::encode(&decoded.state).as_bytes(),
         packet.as_bytes()
+    );
+}
+
+#[test]
+fn typed_action_entry_round_trips_inside_a_full_report() {
+    let mut slots = [ButtonAssignment::default(); BUTTON_SLOT_COUNT];
+    slots[6] = X3ButtonAction::ProfilePlus.to_assignment();
+    slots[7] = X3ButtonAction::KeyboardShortcut {
+        modifiers: KeyboardModifiers::new(0x03).expect("Ctrl+Shift is valid"),
+        key: HidKeyboardUsage::new(0x16).expect("S usage is valid"),
+    }
+    .to_assignment();
+    let state = ButtonsState::new(profile(2), slots);
+    let packet = ButtonsReport::encode(&state);
+    let decoded = ButtonsReport::decode(packet.as_bytes(), profile(2))
+        .expect("typed action packet must decode")
+        .state;
+    assert_eq!(
+        decoded.slots[6].decode_x3_action(),
+        Ok(X3ButtonAction::ProfilePlus)
+    );
+    assert_eq!(
+        decoded.slots[7].decode_x3_action(),
+        Ok(X3ButtonAction::KeyboardShortcut {
+            modifiers: KeyboardModifiers::new(0x03).unwrap(),
+            key: HidKeyboardUsage::new(0x16).unwrap(),
+        })
     );
 }
 

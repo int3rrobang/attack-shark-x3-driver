@@ -1,6 +1,7 @@
 use attack_shark_x3::{
-    BatteryEvent, ButtonsState, DpiButtonEvent, DpiState, PollingRate, PreferencesState, ProfileId,
-    ProfileMetadata,
+    BatteryEvent, ButtonsState, ConnectionChangedEvent, DpiButtonEvent, DpiIndexChangedEvent,
+    DpiState, InputEvent, LedModeChangedEvent, PollingRate, PreferencesState, ProfileChangedEvent,
+    ProfileId, ProfileMetadata,
 };
 use serde::{Deserialize, Serialize};
 
@@ -99,5 +100,48 @@ pub struct PowerCycleVerificationOutcome {
 pub enum DeviceEvent {
     BatteryChanged(BatteryEvent),
     ActiveDpiStageChanged(DpiButtonEvent),
+    ProfileChanged(ProfileChangedEvent),
+    SecondaryProfileChanged(ProfileChangedEvent),
+    ConnectionChanged(ConnectionChangedEvent),
+    DpiIndexChanged(DpiIndexChangedEvent),
+    LedModeChanged(LedModeChangedEvent),
+    ProfileSync(ProfileChangedEvent),
     Disconnected,
+}
+
+impl From<InputEvent> for DeviceEvent {
+    fn from(event: InputEvent) -> Self {
+        match event {
+            InputEvent::ActiveDpiStageChanged(event) => Self::ActiveDpiStageChanged(event),
+            InputEvent::ProfileChanged(event) => Self::ProfileChanged(event),
+            InputEvent::SecondaryProfileChanged(event) => Self::SecondaryProfileChanged(event),
+            InputEvent::BatteryChanged(event) => Self::BatteryChanged(event),
+            InputEvent::ConnectionChanged(event) => Self::ConnectionChanged(event),
+            InputEvent::DpiIndexChanged(event) => Self::DpiIndexChanged(event),
+            InputEvent::LedModeChanged(event) => Self::LedModeChanged(event),
+            InputEvent::ProfileSync(event) => Self::ProfileSync(event),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeviceEvent;
+    use attack_shark_x3::{ConnectionChangedEvent, InputEvent};
+
+    #[test]
+    fn maps_low_level_input_events_without_losing_raw_bytes() {
+        let raw_report = [0x03, 0x10, 0x50, 0x01, 0x00];
+        let event = InputEvent::ConnectionChanged(ConnectionChangedEvent {
+            raw_report,
+            connected: false,
+        });
+        assert_eq!(
+            DeviceEvent::from(event),
+            DeviceEvent::ConnectionChanged(ConnectionChangedEvent {
+                raw_report,
+                connected: false,
+            })
+        );
+    }
 }

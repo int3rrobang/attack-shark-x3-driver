@@ -19,14 +19,19 @@ pub use driver::ble::{
 };
 pub use error::ProtocolError;
 pub use model::{DpiValue, ProfileId, StageIndex, TransportKind};
-pub use protocol::buttons::{ButtonAssignment, ButtonsReport, ButtonsState, DecodedButtonsReport};
+pub use protocol::buttons::{
+    ButtonActionError, ButtonAssignment, ButtonsReport, ButtonsState, HidKeyboardUsage,
+    KeyboardModifiers, X3ButtonAction,
+};
 pub use protocol::dpi::{
     DecodedDpiReport, DpiFraming, DpiReport, DpiState, LiftOffDistance, SensorOptions,
 };
 pub use protocol::input::{
     BATTERY_REPORT_LENGTH, BATTERY_REPORT_PREFIX, BATTERY_REPORT_PREFIX_X3, BatteryEvent,
-    DPI_BUTTON_REPORT_LENGTH, DPI_BUTTON_REPORT_PREFIX, DPI_BUTTON_REPORT_TRAILING_BYTE,
-    DpiButtonEvent, decode_battery_report, decode_dpi_button_report,
+    ConnectionChangedEvent, DPI_BUTTON_REPORT_LENGTH, DPI_BUTTON_REPORT_PREFIX,
+    DPI_BUTTON_REPORT_TRAILING_BYTE, DpiButtonEvent, DpiIndex, DpiIndexChangedEvent, InputEvent,
+    LedModeChangedEvent, ProfileChangedEvent, decode_battery_report, decode_dpi_button_report,
+    decode_input_report,
 };
 pub use protocol::polling_rate::{DecodedPollingRateReport, PollingRate, PollingRateReport};
 pub use protocol::preferences::{

@@ -17,9 +17,12 @@ pub mod state;
 pub(crate) mod verification;
 
 pub use attack_shark_x3::{
-    BatteryEvent, ButtonAssignment, ButtonsState, DpiButtonEvent, DpiFraming, DpiState, DpiValue,
-    LiftOffDistance, PollingRate, PreferencesFraming, PreferencesState, ProfileControlFraming,
+    BatteryEvent, ButtonActionError, ButtonAssignment, ButtonsState, ConnectionChangedEvent,
+    DpiButtonEvent, DpiFraming, DpiIndex, DpiIndexChangedEvent, DpiState, DpiValue,
+    HidKeyboardUsage, InputEvent, KeyboardModifiers, LedModeChangedEvent, LiftOffDistance,
+    PollingRate, PreferencesFraming, PreferencesState, ProfileChangedEvent, ProfileControlFraming,
     ProfileId, ProfileMetadata, ReadbackRequest, SensorOptions, StageIndex, TransportKind,
+    X3ButtonAction,
 };
 pub use device::*;
 pub use error::{ManagerError, StateError};

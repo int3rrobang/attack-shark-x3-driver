@@ -14,8 +14,8 @@ use thiserror::Error;
 use tokio::sync::{broadcast, oneshot};
 
 use crate::{
-    BatteryEvent, DpiButtonEvent, DpiState, PollingRate, PreferencesState, ProfileId,
-    ProfileMetadata, ProtocolError, TransportKind, protocol::buttons::ButtonsState,
+    DpiState, InputEvent, PollingRate, PreferencesState, ProfileId, ProfileMetadata, ProtocolError,
+    TransportKind, protocol::buttons::ButtonsState,
 };
 
 #[cfg(feature = "usb")]
@@ -140,8 +140,7 @@ pub struct ProfileSnapshot {
 #[derive(Clone, Debug)]
 pub struct MouseHandle {
     pub(crate) commands: mpsc::Sender<Command>,
-    pub(crate) dpi_button_events: broadcast::Sender<DpiButtonEvent>,
-    pub(crate) battery_events: broadcast::Sender<BatteryEvent>,
+    pub(crate) input_events: broadcast::Sender<InputEvent>,
     pub(crate) battery_level: Arc<Mutex<Option<u8>>>,
     pub(crate) input_available: Arc<AtomicBool>,
     pub(crate) input_stop: Arc<AtomicBool>,
@@ -228,8 +227,7 @@ impl MouseHandle {
         worker::spawn_input_worker(
             input_selector,
             kind,
-            handle.dpi_button_events.clone(),
-            handle.battery_events.clone(),
+            handle.input_events.clone(),
             handle.battery_level.clone(),
             handle.input_available.clone(),
             Arc::downgrade(&handle.input_stop),
@@ -237,23 +235,14 @@ impl MouseHandle {
         Ok(handle)
     }
 
-    /// Subscribes to physical DPI-button pulses from the auxiliary HID input path.
+    /// Subscribes to decoded report-`0x03` input events from the auxiliary HID
+    /// collection.
     ///
-    /// Works on both wired (FA61) and receiver (FA60) transports. Byte 3 of the
-    /// report is the resulting one-based active DPI-stage index.
+    /// The receiver carries one event stream for profile/DPI, battery,
+    /// connection, DPI-index, LED-mode, and profile-sync notifications.
     #[must_use]
-    pub fn subscribe_dpi_button_events(&self) -> broadcast::Receiver<DpiButtonEvent> {
-        self.dpi_button_events.subscribe()
-    }
-
-    /// Subscribes to battery reports emitted by the FA60 receiver.
-    ///
-    /// Confirmed: the receiver pushes `03 10 40 01 <level>` (level 1–10, ×10 =
-    /// percentage) on the auxiliary HID collection. Wired mode does not emit
-    /// battery reports; the stream will be empty on FA61.
-    #[must_use]
-    pub fn subscribe_battery_events(&self) -> broadcast::Receiver<BatteryEvent> {
-        self.battery_events.subscribe()
+    pub fn subscribe_input_events(&self) -> broadcast::Receiver<InputEvent> {
+        self.input_events.subscribe()
     }
 
     /// Waits for a receiver battery report, returning a cached value when one
@@ -269,7 +258,7 @@ impl MouseHandle {
         if self.transport_kind != TransportKind::Receiver {
             return Err(DriverError::BatteryUnavailable);
         }
-        let mut events = self.battery_events.subscribe();
+        let mut events = self.input_events.subscribe();
         if let Some(level) = self
             .battery_level
             .lock()
@@ -286,7 +275,8 @@ impl MouseHandle {
         let level = tokio::time::timeout(timeout, async {
             loop {
                 match events.recv().await {
-                    Ok(event) => break Ok(event.level),
+                    Ok(InputEvent::BatteryChanged(event)) => break Ok(event.level),
+                    Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => {
                         break Err(DriverError::InputUnavailable);

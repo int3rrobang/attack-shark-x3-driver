@@ -56,12 +56,17 @@ live-confirmed):
 | Forward | 6 | 21 |
 | Backward | 7 | 24 |
 
-Scroll-up (index 4, offset 15), scroll-down (index 5, offset 18), and
-DPI-button (index 3, offset 12) slots exist in the 18-slot table but are
-intentionally not exposed by the CLI. Direct scroll remaps remain unsafe
-because actions may repeat until unplug or reboot. DPI-button remaps appear
-ignored by stock FA61 firmware. The native Rust CLI exposes only left, right,
-middle, forward, and backward slots.
+Scroll-up (index 4, offset 15) and scroll-down (index 5, offset 18) slots
+exist in the 18-slot table but are intentionally not exposed by the CLI.
+Direct scroll remaps remain unsafe because actions may repeat until unplug
+or reboot.
+
+The DPI-button slot (index 3) is exposed through the safe CLI.
+Interactive probe on FA61 wired and FA60 receiver (2026-07-28) confirmed
+that slot 3 accepts arbitrary safe actions, including mouse buttons, DPI
+controls, and profile navigation, without adverse firmware behavior.
+\[live-confirmed] The native Rust CLI exposes left, right, middle, DPI,
+forward, and backward slots.
 
 ## Checksums
 
@@ -119,6 +124,21 @@ The following action bytes are confirmed on X3/FA61 wired (live-confirmed 2026-0
 | Profile minus | `0x36` | Clamps at 1 |
 
 Profile cycling actions are X3-specific and not present in the X11 `FirmwareAction` enum. Button bindings are per-profile: the cycle/plus/minus binding must be written to every profile that should respond to the physical button.
+
+The Rust protocol crate exposes the verified encoding as
+`X3ButtonAction`. It distinguishes parameterless confirmed actions from
+keyboard shortcuts (`0x11`, modifier bits Ctrl=`0x01`, Shift=`0x02`,
+Alt=`0x04`, Win=`0x08`, followed by a keyboard-page HID usage) and macro
+references (`0x12`, zero modifier, reference in byte 2). `ButtonAssignment`
+remains the lossless representation for unknown actions, unresolved firmware
+revisions, and nonzero parameters that have not been confirmed. The manager's
+safe API intentionally exposes only the parameterless action subset listed
+above.
+
+The stock native program's larger selector-to-wire table contains additional
+media, browser, shortcut, and firmware-only entries. Their native UI labels
+must not be copied into the Rust action enum without model/transport-specific
+live confirmation; native selectors are not wire action bytes.
 
 Confirmed slot indices on X3/FA61 wired:
 

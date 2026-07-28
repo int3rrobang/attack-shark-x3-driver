@@ -627,17 +627,27 @@ UI action
   -> UI rendering
 ```
 
-The manager may expose a small event stream for facts the hardware actually emits:
+The manager exposes the decoded report-`0x03` stream for facts the hardware
+actually emits:
 
 ```rust
 pub enum DeviceEvent {
     BatteryChanged(BatteryEvent),
     ActiveDpiStageChanged(DpiButtonEvent),
+    ProfileChanged(ProfileChangedEvent),
+    SecondaryProfileChanged(ProfileChangedEvent),
+    ConnectionChanged(ConnectionChangedEvent),
+    DpiIndexChanged(DpiIndexChangedEvent),
+    LedModeChanged(LedModeChangedEvent),
+    ProfileSync(ProfileChangedEvent),
     Disconnected,
 }
 ```
 
-Do not create a general event bus, UI-state store, frontend plugin interface, or GUI framework abstraction. A future GUI chooses its own toolkit and maps manager results into presentation state.
+`DeviceManager::subscribe_events()` maps the driver's single input stream to
+`EventSubscriptions::events`. It does not create a general event bus or
+synthesize disconnect events; the `Disconnected` variant remains reserved for
+a future transport-level signal.
 
 Useful UI labels follow verification evidence:
 

@@ -10,12 +10,12 @@ use async_trait::async_trait;
 use attack_shark_x3::MouseHandle;
 #[cfg(any(feature = "usb", feature = "ble"))]
 use attack_shark_x3::driver::ProfileSnapshot;
-use attack_shark_x3::{
-    BatteryEvent, ButtonsState, DpiButtonEvent, DpiState, PollingRate, PreferencesState, ProfileId,
-    ProfileMetadata, TransportKind,
-};
 #[cfg(feature = "ble")]
 use attack_shark_x3::{BleDeviceId, BleHandle, BleSelector};
+use attack_shark_x3::{
+    ButtonsState, DpiState, InputEvent, PollingRate, PreferencesState, ProfileId, ProfileMetadata,
+    TransportKind,
+};
 #[cfg(feature = "usb")]
 use attack_shark_x3::{DeviceSelector, UsbDeviceKind, list_devices_for};
 use tokio::sync::broadcast;
@@ -45,14 +45,13 @@ pub(crate) enum SessionWrite<T> {
     Acknowledged,
 }
 
-/// Optional input streams owned by one open session.
+/// Optional decoded report-`0x03` input stream owned by one open session.
 ///
-/// BLE configuration sessions do not expose either stream. USB sessions expose
-/// the low-level HID event receivers directly and preserve their transport
-/// semantics for the resource layer.
+/// BLE configuration sessions do not expose this stream. USB sessions expose
+/// the low-level HID event receiver directly and preserve its transport
+/// semantics for the manager event bridge.
 pub(crate) struct SessionEvents {
-    pub(crate) dpi_button: Option<broadcast::Receiver<DpiButtonEvent>>,
-    pub(crate) battery: Option<broadcast::Receiver<BatteryEvent>>,
+    pub(crate) input: Option<broadcast::Receiver<InputEvent>>,
 }
 
 #[async_trait(?Send)]
@@ -369,8 +368,7 @@ impl DeviceSession for UsbSession {
 
     fn subscribe_events(&self) -> SessionEvents {
         SessionEvents {
-            dpi_button: Some(self.handle.subscribe_dpi_button_events()),
-            battery: Some(self.handle.subscribe_battery_events()),
+            input: Some(self.handle.subscribe_input_events()),
         }
     }
 }
@@ -466,10 +464,7 @@ impl DeviceSession for BleSession {
     }
 
     fn subscribe_events(&self) -> SessionEvents {
-        SessionEvents {
-            dpi_button: None,
-            battery: None,
-        }
+        SessionEvents { input: None }
     }
 }
 
@@ -502,8 +497,7 @@ pub(crate) struct ScriptedFakeSession {
     polling_rate: Arc<Mutex<Option<PollingRate>>>,
     battery: Arc<Mutex<Option<u8>>>,
     writes: Arc<Mutex<Vec<ScriptedWrite>>>,
-    dpi_button_events: broadcast::Sender<DpiButtonEvent>,
-    battery_events: broadcast::Sender<BatteryEvent>,
+    input_events: broadcast::Sender<InputEvent>,
 }
 
 #[cfg(test)]
@@ -514,8 +508,7 @@ fn lock_scripted<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 impl ScriptedFakeSession {
     fn new(transport: TransportKind, write_mode: FakeWriteMode) -> Self {
-        let (dpi_button_events, _) = broadcast::channel(16);
-        let (battery_events, _) = broadcast::channel(16);
+        let (input_events, _) = broadcast::channel(16);
         Self {
             transport,
             write_mode,
@@ -526,8 +519,7 @@ impl ScriptedFakeSession {
             polling_rate: Arc::new(Mutex::new(None)),
             battery: Arc::new(Mutex::new(None)),
             writes: Arc::new(Mutex::new(Vec::new())),
-            dpi_button_events,
-            battery_events,
+            input_events,
         }
     }
 
@@ -759,14 +751,10 @@ impl DeviceSession for ScriptedFakeSession {
 
     fn subscribe_events(&self) -> SessionEvents {
         if self.is_ble() {
-            SessionEvents {
-                dpi_button: None,
-                battery: None,
-            }
+            SessionEvents { input: None }
         } else {
             SessionEvents {
-                dpi_button: Some(self.dpi_button_events.subscribe()),
-                battery: Some(self.battery_events.subscribe()),
+                input: Some(self.input_events.subscribe()),
             }
         }
     }

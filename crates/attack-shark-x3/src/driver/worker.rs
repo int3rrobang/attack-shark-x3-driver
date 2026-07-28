@@ -13,10 +13,10 @@ use std::{
 use tokio::sync::broadcast;
 
 use crate::{
-    BatteryEvent, DpiButtonEvent, DpiReport, DpiState, PollingRate, PollingRateReport,
-    PreferencesReport, PreferencesState, ProfileControlFraming, ProfileControlReport, ProfileId,
-    ProfileMetadata, ProfileMetadataReport, ProtocolError, ReadSelector, ReadbackRequest,
-    ReadinessStatus, TransportKind, decode_battery_report, decode_dpi_button_report,
+    DpiReport, DpiState, InputEvent, PollingRate, PollingRateReport, PreferencesReport,
+    PreferencesState, ProfileControlFraming, ProfileControlReport, ProfileId, ProfileMetadata,
+    ProfileMetadataReport, ProtocolError, ReadSelector, ReadbackRequest, ReadinessStatus,
+    TransportKind, decode_input_report,
     protocol::buttons::{ButtonsReport, ButtonsState},
 };
 
@@ -413,12 +413,10 @@ pub(crate) fn spawn_worker(
     result
         .recv()
         .map_err(|_| DriverError::WorkerUnavailable)??;
-    let (dpi_button_events, _) = broadcast::channel(16);
-    let (battery_events, _) = broadcast::channel(16);
+    let (input_events, _) = broadcast::channel(16);
     Ok(MouseHandle {
         commands,
-        dpi_button_events,
-        battery_events,
+        input_events,
         battery_level: Arc::new(Mutex::new(None)),
         input_available: Arc::new(AtomicBool::new(false)),
         input_stop: Arc::new(AtomicBool::new(false)),
@@ -430,8 +428,7 @@ pub(crate) fn spawn_worker(
 pub(crate) fn spawn_input_worker(
     selector: DeviceSelector,
     kind: usb::UsbDeviceKind,
-    dpi_events: broadcast::Sender<DpiButtonEvent>,
-    battery_events: broadcast::Sender<BatteryEvent>,
+    input_events: broadcast::Sender<InputEvent>,
     battery_level: Arc<Mutex<Option<u8>>>,
     input_available: Arc<AtomicBool>,
     stop: Weak<AtomicBool>,
@@ -461,14 +458,13 @@ pub(crate) fn spawn_input_worker(
                     Ok(0) => {}
                     Ok(length) if length <= buffer.len() => {
                         let packet = &buffer[..length];
-                        if let Some(event) = decode_dpi_button_report(packet) {
-                            let _ = dpi_events.send(event);
-                        }
-                        if let Some(event) = decode_battery_report(packet) {
-                            if let Ok(mut cached) = battery_level.lock() {
-                                *cached = Some(event.level);
+                        if let Some(event) = decode_input_report(packet) {
+                            if let InputEvent::BatteryChanged(battery) = event {
+                                if let Ok(mut cached) = battery_level.lock() {
+                                    *cached = Some(battery.level);
+                                }
                             }
-                            let _ = battery_events.send(event);
+                            let _ = input_events.send(event);
                         }
                     }
                     Ok(_) => {}
@@ -503,7 +499,7 @@ mod tests {
     };
 
     use super::{
-        DpiButtonEvent, DriverError, FeatureTransport, MouseHandle, ReadFailure, ReadPolicy,
+        DriverError, FeatureTransport, InputEvent, MouseHandle, ReadFailure, ReadPolicy,
         ReadSelector, ReadbackRequest, spawn_worker,
     };
     use crate::{
@@ -678,17 +674,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dpi_button_subscription_preserves_the_raw_event() {
+    async fn input_subscription_preserves_the_raw_event() {
         let (handle, remaining) = handle(Vec::new(), test_policy(1));
-        let mut events = handle.subscribe_dpi_button_events();
+        let mut events = handle.subscribe_input_events();
         let raw_report = [0x03, 0x00, 0x10, 0x03, 0x00];
-        let expected = DpiButtonEvent {
+        let expected = InputEvent::ActiveDpiStageChanged(crate::DpiButtonEvent {
             raw_report,
             active_stage: StageIndex::try_from(3).expect("stage 3 is valid"),
-        };
+        });
 
         handle
-            .dpi_button_events
+            .input_events
             .send(expected)
             .expect("test subscriber must receive the event");
 

@@ -148,29 +148,49 @@ suppresses battery telemetry while charging (VBUS detected), so the wait will
 time out in that state. See [`battery.md`](../protocols/battery.md) for full
 details. \[disassembly + live-confirmed 2026-07-24]
 
-### FA61 auxiliary DPI-button input
+### Auxiliary report-`0x03` input events
 
-The wired X3/FA61 also emits a separate interrupt-input event when the
-physical DPI button is pressed:
+The X3/FA61 wired device and FA60 receiver expose a separate interrupt-input
+collection. The stock host accepts only five-byte reports with ID `0x03`:
 
 ```text
-endpoint 0x83 IN
+03 <event-type low> <event-type high> <event-data low> <event-data high>
+```
+
+The Rust driver decodes the little-endian event pairs once and publishes a
+single `MouseHandle::subscribe_input_events()` stream. Currently recognized
+events are:
+
+| Type | Payload | Rust event |
+|:-----|:--------|:-----------|
+| `0x1000` | one-based stage/profile value, trailing byte `00` | active DPI stage |
+| `0x2000` | profile `1..=5`, trailing byte `00` | secondary profile |
+| `0x4010` | charging marker `01`, level `1..=10` | X3 battery (`level × 10`) |
+| `0x4055` | legacy level `0..=100` | X11 battery |
+| `0x5010` | state `0`/`1`, trailing byte `00` | connected/disconnected |
+| `0x6000` | DPI index `1..=10`, trailing byte `00` | DPI index |
+| `0x7000` | LED mode `0..=7`, trailing byte `00` | LED mode |
+| `0x8000` | profile `1..=5`, trailing byte `00` | profile sync |
+
+Unknown types and malformed/out-of-range payloads are ignored. The driver
+preserves all five report bytes in each decoded event. This is an
+**implementation** of the static-analysis event layout; the existing DPI and
+battery interpretations remain **live-confirmed** as described below.
+
+The physical DPI button is observed as:
+
+```text
 03 00 10 <active-stage> 00
 ```
 
-The fixed prefix is `03 00 10`; byte 3 is the resulting one-based active
-DPI-stage index. Live profile-separated captures observed `03 00 10 02 00`
-and `03 00 10 03 00`, and a targeted report-`0x04` read confirmed active
-stage 3 after the latter event. This is not one of the five normal
-mouse-button bits and is not a feature-report configuration command.
+Live profile-separated captures observed `03 00 10 02 00` and
+`03 00 10 03 00`, and a targeted report-`0x04` read confirmed active stage 3
+after the latter event. This is not one of the five normal mouse-button bits
+and is not a feature-report configuration command.
 
-The Rust driver opens the auxiliary HID collection (usage_page `0x000a`,
-interface 2, Col03) on a separate reader thread and exposes the raw report
-plus decoded stage through `MouseHandle::subscribe_dpi_button_events()`.
-This collection carries both DPI button events and battery reports (receiver
-only). The input reader works on both wired (FA61) and receiver (FA60)
-transports and is best-effort so configuration access remains usable when an
-OS HID backend does not expose the auxiliary collection.
+The auxiliary collection uses usage page `0x000a`, interface 2, Col03. The
+input reader is best-effort so configuration access remains usable when an OS
+HID backend does not expose the collection.
 
 ### One-shot readiness mailbox
 
