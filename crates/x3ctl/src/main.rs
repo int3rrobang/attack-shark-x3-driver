@@ -10,10 +10,11 @@ use std::process::ExitCode;
 
 use attack_shark_x3_manager::{
     ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport, DeviceId, DeviceManager,
-    DpiDelta, DpiState, DpiValue, LiftOffDistance, PollingRate, PreferencesDelta,
-    PreferencesFraming, PreferencesState, ProfileId, SafeButtonAction, SafeButtonSlot,
-    SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind, TransportSelection,
-    UpdatePolicy, VerificationMethod, encode_debug_buttons, encode_debug_dpi, encode_debug_prefs,
+    DeviceStatus, DpiDelta, DpiState, DpiValue, LiftOffDistance, PollingRate, PreferencesDelta,
+    PreferencesFraming, PreferencesState, ProfileId, ResourceSnapshot, SafeButtonAction,
+    SafeButtonSlot, SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind,
+    TransportSelection, UpdatePolicy, VerificationMethod, encode_debug_buttons, encode_debug_dpi,
+    encode_debug_prefs,
 };
 use clap::Parser;
 use serde::Serialize;
@@ -340,7 +341,7 @@ async fn dispatch(
                 .read_status(&device)
                 .await
                 .map_err(|error| error.to_string())?;
-            output.print(format!("Status for {}", status.identity.id), &status)
+            output.print(format_status_human(&status), &status)
         }
         Action::ProfileGet { profile } => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -371,7 +372,7 @@ async fn dispatch(
                 .read_dpi(&device, profile)
                 .await
                 .map_err(|error| error.to_string())?;
-            output.print(format!("DPI for profile {profile}"), &snapshot)
+            output.print(format_dpi_human(profile, &snapshot), &snapshot)
         }
         Action::DpiSet { profile, delta } => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -387,7 +388,7 @@ async fn dispatch(
                 .read_polling_rate(&device)
                 .await
                 .map_err(|error| error.to_string())?;
-            output.print("Polling rate".to_owned(), &snapshot)
+            output.print(format_rate_human(&snapshot), &snapshot)
         }
         Action::RateSet { rate } => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -403,7 +404,7 @@ async fn dispatch(
                 .read_preferences(&device, profile)
                 .await
                 .map_err(|error| error.to_string())?;
-            output.print(format!("Preferences for profile {profile}"), &snapshot)
+            output.print(format_prefs_human(profile, &snapshot), &snapshot)
         }
         Action::PrefsSet { profile, delta } => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -427,7 +428,7 @@ async fn dispatch(
                 .read_buttons(&device, profile)
                 .await
                 .map_err(|error| error.to_string())?;
-            output.print(format!("Buttons for profile {profile}"), &snapshot)
+            output.print(format_buttons_human(profile, &snapshot), &snapshot)
         }
         Action::BindSet { profile, delta } => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -703,6 +704,130 @@ fn format_transport(transport: TransportKind) -> &'static str {
     }
 }
 
+fn resource_value<T: Clone>(snapshot: &ResourceSnapshot<T>) -> Option<T> {
+    snapshot
+        .resource
+        .observed
+        .as_ref()
+        .map(|observed| observed.value.clone())
+        .or_else(|| {
+            snapshot
+                .resource
+                .desired
+                .as_ref()
+                .map(|desired| desired.value.clone())
+        })
+}
+
+fn format_dpi_human(profile: ProfileId, snapshot: &ResourceSnapshot<DpiState>) -> String {
+    let Some(dpi) = resource_value(snapshot) else {
+        return format!("DPI for profile {profile}: no data");
+    };
+    let stages: Vec<String> = dpi.stages.iter().map(|stage| stage.to_string()).collect();
+    format!(
+        "DPI for profile {profile}\n  stages:      [{}]\n  active:      {}\n  LOD:         {}\n  ripple:      {}\n  angle snap:  {}\n  motion sync: {}",
+        stages.join(", "),
+        dpi.active_stage,
+        match dpi.sensor.lift_off_distance {
+            LiftOffDistance::OneMillimeter => "1 mm",
+            LiftOffDistance::TwoMillimeters => "2 mm",
+        },
+        dpi.sensor.ripple_control,
+        dpi.sensor.angle_snap,
+        dpi.sensor.motion_sync,
+    )
+}
+
+fn format_rate_human(snapshot: &ResourceSnapshot<PollingRate>) -> String {
+    match resource_value(snapshot) {
+        Some(rate) => format!("Polling rate: {rate}"),
+        None => "Polling rate: no data".to_owned(),
+    }
+}
+
+fn format_prefs_human(profile: ProfileId, snapshot: &ResourceSnapshot<PreferencesState>) -> String {
+    let Some(prefs) = resource_value(snapshot) else {
+        return format!("Preferences for profile {profile}: no data");
+    };
+    format!(
+        "Preferences for profile {profile}\n  light mode:    {}\n  configuration: {}\n  deep sleep:    {}\n  host color:    #{:02x}{:02x}{:02x}\n  sleep timer:   {}\n  debounce:      {}",
+        prefs.light_mode,
+        prefs.configuration,
+        prefs.deep_sleep,
+        prefs.host_color[0],
+        prefs.host_color[1],
+        prefs.host_color[2],
+        prefs.sleep_timer,
+        prefs.debounce,
+    )
+}
+
+fn format_buttons_human(profile: ProfileId, snapshot: &ResourceSnapshot<ButtonsState>) -> String {
+    let Some(buttons) = resource_value(snapshot) else {
+        return format!("Buttons for profile {profile}: no data");
+    };
+    let mut text = format!("Buttons for profile {profile}");
+    for (index, slot) in buttons.slots.iter().enumerate() {
+        if slot.action == 0 && slot.modifier == 0 && slot.key_code == 0 {
+            continue;
+        }
+        let name = button_action_name(slot.action);
+        text.push_str(&format!(
+            "\n  [{index:2}] action=0x{action:02x} ({name}) mod=0x{mod:02x} key=0x{key:02x}",
+            action = slot.action,
+            mod = slot.modifier,
+            key = slot.key_code,
+        ));
+    }
+    text
+}
+
+fn button_action_name(action: u8) -> &'static str {
+    match action {
+        0x01 => "disable",
+        0x02 => "left-click",
+        0x03 => "right-click",
+        0x04 => "middle-click",
+        0x05 => "backward",
+        0x06 => "forward",
+        0x07 => "double-click",
+        0x0d => "dpi-cycle",
+        0x0e => "dpi-plus",
+        0x0f => "dpi-minus",
+        0x34 => "profile-cycle",
+        0x35 => "profile-plus",
+        0x36 => "profile-minus",
+        0x3c => "scroll-up",
+        _ => "unknown",
+    }
+}
+
+fn format_status_human(status: &DeviceStatus) -> String {
+    let mut text = format!(
+        "Status for {}\n  transport: {}",
+        status.identity.id,
+        format_transport(status.identity.transport)
+    );
+    if let Some(battery) = status.battery {
+        text.push_str(&format!("\n  battery:   {battery}%"));
+    }
+    if let Some(metadata_snapshot) = &status.profile_metadata {
+        if let Some(metadata) = resource_value(metadata_snapshot) {
+            text.push_str(&format!(
+                "\n  profile:   {} (max {})",
+                metadata.current(),
+                metadata.maximum()
+            ));
+        }
+    }
+    if let Some(rate_snapshot) = &status.polling_rate {
+        if let Some(rate) = resource_value(rate_snapshot) {
+            text.push_str(&format!("\n  rate:      {rate}"));
+        }
+    }
+    text
+}
+
 fn action_name(action: &Action) -> &'static str {
     match action {
         Action::Devices => "list devices",
@@ -734,7 +859,6 @@ fn action_name(action: &Action) -> &'static str {
 mod tests {
     use super::*;
     use args::BindCommand;
-
     #[test]
     fn build_bind_action_maps_safe_slot_and_action() {
         let cli = args::Cli::try_parse_from([
@@ -761,6 +885,29 @@ mod tests {
                 assert_eq!(delta.assignment().action, 0x34);
                 assert_eq!(delta.assignment().modifier, 0);
                 assert_eq!(delta.assignment().key_code, 0);
+            }
+            other => panic!("expected BindSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_bind_action_maps_dpi_slot() {
+        let cli = args::Cli::try_parse_from([
+            "x3ctl", "bind", "set", "--slot", "dpi", "--action", "dpi-plus",
+        ])
+        .expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        let args = match command {
+            Command::Bind(BindCommand::Set(args)) => args,
+            other => panic!("expected BindSet, got {other:?}"),
+        };
+        let action = build_bind_action(&cli, args).expect("build");
+        match action {
+            Action::BindSet { delta, .. } => {
+                assert_eq!(delta.slot(), SafeButtonSlot::Dpi);
+                assert_eq!(delta.slot_index(), 3);
+                assert_eq!(delta.action(), SafeButtonAction::DpiPlus);
+                assert_eq!(delta.assignment().action, 0x0e);
             }
             other => panic!("expected BindSet, got {other:?}"),
         }
