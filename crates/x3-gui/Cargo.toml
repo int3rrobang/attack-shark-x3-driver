@@ -1,0 +1,34 @@
+[package]
+name = "x3-gui"
+description = "Slint desktop frontend for Attack Shark X3/M600-family mice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[features]
+default = ["usb"]
+usb = ["attack-shark-x3-manager/usb"]
+ble = ["attack-shark-x3-manager/ble"]
+
+[dependencies]
+attack-shark-x3-manager = { path = "../attack-shark-x3-manager", default-features = false }
+slint = { version = "1.17.1", default-features = false, features = [
+    "accessibility",
+    "backend-winit",
+    "compat-1-2",
+    "renderer-femtovg",
+    "std",
+] }
+
+[build-dependencies]
+slint-build = "1.17.1"
+
+[lints.rust]
+# Slint's generated item-tree glue contains audited unsafe internals.
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

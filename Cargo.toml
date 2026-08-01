@@ -1,13 +1,26 @@
 [workspace]
-members = ["crates/attack-shark-x3", "crates/attack-shark-x3-manager", "crates/x3ctl"]
+members = ["crates/attack-shark-x3", "crates/attack-shark-x3-manager", "crates/x3ctl", "crates/x3-gui"]
 resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.92"
 license = "MIT"
 repository = "https://github.com/int3rrobang/attack-shark-x3-driver"
+
+[profile.dev.package.x3-gui]
+# Optimize generated Slint item-tree code without release-level compile times.
+opt-level = 1
+
+[profile.dev.package.i-slint-core]
+opt-level = 2
+
+[profile.dev.package.i-slint-renderer-femtovg]
+opt-level = 2
+
+[profile.dev.package.femtovg]
+opt-level = 2
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
