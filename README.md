@@ -1,6 +1,6 @@
 # attack-shark-x3-driver
 
-A Rust CLI and library for configuring Attack Shark X3, Kysona M600, and related X3/M600-family mice.
+A Rust desktop app, CLI, and library for configuring Attack Shark X3, Kysona M600, and related X3/M600-family mice.
 
 This project began as a fork of
 [`HarukaYamamoto0/attack-shark-x11-driver`](https://github.com/HarukaYamamoto0/attack-shark-x11-driver)
@@ -51,7 +51,9 @@ attack-shark-x3-rust/
 │   ├── attack-shark-x3-manager/  # Headless operations manager: durable state,
 │   │                              #   read-modify-write pipeline, safety policy,
 │   │                              #   verification workflows, offline debug encoders
-│   └── x3ctl/                    # CLI frontend: Clap-based resource-oriented commands
+│   ├── x3ctl/                    # CLI frontend: Clap-based resource-oriented commands
+│   └── x3-gui/                   # Slint desktop frontend: six-page control window,
+│                                  #   worker-thread DeviceManager access
 ├── scripts/fa61-test-suite.ps1   # Windows hardware test suite
 └── fixtures/protocol/            # Protocol fixture JSONs
 ```
@@ -63,6 +65,9 @@ attack-shark-x3-rust/
   verification workflows, and offline packet generation through `debug` commands.
 - **`x3ctl`** — the CLI binary. Talks to hardware through the manager crate;
   `--stateless` keeps state only in memory for the current invocation.
+- **`x3-gui`** — the Slint desktop frontend. A UI thread renders the six-page
+  window; a manager worker thread owns `DeviceManager` and applies drafts (DPI,
+  safe button bindings, polling rate) with readback or transport verification.
 
 All crates default to USB. BLE requires `--features ble` on each crate in the
 dependency chain.
@@ -87,6 +92,9 @@ cargo clippy
 
 # Install the CLI
 cargo install --path crates/x3ctl
+
+# Run the desktop GUI
+cargo run -p x3-gui
 ```
 
 ## CLI

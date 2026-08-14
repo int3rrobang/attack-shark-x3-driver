@@ -14,10 +14,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (stable, rustfmt, clippy)
+      - name: Install Rust toolchain (1.97.1, rustfmt, clippy, rust-analyzer)
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-          rustup default stable
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy --component rust-analyzer --component rust-src
+          rustup default 1.97.1
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -35,10 +35,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (stable)
+      - name: Install Rust toolchain (1.97.1)
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy --component rust-analyzer --component rust-src
+          rustup default 1.97.1
 
       - name: cargo check
         run: cargo check --workspace --all-targets --all-features
