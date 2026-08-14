@@ -34,11 +34,18 @@ and X11 `0xfa55`/`0xfa60` behavior are outside this contract.
 
 ### 1.2 Design principles
 
-1. Every profile section read and write has an explicit one-based profile target.
-2. Every profile-section write is read-modify-write and must preserve fields the user did not edit; global polling-rate writes replace one explicit global value.
-3. A write is not successful until the driver validates a fresh readback.
-4. Immediate readback proves the device returned the requested state; it does not
-   by itself prove persistence across power loss.
+1. Every profile section read and write has an explicit one-based profile target,
+   including polling rate.
+2. Every profile-section write is read-modify-write and must preserve fields the user did not edit; polling-rate writes target the profile selected by `--profile`/the active profile editor context and replace one explicit per-profile value.
+3. Every write carries a manager-owned validation choice: `Transport`
+   (default) or `Readback`. `Transport` completes on transport-level
+   submission — USB feature-report submission succeeded, BLE parser ACK —
+   with no post-write readback. `Readback` re-reads the section after the
+   write and succeeds only when the fresh state matches; it is unsupported
+   over BLE.
+4. A fresh readback proves the device returned the requested state; it does
+   not by itself prove persistence across power loss. Neither transport
+   submission nor readback is a persistence claim.
 5. Profile metadata and target-section data are separate observations. The UI must
    not infer the live working profile from metadata alone.
 6. Unknown bytes are preserved, not relabeled or discarded.
@@ -224,7 +231,7 @@ The remaining slots must be displayed as raw/unknown or read-only until their
 semantics are established. A UI must not offer arbitrary raw remaps, macro
 actions, or experimental repeating actions.
 
-### 3.6 Global polling rate
+### 3.6 Polling rate
 
 ```text
 PollingRate {
@@ -233,8 +240,28 @@ PollingRate {
 }
 ```
 
-Polling rate is global, not profile-specific. It must not be displayed as a field
-inside a profile editor.
+Polling rate is **per-profile**, stored and edited inside the profile editor
+like DPI, preferences, and buttons. Report `0x06` byte 2 is the one-based
+target profile; the firmware skips the profile loader for `0x06`, so byte 2
+is a **save alias** — the deferred writer persists the complete *live* image
+into that slot. Consequences:
+
+- a read returns the rate of the profile currently live on the device (the
+  UI must not claim a non-live profile's rate was read);
+- a safe write is a manager preflight, not a bare packet: the complete
+  desired non-rate image (DPI, preferences, buttons) for the target must
+  exist and equal the fresh same-session read, persistent metadata must have
+  `current == target`, and an already-equal rate is a no-op with no hardware
+  write; the rate is written last, with the same validation choice as other
+  section writes;
+- transport submission or rate readback proves the immediate rate field of
+  the live alias only, never the non-rate save image and never persistence;
+- every actual write schedules a deferred flash save (sector erase), so
+  repeated unchanged writes still wear flash; the safe path skips them as
+  no-ops, and a UI must not retry blindly;
+- over BLE the safe path is unavailable (no fresh complete-profile read);
+  BLE writes are an explicit advanced override with ACK-only evidence and
+  unknown persistence (see [Section 4.6](#46-polling-rate-writes-safe-preflight-and-ble-advanced-override)).
 
 ## 4. Operation contract
 
@@ -248,11 +275,11 @@ CLI/IPC adapter may expose different names, but must preserve these semantics.
 | `readDpi(profile)` | profile | validated `DpiState` | may load `profile` |
 | `readPreferences(profile)` | profile | validated `PreferencesState` | may load `profile` |
 | `readButtons(profile)` | profile | validated `ButtonsState` | may load `profile` |
-| `readPollingRate()` | global | validated rate | no profile target |
-| `writeDpi(state)` | profile | fresh verified `DpiState` | readback targets `state.profile` |
-| `writePreferences(state)` | profile | fresh verified `PreferencesState` | readback targets `state.profile` |
-| `writeButtons(state)` | profile | fresh verified `ButtonsState` | readback targets `state.profile` |
-| `writePollingRate(rate)` | global | fresh verified rate | no profile target |
+| `readPollingRate(profile)` | profile | validated rate | live rate; `0x06` never loads a profile |
+| `writeDpi(state, validation?)` | profile | `Transport`: acknowledged; `Readback`: fresh verified `DpiState` | readback (when selected) targets `state.profile` |
+| `writePreferences(state, validation?)` | profile | `Transport`: acknowledged; `Readback`: fresh verified `PreferencesState` | readback (when selected) targets `state.profile` |
+| `writeButtons(state, validation?)` | profile | `Transport`: acknowledged; `Readback`: fresh verified `ButtonsState` | readback (when selected) targets `state.profile` |
+| `writePollingRate(profile, rate, validation?)` | profile | `Transport`: acknowledged; `Readback`: fresh verified rate | `0x06` byte 2 names the target profile; safe preflight requires complete desired non-rate image and `current == target`; already-equal rate is a no-op (see [4.6](#46-polling-rate-writes-safe-preflight-and-ble-advanced-override)) |
 | `activateProfile(profile)` | persistent metadata | fresh verified metadata | deliberately avoids target-section traffic during its quiet period |
 | `setMaximumProfile(maximum)` | persistent metadata | fresh verified metadata | preserves current profile |
 
@@ -283,9 +310,10 @@ Preconditions:
 - `target` is `1..=maximumProfile`;
 - `target` is not already `currentProfile`.
 
-The driver preserves the current maximum, writes the edge-triggered compact
-`0x0c` control, waits 500 ms without targeted section traffic, and verifies
-metadata. The UI should avoid calling this operation when the target is already
+The driver preserves the current maximum, writes the edge-triggered
+model-correct `0x0c` control, holds a 500 ms wired or five-second FA60 receiver
+quiet period without targeted section traffic, and verifies metadata. The UI
+should avoid calling this operation when the target is already
 current; it should treat the current profile as selected without sending a
 redundant activation.
 
@@ -310,15 +338,17 @@ bounded metadata operation, not a reset. Because it hides higher profile slots,
 the UI should require explicit confirmation and explain that those slots will not
 be selectable until re-enabled.
 
-The current implementation serializes the write, waits 500 ms, and verifies
-metadata. The UI must not send a raw standalone `0x0c` packet or expose a generic
+The current implementation serializes the write, holds the same
+transport-specific quiet period, and verifies metadata. The UI must not send a
+raw standalone `0x0c` packet or expose a generic
 profile-metadata editor.
 
 ### 4.4 Button writes
 
 The Rust library can write a complete validated 18-slot table. The current CLI
 provides a safer single-button operation: it reads the complete target table,
-changes one recognized physical button assignment, writes the complete table, and
+changes one recognized physical button assignment, and writes the complete table
+under the chosen validation — `Transport` completes on submission, `Readback`
 requires a matching fresh readback.
 
 The UI should use the single-button abstraction for ordinary editing. It should
@@ -332,24 +362,26 @@ adapter must implement the transaction rules in this document rather than
 forwarding arbitrary HID packets:
 
 ```ts
+type ValidationMethod = "transport" | "readback";
+
 type Immediate<T> = {
   value: T;
-  verification: "immediate-readback";
+  verification: "transport-accepted" | "readback-verified";
   persistence: "unknown";
 };
 
 interface Fa61Session {
   readMetadata(): Promise<ProfileMetadata>;
-  readPollingRate(): Promise<PollingRate>;
+  readPollingRate(profile: ProfileId): Promise<PollingRate>;
   readProfile(profile: ProfileId): Promise<ProfileSnapshot>;
   readDpi(profile: ProfileId): Promise<DpiState>;
   readPreferences(profile: ProfileId): Promise<PreferencesState>;
   readButtons(profile: ProfileId): Promise<ButtonsState>;
 
-  writeDpi(state: DpiState): Promise<Immediate<DpiState>>;
-  writePreferences(state: PreferencesState): Promise<Immediate<PreferencesState>>;
-  writeButtons(state: ButtonsState): Promise<Immediate<ButtonsState>>;
-  writePollingRate(rate: PollingRate): Promise<Immediate<PollingRate>>;
+  writeDpi(state: DpiState, validation?: ValidationMethod): Promise<Immediate<DpiState>>;
+  writePreferences(state: PreferencesState, validation?: ValidationMethod): Promise<Immediate<PreferencesState>>;
+  writeButtons(state: ButtonsState, validation?: ValidationMethod): Promise<Immediate<ButtonsState>>;
+  writePollingRate(profile: ProfileId, rate: PollingRate, validation?: ValidationMethod): Promise<Immediate<PollingRate>>;
 
   activateProfile(profile: ProfileId): Promise<Immediate<ProfileMetadata>>;
   setMaximumProfile(maximum: ProfileId): Promise<Immediate<ProfileMetadata>>;
@@ -358,10 +390,70 @@ interface Fa61Session {
 ```
 
 For ordinary UI editing, add patch helpers such as
-`updateDpi(profile, patch)` and `updatePreferences(profile, patch)`. These helpers
-must read the current section, apply the patch, write the complete state, and
-return the verified readback. They must not synthesize missing fields from
-hard-coded defaults.
+`updateDpi(profile, patch)` and `updatePreferences(profile, patch)`. These
+helpers must read the current section, apply the patch, and write the complete
+state under the chosen validation. They must not synthesize missing fields
+from hard-coded defaults; when no stored section exists to merge against they
+return `MissingBaseline` rather than inventing one.
+
+`validation` defaults to `transport`. With `transport`, `value` echoes the
+requested state and `verification` is `transport-accepted`; with `readback`,
+`value` is the fresh readback and `verification` is `readback-verified`.
+`persistence` is `unknown` in both cases. A `readback` request over BLE is
+rejected up front with `UnsupportedOperation`. Activation and maximum-profile
+updates always include their intrinsic metadata readback; they do not take
+the validation choice.
+
+`writePollingRate` implements the safe preflight of Section 4.6; the adapter
+must not forward a bare `0x06` packet to the hardware.
+
+### 4.6 Polling-rate writes: safe preflight and BLE advanced override
+
+**Safe write preflight (manager-enforced).** `writePollingRate` must fail
+**before any hardware write** unless:
+
+1. complete desired DPI, preferences, and buttons exist for the target
+   profile (`MissingBaseline` otherwise);
+2. persistent metadata reports `current == target` (`MissingBaseline`
+   otherwise — writing to a non-current slot would persist the live image
+   under an alias the user is not editing);
+3. the complete profile freshly read in the same session equals the desired
+   non-rate image in every section (`MissingBaseline` naming the mismatched
+   section otherwise);
+4. the current rate read differs from the requested rate — an already-equal
+   rate is a no-op returning the current state with **no hardware write**;
+5. the write then goes out with the requested validation (`Transport` or
+   `Readback`).
+
+**BLE has no safe path.** BLE cannot freshly read the complete profile, so the
+same operation fails with `ExplicitAuthorizationRequired`. The only BLE rate
+write is an explicitly dangerous override:
+
+```ts
+writePollingRateUnverifiedBle(profile: ProfileId, rate: PollingRate): Promise<Immediate<PollingRate>>
+```
+
+It performs the direct packet write and returns **ACK-only evidence**
+(`verification: "transport-accepted"`, `persistence: "unknown"`); `Readback`
+is rejected up front. The UI must expose it only as an explicit advanced
+action gated by a visible warning, never as a hidden fallback of the normal
+Apply flow, and must show its result as `acknowledged (ACK only)` with
+`persistence-unknown`.
+
+**Current GUI contract.** `x3-gui` now uses `DeviceManager` on a dedicated
+serialized worker and exposes the safe USB path:
+
+- startup discovers one exact wired or receiver device, reads status and the
+  current complete profile, and shows errors instead of preview values;
+- rate choices remain disabled until manager state contains complete desired
+  DPI, preferences, and buttons for the current target; a missing baseline is
+  surfaced before any draft section is written;
+- Save calls the manager's safe polling-rate operation, never a bare `0x06`
+  writer, and reports transport/readback evidence with persistence unknown;
+- BLE configuration and the dangerous BLE override are not exposed by the
+  current GUI. They are never a hidden fallback of the ordinary Save path;
+- profile-reload and power-cycle persistence diagnostics remain visibly marked
+  not implemented in the GUI rather than producing synthetic evidence.
 
 ## 5. Transaction and readback rules
 
@@ -391,15 +483,35 @@ an invalid observation; it must not be shown as valid profile data.
 
 ### 5.3 Write transaction
 
-For profile-scoped writes, the driver:
+Profile-scoped writes take the validation choice described in Section 6;
+`Transport` is the default. The choice is serialized with the write, never
+decided after the fact.
+
+`Transport` validation:
 
 1. sends the model-correct report;
-2. waits 500 ms by default;
+2. returns success on transport-level submission — USB feature-report
+   submission succeeded, BLE parser ACK;
+3. performs no post-write readback, so the result carries no readback
+   evidence.
+
+`Readback` validation (USB wired and FA60 receiver only; BLE has no readback
+path and rejects the request up front):
+
+1. sends the model-correct report;
+2. holds the transport-specific quiet period (500 ms wired, five seconds
+   through the FA60 receiver);
 3. performs one fresh targeted readback;
 4. compares the decoded state to the requested state;
 5. returns success only when they match.
 
-Polling-rate writes use the same serialized write/readback pattern but are global.
+Polling-rate writes use the same serialized pattern with the explicit profile
+carried by the `0x06` byte-2 slot, behind the safe preflight of
+[Section 4.6](#46-polling-rate-writes-safe-preflight-and-ble-advanced-override):
+the complete desired non-rate image and `current == target` are required, and
+an already-equal rate is a no-op with no hardware write. A `0x06` readback's
+byte 2 mirrors the armed selector and is a wire-shape check, not a live-content
+proof.
 
 ### 5.4 Targeted-read warning
 
@@ -412,15 +524,43 @@ The UI should:
 - show the target profile in every section-read result;
 - never label a target read as proof that the persistent current profile changed;
 - avoid rapid polling of targeted sections after activation;
-- allow the driver's 500 ms quiet period to complete before the first target read;
-- invalidate cached working-section data after activation, reconnect, or another
-  targeted read to a different profile.
+- allow the driver's transport-specific quiet period to complete before the
+  first target read;
+- invalidate cached working-section data after activation, reconnect, or
+  another targeted read to a different profile.
 
 A complete `readProfile(profile)` is the preferred refresh operation when the UI
 needs a coherent profile view. It remains one serialized worker command, but the
 result still reports persistent metadata separately from the target profile.
 
 ## 6. UI verification and persistence states
+
+Writes carry a manager-owned validation choice. The choice belongs to the
+manager (for example the global `--validation transport|readback` CLI flag)
+and rides along with each write request; it is not an after-the-fact probe.
+
+| Validation | Semantics | Recommended UX label |
+|:-----------|:----------|:----------------------|
+| `Transport` (default) | completes on transport-level submission — USB feature-report submission succeeded, BLE parser ACK — with no post-write readback | **Fast** |
+| `Readback` | re-reads the section after the write and succeeds only when the fresh state matches | **Verify** |
+
+Recommendations:
+
+- **Fast is the default** for ordinary editing. It performs no post-write
+  readback, so the write stays fast and quiet.
+- **Verify is an explicit choice**, not an automatic Apply step. Each
+  readback is a full read transaction: on an FA60 receiver a prepared read
+  interrupts the primary pointer-report stream for about half a second
+  (502–508 ms gap, median 502.972 ms; capture-confirmed 2026-08-06), so
+  users should choose Verify deliberately when immediate-application evidence
+  matters.
+- Readback is **unsupported over BLE**: BLE has no configuration readback, so
+  the choice is effectively fixed to `Transport`; the UI must say readback is
+  unavailable rather than degrade silently. BLE rate writes additionally
+  require the explicit advanced override of [Section 4.6](#46-polling-rate-writes-safe-preflight-and-ble-advanced-override);
+  their result state is `acknowledged (ACK only)` with
+  `persistence-unknown` — the UI must never display a BLE ACK as
+  `verified-readback` or `persistence-verified`.
 
 The UI should distinguish these states:
 
@@ -430,7 +570,8 @@ reading
 loaded
 dirty
 writing
-verified-immediate
+applied-transport
+verified-readback
 persistence-unknown
 persistence-verified
 error
@@ -440,14 +581,22 @@ Recommended write flow:
 
 1. load and display the current validated state;
 2. mark edited fields dirty;
-3. on Save, send one read-modify-write operation;
-4. replace the optimistic UI state with the driver's verified readback;
-5. show `Applied; persistence not independently verified`;
-6. after a deliberate reconnect/power-cycle check, change the status to
-   `persistence-verified` only if the expected state is read back again.
+3. on Save, send one read-modify-write operation with the selected validation;
+4. replace the optimistic UI state with the result:
+   - `Transport` — keep the sent state, mark it `applied-transport`, and show
+     `Submitted (Fast); no readback performed`;
+   - `Readback` — replace the section with the driver's verified readback and
+     show `Verified; persistence not independently checked`;
+5. keep `persistence-unknown` until a deliberate diagnostic
+   `verify --method profile-reload|power-cycle` check re-reads the expected
+   state.
 
-The UI must not claim persistence solely from a USB API success, an ACK, or an
-immediate metadata readback.
+Profile-reload and power-cycle verification remain **explicit diagnostic
+actions**, stronger than either write-time option and never part of automatic
+Apply behavior. They are the only paths that may set `persistence-verified`.
+
+The UI must not claim persistence solely from transport submission, a BLE ACK,
+a USB readback, or an immediate metadata readback.
 
 ## 7. Error mapping
 
@@ -464,7 +613,10 @@ The adapter should preserve structured errors and provide an actionable message:
 | `ProfileNotEnabled` | disable the profile in the selector and refresh metadata |
 | `MaximumProfileBelowCurrent` | require selecting a lower current profile first |
 | `WriteVerificationMismatch` | mark section as uncertain and require a fresh full read |
-| `GlobalWriteVerificationMismatch` | mark the global setting uncertain and require a fresh global read |
+| readback request over BLE | `UnsupportedOperation`: BLE has no configuration readback; tell the user readback is unavailable and fall back to `Transport` |
+| `MissingBaseline` | a patch/delta update has no stored section to merge against; read the section first so the helper can read-modify-write |
+| `ExplicitAuthorizationRequired` | a safe polling-rate write was requested over BLE (no fresh complete-profile read exists there); tell the user the operation needs explicit authorization, offer the wired transport, or surface the explicit advanced BLE override with its ACK-only evidence and unknown persistence |
+| rate-safe preflight `MissingBaseline` | the target profile's complete desired non-rate image is missing or differs from a fresh same-session read, or persistent metadata `current != target`; load the target profile and reconcile the full image before offering the rate write — the write aborts before any hardware write |
 | protocol range error | reject locally before any HID write |
 | worker unavailable | close the session and require reopen |
 
@@ -479,9 +631,12 @@ observed state to the user.
 1. Enumerate FA61 configuration collections.
 2. Let the user select a device if more than one is found.
 3. Open one session.
-4. Read profile metadata and global polling rate.
-5. Read the current enabled profile with `readProfile(currentProfile)`.
+4. Read profile metadata.
+5. Read the current enabled profile with `readProfile(currentProfile)` for a
+   coherent snapshot.
 6. Populate profile tabs `1..=maximumProfile`; show higher slots as disabled.
+   The current profile's polling rate is available from the current live read;
+   other profiles show their last stored/read values.
 
 ### 8.2 Profile selection
 
@@ -496,8 +651,11 @@ observed state to the user.
 1. Use the selected profile's cached snapshot only while it is still valid.
 2. If stale, refresh the complete profile.
 3. Apply a patch to one section in memory.
-4. Send the complete read-modify-write state for that section.
-5. Replace the section with the verified readback.
+4. Send the complete read-modify-write state for that section with the chosen
+   validation (Transport/Fast by default).
+5. Replace the section with the result: for `Readback`, use the verified
+   readback; for `Transport`, keep the sent state marked `applied-transport`
+   with no readback evidence.
 6. Keep unrelated sections and opaque bytes unchanged.
 
 ### 8.4 Changing the maximum profile
@@ -512,11 +670,31 @@ observed state to the user.
 
 ### 8.5 Reconnect/persistence verification
 
+This is the explicit diagnostic workflow (`verify --method profile-reload` or
+`verify --method power-cycle` in the CLI); it is never part of the normal
+Apply flow.
+
 1. Close the HID session.
 2. Reopen the selected exact device path after it reconnects.
 3. Read metadata and the expected profile sections.
 4. Compare against the last verified state.
 5. Set `persistence-verified` only for fields that match.
+
+### 8.6 Changing the polling rate
+
+1. Select the target profile and ensure it is current (activate if needed).
+2. Ensure a complete validated snapshot exists for it (the safe preflight
+   requires the full desired non-rate image and `current == target`).
+3. Read the current rate; if it already equals the selection, save is a no-op
+   that sends nothing — surface the equality rather than a fake write.
+4. Apply the rate write with the chosen validation (`Transport`/Fast by
+   default); `Readback`/Verify proves the immediate rate field only.
+5. Show the result as `applied-transport` or `verified-readback` with
+   `persistence-unknown`.
+6. Persistence is only ever claimed after the explicit reconnect/power-cycle
+   diagnostics of Section 8.5.
+7. On BLE the same save fails with `ExplicitAuthorizationRequired`; the only
+   path is the explicit advanced override of [Section 4.6](#46-polling-rate-writes-safe-preflight-and-ble-advanced-override), shown as ACK-only with unknown persistence.
 
 ## 9. Capability matrix
 
@@ -531,7 +709,7 @@ observed state to the user.
 | Button table read | supported per profile | required for display/backup |
 | Recognized button assignment write | supported by CLI | expose recognized physical controls |
 | Arbitrary raw button editing | library-level only | diagnostics only, preferably hidden |
-| Polling-rate read/write | supported globally | required |
+| Polling-rate read/write | supported per profile; readback USB-only | required inside the profile editor |
 | Battery telemetry on FA61 wired USB | unavailable; the wired path is silent | show `Unavailable on wired USB`; never poll and never display `0%` |
 | Custom macros | not exposed | disabled |
 | BLE transport | not production-supported here | disabled |
@@ -548,11 +726,11 @@ The canonical BLE and battery details are in
 
 | Capability | FA61 wired USB | X3/M600 BLE GATT | UI contract |
 |:-----------|:---------------|:-----------------|:------------|
-| Configuration writes | `SET_REPORT`; no transport ACK | FEE3 write plus FEE4 ACK notification | USB success requires validated readback; BLE success means ACK acceptance only |
+| Configuration writes | `SET_REPORT`; no transport ACK | FEE3 write plus FEE4 ACK notification | USB success means transport submission (default) or validated readback, per the validation choice; BLE success means ACK acceptance only |
 | Configuration readback | Validated `0xa0` selector plus report read | Not available; FEE1 is opaque and is not configuration state | Never offer BLE `readDpi`, `readPreferences`, `readButtons`, or `readProfile` as if they were implemented |
-| DPI/preferences/buttons writes | Read-modify-write with fresh immediate readback | Reports may receive ACK `status=0x00`, but there is no configuration readback | BLE UI must show `Accepted by device; application/persistence unverified` |
+| DPI/preferences/buttons writes | Read-modify-write with the chosen validation (transport submission by default, fresh readback on request) | Reports may receive ACK `status=0x00`, but there is no configuration readback | BLE UI must show `Accepted by device; application/persistence unverified`; readback is unavailable |
 | Profile metadata (`0x0c`) | Bounded read/write with immediate metadata verification | ACK `status=0x00` is parser acceptance; profile-save persistence is unconfirmed | Do not label BLE profile saves as persisted without a reconnect test |
-| Polling rate (`0x06`) | Read/write supported globally | Exact nine-byte packet accepted in the same-hardware probe and changed the rate observed after USB reconnect; stock app skips BLE | Keep the BLE control disabled until a production BLE writer adopts the validated nine-byte contract |
+| Polling rate (`0x06`) | Read/write supported per profile; safe preflight per [4.6](#46-polling-rate-writes-safe-preflight-and-ble-advanced-override) | Exact nine-byte packet accepted in the same-hardware probe and changed the rate observed after USB reconnect; stock app skips BLE; no safe path (no fresh complete-profile read) | Expose only behind an explicit advanced override with a visible warning; evidence is ACK-only (`acknowledged (ACK only)`) with unknown persistence; a USB reconnect readback is the only confirmation the UI may show as stronger evidence |
 | Battery | Unavailable while wired; no battery polling stream | Standard Battery Service `0x180f` / `0x2a19`, read and notify | Show battery only when the active transport advertises battery capability |
 | Light mode `0x00` | Not subject to the BLE crash finding | Accepted in a corrected same-hardware probe; historical crash report remains unresolved | Keep the conservative explicit BLE block until the packet/test contract is independently resolved |
 | Custom macros (`0x09`) | Not exposed by the Rust UI contract | One packet has been ACKed; full multi-page behavior is untested | Keep disabled unless a separate capability explicitly enables it |
@@ -565,6 +743,7 @@ only from a transport name:
 
 ```text
 configReadback: validated | unavailable
+validation: transport | readback (readback only where configReadback is validated)
 writeFeedback: none | ack-acceptance
 battery: unavailable | read-notify
 pollingRate: supported | unsupported
@@ -586,7 +765,8 @@ distinct outcome and must not be treated as success.
 The USB wired path has the opposite limitation: it has validated configuration
 readback through the Rust worker but no per-report firmware ACK. The UI must not
 invent an ACK status for USB, and must not treat a successful host HID write
-without readback as proof of application.
+without readback — the `Transport` path — as proof of application; that is why
+`Readback` exists as an explicit choice.
 
 Battery is a separate capability from configuration. On FA61 wired USB the
 device is powered but does not provide battery telemetry through this path. The
@@ -603,6 +783,9 @@ The prototype UI must not imply that the following are fully characterized:
 - preserved DPI tail bytes are user-editable settings;
 - sleep/deep-sleep fields have fully confirmed physical timing behavior;
 - immediate USB readback proves persistence;
+- a standalone `0x06` write changes only the rate (it can persist the
+  complete live image under the target alias, and a BLE ACK or rate readback
+  does not prove the non-rate save image);
 - a profile metadata change alone proves that its live working image has loaded.
 
 These fields should remain raw, explicitly qualified, or hidden until stronger

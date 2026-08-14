@@ -21,7 +21,8 @@ slint = { version = "1.17.1", default-features = false, features = [
     "compat-1-2",
     "renderer-femtovg",
     "std",
-] }
+]}
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [build-dependencies]
 slint-build = "1.17.1"
