@@ -764,17 +764,8 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
             Err(RecvTimeoutError::Timeout) => {
                 if let Some(rx) = events.as_mut() {
                     runtime.block_on(async { tokio::task::yield_now().await });
-                    loop {
-                        match rx.try_recv() {
-                            Ok(event) => handle_device_event(
-                                &runtime,
-                                &mut loaded,
-                                &mut manager,
-                                event,
-                                &weak,
-                            ),
-                            Err(_) => break,
-                        }
+                    while let Ok(event) = rx.try_recv() {
+                        handle_device_event(&runtime, &mut loaded, &mut manager, event, &weak);
                     }
                 }
             }
@@ -802,21 +793,17 @@ fn handle_device_event(
             }
         }
         DeviceEvent::ProfileChanged(e) | DeviceEvent::ProfileSync(e) => {
-            if let (Some(dev), Some(mgr)) = (loaded.as_mut(), manager.as_ref()) {
-                if e.profile != dev.metadata.current() {
-                    match select_profile(runtime, mgr, dev, e.profile.get()) {
-                        Ok(new_loaded) => {
-                            *loaded = Some(new_loaded);
-                            if let Some(ready) = loaded.as_ref() {
-                                emit_snapshot(
-                                    weak,
-                                    ready,
-                                    "device profile changed; state reloaded",
-                                );
-                            }
+            if let (Some(dev), Some(mgr)) = (loaded.as_mut(), manager.as_ref())
+                && e.profile != dev.metadata.current()
+            {
+                match select_profile(runtime, mgr, dev, e.profile.get()) {
+                    Ok(new_loaded) => {
+                        *loaded = Some(new_loaded);
+                        if let Some(ready) = loaded.as_ref() {
+                            emit_snapshot(weak, ready, "device profile changed; state reloaded");
                         }
-                        Err(error) => emit(weak, UiEvent::Error(error)),
                     }
+                    Err(error) => emit(weak, UiEvent::Error(error)),
                 }
             }
         }
@@ -826,12 +813,10 @@ fn handle_device_event(
                 emit_snapshot(weak, dev, "device battery level changed");
             }
         }
-        DeviceEvent::ConnectionChanged(e) => {
-            if !e.connected {
-                *loaded = None;
-                *manager = None;
-                emit(weak, UiEvent::Error("device disconnected".into()));
-            }
+        DeviceEvent::ConnectionChanged(e) if !e.connected => {
+            *loaded = None;
+            *manager = None;
+            emit(weak, UiEvent::Error("device disconnected".into()));
         }
         _ => {}
     }
