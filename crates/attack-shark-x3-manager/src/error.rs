@@ -98,6 +98,14 @@ pub enum ManagerError {
         transport: TransportKind,
     },
 
+    /// The operation is dangerous and the safe-by-default path refuses it
+    /// until the user grants explicit authorization for this invocation.
+    #[error("operation {operation} on {transport:?} requires explicit authorization")]
+    ExplicitAuthorizationRequired {
+        operation: &'static str,
+        transport: TransportKind,
+    },
+
     /// A partial update has no complete baseline to merge against.
     #[error("missing {resource} baseline for profile {profile:?}")]
     MissingBaseline {

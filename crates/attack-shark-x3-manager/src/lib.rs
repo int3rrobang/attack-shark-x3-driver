@@ -27,6 +27,8 @@ pub use attack_shark_x3::{
 pub use device::*;
 pub use error::{ManagerError, StateError};
 #[cfg(any(feature = "usb", feature = "ble"))]
+pub use events::EventSubscriptions;
+#[cfg(any(feature = "usb", feature = "ble"))]
 pub use manager::DeviceManager;
 pub use offline_debug::*;
 pub use operation::*;

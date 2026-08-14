@@ -14,11 +14,22 @@ use crate::{
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum VerificationMethod {
-    /// Complete the operation after its immediate transport-level check.
+    /// Rely on the transport's own acknowledgement of the write.
     #[default]
-    Immediate,
-    /// Verify profile-scoped resources by switching away and back.
-    ProfileReload,
+    Transport,
+    /// Verify the write by reading the value back from the device.
+    Readback,
+}
+
+/// Where a delta-merge reads the baseline image it merges against.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BaselineSource {
+    /// Read the live image from the device immediately before merging.
+    #[default]
+    Live,
+    /// Merge against the durable stored baseline (desired, then observed).
+    Stored,
 }
 
 /// Safety and verification policy for a typed update.
@@ -29,13 +40,16 @@ pub struct UpdatePolicy {
     pub allow_explicit_defaults: bool,
     /// The requested post-write verification strength.
     pub verification: VerificationMethod,
+    /// Where a delta-merge reads its baseline image.
+    pub baseline: BaselineSource,
 }
 
 impl Default for UpdatePolicy {
     fn default() -> Self {
         Self {
             allow_explicit_defaults: false,
-            verification: VerificationMethod::Immediate,
+            verification: VerificationMethod::Transport,
+            baseline: BaselineSource::Live,
         }
     }
 }
@@ -126,7 +140,7 @@ impl From<InputEvent> for DeviceEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::DeviceEvent;
+    use super::{DeviceEvent, UpdatePolicy, VerificationMethod};
     use attack_shark_x3::{ConnectionChangedEvent, InputEvent};
 
     #[test]
@@ -142,6 +156,38 @@ mod tests {
                 raw_report,
                 connected: false,
             })
+        );
+    }
+
+    #[test]
+    fn default_update_policy_uses_transport_verification() {
+        assert_eq!(
+            UpdatePolicy::default().verification,
+            VerificationMethod::Transport
+        );
+    }
+
+    #[test]
+    fn verification_method_serializes_to_transport_and_readback() {
+        assert_eq!(
+            serde_json::to_string(&VerificationMethod::Transport).unwrap(),
+            "\"transport\""
+        );
+        assert_eq!(
+            serde_json::to_string(&VerificationMethod::Readback).unwrap(),
+            "\"readback\""
+        );
+    }
+
+    #[test]
+    fn verification_method_deserializes_transport_and_readback() {
+        assert_eq!(
+            serde_json::from_str::<VerificationMethod>("\"transport\"").unwrap(),
+            VerificationMethod::Transport
+        );
+        assert_eq!(
+            serde_json::from_str::<VerificationMethod>("\"readback\"").unwrap(),
+            VerificationMethod::Readback
         );
     }
 }

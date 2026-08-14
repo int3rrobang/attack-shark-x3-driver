@@ -9,7 +9,12 @@ use crate::device::{DeviceId, DeviceIdentity};
 use crate::error::StateError;
 
 /// The durable-state schema understood by this manager.
-pub const SCHEMA_VERSION: u32 = 2;
+///
+/// Schema 3 moves polling rate from the device-global resource into each
+/// profile's state: firmware evidence shows report `0x06` byte 2 is a
+/// one-based target profile and the deferred writer serializes the live
+/// profile image into that slot, so polling rate is per-profile and persistent.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// A wall-clock timestamp stored in the state document.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -155,7 +160,6 @@ impl PersistenceVerification {
 #[serde(rename_all = "camelCase")]
 pub struct DeviceState {
     pub identity: DeviceIdentity,
-    pub polling_rate: ResourceState<PollingRate>,
     pub profile_metadata: ResourceState<ProfileMetadata>,
     pub profiles: BTreeMap<ProfileId, ProfileState>,
 }
@@ -166,7 +170,6 @@ impl DeviceState {
     pub fn new(identity: DeviceIdentity) -> Self {
         Self {
             identity,
-            polling_rate: ResourceState::empty(),
             profile_metadata: ResourceState::empty(),
             profiles: BTreeMap::new(),
         }
@@ -180,6 +183,7 @@ pub struct ProfileState {
     pub dpi: ResourceState<DpiState>,
     pub preferences: ResourceState<PreferencesState>,
     pub buttons: ResourceState<ButtonsState>,
+    pub polling_rate: ResourceState<PollingRate>,
 }
 
 impl Default for ProfileState {
@@ -196,6 +200,7 @@ impl ProfileState {
             dpi: ResourceState::empty(),
             preferences: ResourceState::empty(),
             buttons: ResourceState::empty(),
+            polling_rate: ResourceState::empty(),
         }
     }
 }
@@ -233,12 +238,12 @@ impl StateFile {
             return Err(StateError::unsupported_schema(self.schema_version));
         }
 
-        if let Some(selected_device) = self.selected_device.as_ref() {
-            if !self.devices.contains_key(selected_device) {
-                return Err(StateError::invalid_state(format!(
-                    "selected device {selected_device} is not present in devices"
-                )));
-            }
+        if let Some(selected_device) = self.selected_device.as_ref()
+            && !self.devices.contains_key(selected_device)
+        {
+            return Err(StateError::invalid_state(format!(
+                "selected device {selected_device} is not present in devices"
+            )));
         }
 
         for (device_id, device) in &self.devices {
@@ -322,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn default_state_file_starts_at_schema_two() {
+    fn default_state_file_starts_at_schema_three() {
         let state = StateFile::default();
         assert_eq!(state.schema_version, SCHEMA_VERSION);
         assert!(state.selected_device.is_none());

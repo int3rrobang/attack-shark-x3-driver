@@ -24,18 +24,18 @@ pub struct ProfileConfiguration {
     pub preferences: Option<PreferencesState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub buttons: Option<ButtonsState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polling_rate: Option<PollingRate>,
 }
 
 /// Portable manager configuration.
 ///
-/// This is intentionally not a state-file snapshot. It carries only the
-/// polling rate and profile DPI/preferences/buttons values and therefore can
-/// be imported for a different local device identity.
+/// This is intentionally not a state-file snapshot. It carries the per-profile
+/// DPI/preferences/buttons/polling-rate values and therefore can be imported
+/// for a different local device identity.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigurationExport {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub polling_rate: Option<PollingRate>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profiles: BTreeMap<ProfileId, ProfileConfiguration>,
 }
@@ -53,26 +53,24 @@ impl DeviceManager {
             .get(device)
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
 
-        let polling_rate = value_for_export(&device_state.polling_rate);
         let mut profiles = BTreeMap::new();
         for (&profile, profile_state) in &device_state.profiles {
             let configuration = ProfileConfiguration {
                 dpi: value_for_export(&profile_state.dpi),
                 preferences: value_for_export(&profile_state.preferences),
                 buttons: value_for_export(&profile_state.buttons),
+                polling_rate: value_for_export(&profile_state.polling_rate),
             };
             if configuration.dpi.is_some()
                 || configuration.preferences.is_some()
                 || configuration.buttons.is_some()
+                || configuration.polling_rate.is_some()
             {
                 profiles.insert(profile, configuration);
             }
         }
 
-        Ok(ConfigurationExport {
-            polling_rate,
-            profiles,
-        })
+        Ok(ConfigurationExport { profiles })
     }
 
     /// Imports portable desired values for an externally supplied identity.
@@ -103,10 +101,6 @@ impl DeviceManager {
             state.selected_device = Some(device_id);
         }
 
-        if let Some(polling_rate) = configuration.polling_rate {
-            set_imported(&mut device_state.polling_rate, polling_rate, now);
-        }
-
         for (&profile, configuration) in &configuration.profiles {
             let profile_state = device_state.profiles.entry(profile).or_default();
             if let Some(dpi) = configuration.dpi.clone() {
@@ -117,6 +111,9 @@ impl DeviceManager {
             }
             if let Some(buttons) = configuration.buttons {
                 set_imported(&mut profile_state.buttons, buttons, now);
+            }
+            if let Some(polling_rate) = configuration.polling_rate {
+                set_imported(&mut profile_state.polling_rate, polling_rate, now);
             }
         }
 
@@ -164,7 +161,6 @@ fn set_imported<T>(resource: &mut ResourceState<T>, value: T, now: Timestamp) {
 }
 
 fn invalidate_device_state(device: &mut DeviceState) {
-    device.polling_rate.invalidate_persistence();
     device.profile_metadata.invalidate_persistence();
     for profile in device.profiles.values_mut() {
         invalidate_profile_state(profile);
@@ -175,6 +171,7 @@ fn invalidate_profile_state(profile: &mut ProfileState) {
     profile.dpi.invalidate_persistence();
     profile.preferences.invalidate_persistence();
     profile.buttons.invalidate_persistence();
+    profile.polling_rate.invalidate_persistence();
 }
 
 fn validate_configuration(configuration: &ConfigurationExport) -> Result<(), ManagerError> {
@@ -264,13 +261,13 @@ mod tests {
         let identity = identity();
         let profile = ProfileId::new(1).expect("profile");
         let configuration = ConfigurationExport {
-            polling_rate: Some(PollingRate::Hz1000),
             profiles: [(
                 profile,
                 ProfileConfiguration {
                     dpi: Some(dpi(profile)),
                     preferences: Some(PreferencesState::new(profile, 1, 2, 3, [4, 5, 6], 7, 8)),
                     buttons: Some(buttons(profile)),
+                    polling_rate: Some(PollingRate::Hz1000),
                 },
             )]
             .into_iter()
@@ -353,18 +350,6 @@ mod tests {
             .devices
             .get_mut(&identity.id)
             .expect("device");
-        device.polling_rate = ResourceState {
-            desired: Some(DesiredState {
-                value: PollingRate::Hz1000,
-                source: DesiredSource::UserWrite,
-                verification: Verification {
-                    application: ApplicationVerification::Acknowledged,
-                    persistence: persistent.clone(),
-                },
-                updated_at: timestamp,
-            }),
-            observed: None,
-        };
         device.profile_metadata = ResourceState {
             desired: Some(DesiredState {
                 value: ProfileMetadata::new(profile, profile).expect("metadata"),
@@ -392,6 +377,18 @@ mod tests {
                     desired: Some(desired_buttons),
                     observed: Some(observed_buttons),
                 },
+                polling_rate: ResourceState {
+                    desired: Some(DesiredState {
+                        value: PollingRate::Hz1000,
+                        source: DesiredSource::UserWrite,
+                        verification: Verification {
+                            application: ApplicationVerification::Acknowledged,
+                            persistence: persistent.clone(),
+                        },
+                        updated_at: timestamp,
+                    }),
+                    observed: None,
+                },
             },
         );
         transaction.commit().expect("commit");
@@ -399,12 +396,18 @@ mod tests {
         manager.invalidate_state(&identity.id).expect("invalidate");
         let state = manager.store().load().expect("state");
         let device = &state.devices[&identity.id];
+        let profile_state = &device.profiles[&profile];
         assert_eq!(
-            device.polling_rate.desired.as_ref().expect("rate").value,
+            profile_state
+                .polling_rate
+                .desired
+                .as_ref()
+                .expect("rate")
+                .value,
             PollingRate::Hz1000
         );
         assert!(
-            device
+            profile_state
                 .polling_rate
                 .desired
                 .as_ref()
@@ -423,7 +426,6 @@ mod tests {
                 .current(),
             profile
         );
-        let profile_state = &device.profiles[&profile];
         assert_eq!(profile_state.dpi.desired.as_ref().expect("dpi").value, dpi);
         assert!(
             profile_state

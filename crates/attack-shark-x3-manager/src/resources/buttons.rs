@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 /// Physical button slot exposed by the safe public API.
 ///
 /// Scroll slots (indices 4, 5) are intentionally excluded because direct
-/// scroll remaps may repeat until unplug or reboot on some firmware.
+/// scroll-wheel remaps may repeat until unplug or reboot on some firmware.
+/// Binding Scroll Up/Down as an action on another button is a normal
+/// binding; those action bytes stay out of the safe set until confirmed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SafeButtonSlot {
@@ -33,9 +35,11 @@ impl SafeButtonSlot {
 
 /// Firmware action code exposed by the safe public API.
 ///
-/// Every variant maps to an X3/FA61-confirmed firmware byte with zero
-/// modifier and key-code fields. Scroll-up, scroll-down, custom macro,
-/// and arbitrary raw action codes are intentionally excluded.
+/// Parameterless variants map to an X3/FA61-confirmed firmware byte with
+/// zero modifier and key-code fields; shortcut presets map to confirmed
+/// `0x11` keyboard-shortcut triplets. Both families are stock-app
+/// capture-confirmed 2026-08-14. Easy-aim, custom macro, and arbitrary raw
+/// action codes are intentionally excluded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SafeButtonAction {
@@ -46,16 +50,55 @@ pub enum SafeButtonAction {
     Backward,
     Forward,
     DoubleClick,
+    FireButton,
+    ScrollUp,
+    ScrollDown,
     DpiCycle,
     DpiPlus,
     DpiMinus,
     ProfileCycle,
     ProfilePlus,
     ProfileMinus,
+    MediaPlayer,
+    PreviousTrack,
+    NextTrack,
+    PlayPause,
+    Stop,
+    Mute,
+    VolumeUp,
+    VolumeDown,
+    Calculator,
+    Email,
+    BrowserForward,
+    BrowserBackward,
+    BrowserStop,
+    MyComputer,
+    BrowserRefresh,
+    BrowserHome,
+    BrowserSearch,
+    BrowserFavorites,
+    Cut,
+    Copy,
+    Paste,
+    Open,
+    Save,
+    Find,
+    Redo,
+    SelectAll,
+    Print,
+    CloseWindow,
+    SwapWindows,
+    ShowDesktop,
+    RunCommand,
+    LockPc,
+    ScreenCapture,
 }
 
 impl SafeButtonAction {
     /// The firmware action byte for this action.
+    ///
+    /// Shortcut presets share the `0x11` keyboard-shortcut action byte;
+    /// their modifiers and key code live in the assignment.
     #[must_use]
     pub const fn firmware_byte(self) -> u8 {
         match self {
@@ -66,19 +109,77 @@ impl SafeButtonAction {
             Self::Backward => 0x05,
             Self::Forward => 0x06,
             Self::DoubleClick => 0x07,
+            Self::FireButton => 0x08,
+            Self::ScrollUp => 0x09,
+            Self::ScrollDown => 0x0a,
             Self::DpiCycle => 0x0d,
             Self::DpiPlus => 0x0e,
             Self::DpiMinus => 0x0f,
             Self::ProfileCycle => 0x34,
             Self::ProfilePlus => 0x35,
             Self::ProfileMinus => 0x36,
+            Self::MediaPlayer => 0x15,
+            Self::PreviousTrack => 0x16,
+            Self::NextTrack => 0x17,
+            Self::PlayPause => 0x18,
+            Self::Stop => 0x19,
+            Self::Mute => 0x1a,
+            Self::VolumeUp => 0x1b,
+            Self::VolumeDown => 0x1c,
+            Self::Calculator => 0x1d,
+            Self::Email => 0x1e,
+            Self::BrowserForward => 0x20,
+            Self::BrowserBackward => 0x21,
+            Self::BrowserStop => 0x22,
+            Self::MyComputer => 0x23,
+            Self::BrowserRefresh => 0x24,
+            Self::BrowserHome => 0x25,
+            Self::BrowserSearch => 0x26,
+            Self::BrowserFavorites
+            | Self::Cut
+            | Self::Copy
+            | Self::Paste
+            | Self::Open
+            | Self::Save
+            | Self::Find
+            | Self::Redo
+            | Self::SelectAll
+            | Self::Print
+            | Self::CloseWindow
+            | Self::SwapWindows
+            | Self::ShowDesktop
+            | Self::RunCommand
+            | Self::LockPc
+            | Self::ScreenCapture => 0x11,
         }
     }
 
-    /// Converts to a [`ButtonAssignment`] with zero modifier and key-code.
+    /// Converts to a [`ButtonAssignment`].
+    ///
+    /// Parameterless variants produce zero modifier and key-code; shortcut
+    /// presets produce their confirmed `0x11` triplets (stock-app
+    /// capture-confirmed 2026-08-14).
     #[must_use]
     pub fn to_assignment(self) -> ButtonAssignment {
-        ButtonAssignment::new(self.firmware_byte(), 0, 0)
+        match self {
+            Self::Cut => ButtonAssignment::new(0x11, 0x01, 0x1b),
+            Self::Copy => ButtonAssignment::new(0x11, 0x01, 0x06),
+            Self::Paste => ButtonAssignment::new(0x11, 0x01, 0x19),
+            Self::Open => ButtonAssignment::new(0x11, 0x01, 0x12),
+            Self::Save => ButtonAssignment::new(0x11, 0x01, 0x16),
+            Self::Find => ButtonAssignment::new(0x11, 0x01, 0x09),
+            Self::Redo => ButtonAssignment::new(0x11, 0x01, 0x1c),
+            Self::SelectAll => ButtonAssignment::new(0x11, 0x01, 0x04),
+            Self::Print => ButtonAssignment::new(0x11, 0x01, 0x13),
+            Self::CloseWindow => ButtonAssignment::new(0x11, 0x04, 0x3d),
+            Self::SwapWindows => ButtonAssignment::new(0x11, 0x04, 0x2b),
+            Self::ShowDesktop => ButtonAssignment::new(0x11, 0x08, 0x07),
+            Self::RunCommand => ButtonAssignment::new(0x11, 0x08, 0x15),
+            Self::LockPc => ButtonAssignment::new(0x11, 0x08, 0x0f),
+            Self::ScreenCapture => ButtonAssignment::new(0x11, 0x0a, 0x16),
+            Self::BrowserFavorites => ButtonAssignment::new(0x11, 0x03, 0x12),
+            _ => ButtonAssignment::new(self.firmware_byte(), 0, 0),
+        }
     }
 }
 
@@ -86,7 +187,9 @@ use crate::backend::{DeviceSession, SessionWrite};
 use crate::device::DeviceId;
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
-use crate::operation::{ResourceSnapshot, UpdatePolicy, WriteOutcome};
+use crate::operation::{
+    BaselineSource, ResourceSnapshot, UpdatePolicy, VerificationMethod, WriteOutcome,
+};
 use crate::state::{
     ApplicationVerification, DesiredSource, DesiredState, ObservationSource, ObservedState,
     PersistenceVerification, ResourceState, Verification,
@@ -188,9 +291,12 @@ impl DeviceManager {
 
     /// Updates one slot while preserving a complete button baseline.
     ///
-    /// USB obtains the baseline from a fresh read. BLE uses the latest stored
-    /// observed or desired image, rejecting an absent or synthetic-default
-    /// baseline unless `policy.allow_explicit_defaults` is enabled.
+    /// With the default [`BaselineSource::Live`] policy, USB and receiver
+    /// obtain the baseline from a fresh read; BLE cannot read and always
+    /// merges against the stored image. With [`BaselineSource::Stored`],
+    /// every transport merges against the latest stored desired or observed
+    /// image, rejecting an absent or synthetic-default baseline unless
+    /// `policy.allow_explicit_defaults` is enabled.
     pub async fn update_button_slot(
         &self,
         device: &DeviceId,
@@ -203,10 +309,16 @@ impl DeviceManager {
 
         let (_identity, session) = self.open_session(device).await?;
         let transport = session.transport();
-        let mut baseline = if transport == TransportKind::Ble {
-            self.load_ble_buttons_baseline(device, profile, policy.allow_explicit_defaults)?
-        } else {
-            session.read_buttons(profile).await?
+        let mut baseline = match transport {
+            TransportKind::Ble => {
+                self.load_stored_buttons_baseline(device, profile, policy.allow_explicit_defaults)?
+            }
+            TransportKind::Wired | TransportKind::Receiver => match policy.baseline {
+                BaselineSource::Live => session.read_buttons(profile).await?,
+                BaselineSource::Stored => {
+                    self.load_stored_buttons_baseline(device, profile, false)?
+                }
+            },
         };
 
         if baseline.profile != profile {
@@ -216,7 +328,7 @@ impl DeviceManager {
             )));
         }
         baseline.slots[slot_index] = assignment;
-        self.write_buttons_with_session(device, session.as_ref(), baseline)
+        self.write_buttons_with_session(device, session.as_ref(), baseline, policy.verification)
             .await
     }
 
@@ -225,9 +337,10 @@ impl DeviceManager {
         device: &DeviceId,
         session: &dyn DeviceSession,
         requested: ButtonsState,
+        verification: VerificationMethod,
     ) -> Result<WriteOutcome<ButtonsState>, ManagerError> {
         let transport = session.transport();
-        let result = session.write_buttons(requested).await?;
+        let result = session.write_buttons(requested, verification).await?;
         let (application, observed) = match (transport, result) {
             (
                 TransportKind::Wired | TransportKind::Receiver,
@@ -301,7 +414,13 @@ impl DeviceManager {
         Ok(())
     }
 
-    fn load_ble_buttons_baseline(
+    /// Loads the durable stored buttons baseline for a profile.
+    ///
+    /// Resolution order: the latest desired image, then the latest observed
+    /// image, then [`ButtonsState::default_for_profile`] only when
+    /// `allow_explicit_defaults` is enabled, and finally
+    /// [`ManagerError::MissingBaseline`] when nothing is stored.
+    fn load_stored_buttons_baseline(
         &self,
         device: &DeviceId,
         profile: ProfileId,
@@ -314,10 +433,10 @@ impl DeviceManager {
             .and_then(|device_state| device_state.profiles.get(&profile));
 
         if let Some(resource) = profile_state.map(|profile| &profile.buttons) {
-            if let Some(desired) = resource.desired.as_ref() {
-                if allow_explicit_defaults || desired.source != DesiredSource::ExplicitDefaults {
-                    return Ok(desired.value);
-                }
+            if let Some(desired) = resource.desired.as_ref()
+                && (allow_explicit_defaults || desired.source != DesiredSource::ExplicitDefaults)
+            {
+                return Ok(desired.value);
             }
             if let Some(observed) = resource.observed.as_ref() {
                 return Ok(observed.value);
@@ -348,7 +467,7 @@ mod tests {
     use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession};
     use crate::device::DeviceIdentity;
     use crate::manager::DeviceManager;
-    use crate::operation::UpdatePolicy;
+    use crate::operation::{BaselineSource, UpdatePolicy, VerificationMethod};
     use crate::state::{StatePaths, StateStore};
     use attack_shark_x3::{
         ButtonAssignment, ButtonsState, DpiValue, PreferencesState, ProfileId, ProfileMetadata,
@@ -386,6 +505,25 @@ mod tests {
             *slot = ButtonAssignment::new(index as u8, 0xa0 | index as u8, 0xf0 ^ index as u8);
         }
         ButtonsState::new(profile, slots)
+    }
+
+    #[test]
+    fn captured_stock_actions_encode_to_their_wire_triplets() {
+        let cases = [
+            (SafeButtonAction::FireButton, [0x08, 0x00, 0x00]),
+            (SafeButtonAction::ScrollUp, [0x09, 0x00, 0x00]),
+            (SafeButtonAction::ScrollDown, [0x0a, 0x00, 0x00]),
+            (SafeButtonAction::VolumeUp, [0x1b, 0x00, 0x00]),
+            (SafeButtonAction::BrowserHome, [0x25, 0x00, 0x00]),
+            (SafeButtonAction::BrowserFavorites, [0x11, 0x03, 0x12]),
+            (SafeButtonAction::Cut, [0x11, 0x01, 0x1b]),
+            (SafeButtonAction::CloseWindow, [0x11, 0x04, 0x3d]),
+            (SafeButtonAction::ScreenCapture, [0x11, 0x0a, 0x16]),
+        ];
+        for (action, expected) in cases {
+            let assignment = action.to_assignment();
+            assert_eq!(assignment.as_bytes(), expected, "{action:?}");
+        }
     }
 
     #[tokio::test]
@@ -440,6 +578,156 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn usb_transport_slot_write_is_acknowledged_without_observed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = ProfileId::new(1).expect("profile");
+        let device = identity(TransportKind::Wired);
+        let source = buttons(profile);
+        let session =
+            ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                target_profile: profile,
+                persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
+                dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
+                    vec![DpiValue::new(800).expect("dpi")],
+                    StageIndex::new(1).expect("stage"),
+                )
+                .expect("dpi state"),
+                preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+                buttons: source,
+            });
+        let factory =
+            Arc::new(ScriptedFakeFactory::new().with_identity(device.clone(), true, session));
+        let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
+        manager.register_device(device.clone()).expect("register");
+
+        let outcome = manager
+            .update_button_slot(
+                &device.id,
+                profile,
+                ButtonSlotDelta::new(SafeButtonSlot::Backward, SafeButtonAction::ProfileCycle),
+                UpdatePolicy::default(),
+            )
+            .await
+            .expect("slot update");
+        assert!(outcome.observed.is_none());
+        assert_eq!(
+            outcome.verification.application,
+            crate::ApplicationVerification::Acknowledged
+        );
+        let stored = manager.store().load().expect("state");
+        let resource = &stored.devices.values().next().expect("device").profiles[&profile].buttons;
+        assert!(resource.observed.is_none());
+        assert_eq!(
+            resource
+                .desired
+                .as_ref()
+                .expect("desired")
+                .verification
+                .application,
+            crate::ApplicationVerification::Acknowledged
+        );
+    }
+
+    #[tokio::test]
+    async fn usb_readback_slot_write_produces_observed_evidence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = ProfileId::new(1).expect("profile");
+        let device = identity(TransportKind::Wired);
+        let source = buttons(profile);
+        let session =
+            ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                target_profile: profile,
+                persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
+                dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
+                    vec![DpiValue::new(800).expect("dpi")],
+                    StageIndex::new(1).expect("stage"),
+                )
+                .expect("dpi state"),
+                preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+                buttons: source,
+            });
+        let factory =
+            Arc::new(ScriptedFakeFactory::new().with_identity(device.clone(), true, session));
+        let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
+        manager.register_device(device.clone()).expect("register");
+
+        let outcome = manager
+            .update_button_slot(
+                &device.id,
+                profile,
+                ButtonSlotDelta::new(SafeButtonSlot::Backward, SafeButtonAction::ProfileCycle),
+                UpdatePolicy {
+                    verification: VerificationMethod::Readback,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .expect("slot update");
+        assert_eq!(
+            outcome.verification.application,
+            crate::ApplicationVerification::ReadbackVerified
+        );
+        let observed = outcome.observed.expect("readback must produce observed");
+        assert_eq!(
+            observed.slots[7],
+            SafeButtonAction::ProfileCycle.to_assignment()
+        );
+        for index in 0..BUTTON_SLOT_COUNT {
+            if index != 7 {
+                assert_eq!(observed.slots[index], source.slots[index]);
+            }
+        }
+        let stored = manager.store().load().expect("state");
+        let resource = &stored.devices.values().next().expect("device").profiles[&profile].buttons;
+        assert_eq!(
+            resource.observed.as_ref().expect("observed").value.slots[7],
+            SafeButtonAction::ProfileCycle.to_assignment()
+        );
+        assert_eq!(
+            resource
+                .desired
+                .as_ref()
+                .expect("desired")
+                .verification
+                .application,
+            crate::ApplicationVerification::ReadbackVerified
+        );
+    }
+
+    #[tokio::test]
+    async fn ble_readback_slot_write_is_unsupported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = ProfileId::new(1).expect("profile");
+        let device = identity(TransportKind::Ble);
+        let id = device.id.clone();
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            device.clone(),
+            true,
+            ScriptedFakeSession::ble(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
+        manager.register_device(device).expect("register");
+
+        let error = manager
+            .update_button_slot(
+                &id,
+                profile,
+                ButtonSlotDelta::new(SafeButtonSlot::Left, SafeButtonAction::Disable),
+                UpdatePolicy {
+                    allow_explicit_defaults: true,
+                    verification: VerificationMethod::Readback,
+                    baseline: BaselineSource::Live,
+                },
+            )
+            .await
+            .expect_err("BLE readback must fail");
+        assert!(matches!(
+            error,
+            crate::ManagerError::UnsupportedOperation { .. }
+        ));
+    }
+
+    #[tokio::test]
     async fn ble_slot_update_requires_a_baseline() {
         let dir = tempfile::tempdir().expect("tempdir");
         let device = identity(TransportKind::Ble);
@@ -461,6 +749,91 @@ mod tests {
             )
             .await
             .expect_err("missing baseline must fail");
+        assert!(matches!(
+            error,
+            crate::ManagerError::MissingBaseline {
+                resource: "buttons",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn wired_stored_baseline_slot_update_skips_live_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = ProfileId::new(1).expect("profile");
+        let device = identity(TransportKind::Wired);
+        let source = buttons(profile);
+        // No scripted buttons: any live read would fail with MissingBaseline,
+        // proving the Stored baseline policy never touches the session.
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            device.clone(),
+            true,
+            ScriptedFakeSession::usb(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
+        manager.register_device(device.clone()).expect("register");
+        manager
+            .persist_button_write(
+                &device.id,
+                source,
+                None,
+                crate::Verification {
+                    application: crate::ApplicationVerification::Acknowledged,
+                    persistence: crate::PersistenceVerification::Unknown,
+                },
+            )
+            .expect("seed stored buttons baseline");
+
+        let outcome = manager
+            .update_button_slot(
+                &device.id,
+                profile,
+                ButtonSlotDelta::new(SafeButtonSlot::Backward, SafeButtonAction::ProfileCycle),
+                UpdatePolicy {
+                    baseline: BaselineSource::Stored,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .expect("stored-baseline slot update must succeed without a live read");
+        assert_eq!(
+            outcome.desired.slots[7],
+            SafeButtonAction::ProfileCycle.to_assignment()
+        );
+        for index in 0..BUTTON_SLOT_COUNT {
+            if index != 7 {
+                assert_eq!(outcome.desired.slots[index], source.slots[index]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn wired_stored_baseline_without_stored_image_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = ProfileId::new(1).expect("profile");
+        let device = identity(TransportKind::Wired);
+        let id = device.id.clone();
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            device.clone(),
+            true,
+            ScriptedFakeSession::usb(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
+        manager.register_device(device).expect("register");
+
+        let error = manager
+            .update_button_slot(
+                &id,
+                profile,
+                ButtonSlotDelta::new(SafeButtonSlot::Left, SafeButtonAction::Disable),
+                UpdatePolicy {
+                    baseline: BaselineSource::Stored,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .expect_err("stored policy without a stored baseline must fail");
         assert!(matches!(
             error,
             crate::ManagerError::MissingBaseline {

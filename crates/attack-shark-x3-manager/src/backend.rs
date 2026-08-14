@@ -27,21 +27,18 @@ use crate::error::StateError;
 use crate::{
     device::{DeviceIdentity, TransportSelection},
     error::ManagerError,
-    operation::DiscoveredDevice,
+    operation::{DiscoveredDevice, VerificationMethod},
 };
 
 /// The result shape of a typed session write.
 ///
-/// USB writes are only successful after the low-level worker has performed its
-/// fresh readback check. BLE has no read path, so an accepted application ACK is
-/// the strongest evidence available to the manager.
+/// A transport-verified write is acknowledged at acceptance and carries no
+/// readback payload. A readback-verified write carries the state confirmed by
+/// a fresh post-write read; USB can provide this and BLE cannot, so BLE
+/// readback requests are rejected up front.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SessionWrite<T> {
     ReadbackVerified(T),
-    #[cfg_attr(
-        not(feature = "ble"),
-        expect(dead_code, reason = "USB sessions always return readback evidence")
-    )]
     Acknowledged,
 }
 
@@ -74,20 +71,34 @@ pub(crate) trait DeviceSession: Send + Sync {
     async fn read_dpi(&self, profile: ProfileId) -> Result<DpiState, ManagerError>;
     async fn read_preferences(&self, profile: ProfileId) -> Result<PreferencesState, ManagerError>;
     async fn read_buttons(&self, profile: ProfileId) -> Result<ButtonsState, ManagerError>;
-    async fn read_polling_rate(&self) -> Result<PollingRate, ManagerError>;
+    async fn read_polling_rate(&self, profile: ProfileId) -> Result<PollingRate, ManagerError>;
 
-    async fn write_dpi(&self, state: DpiState) -> Result<SessionWrite<DpiState>, ManagerError>;
+    async fn write_dpi(
+        &self,
+        state: DpiState,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<DpiState>, ManagerError>;
     async fn write_preferences(
         &self,
         state: PreferencesState,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<PreferencesState>, ManagerError>;
     async fn write_buttons(
         &self,
         state: ButtonsState,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<ButtonsState>, ManagerError>;
-    async fn write_polling_rate(
+    /// Submits a polling-rate report through an `unchecked` driver primitive.
+    ///
+    /// Report `0x06` skips the profile loader and its deferred writer may
+    /// persist the complete live image into the target alias, so this method
+    /// provides no live-image safety precondition. Callers must resolve the
+    /// safe target image themselves before reaching it.
+    async fn write_polling_rate_unchecked(
         &self,
+        profile: ProfileId,
         rate: PollingRate,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<PollingRate>, ManagerError>;
     async fn write_profile_metadata(
         &self,
@@ -303,41 +314,77 @@ impl DeviceSession for UsbSession {
         Ok(self.handle.read_buttons(profile).await?)
     }
 
-    async fn read_polling_rate(&self) -> Result<PollingRate, ManagerError> {
-        Ok(self.handle.read_polling_rate().await?)
+    async fn read_polling_rate(&self, profile: ProfileId) -> Result<PollingRate, ManagerError> {
+        Ok(self.handle.read_polling_rate(profile).await?)
     }
 
-    async fn write_dpi(&self, state: DpiState) -> Result<SessionWrite<DpiState>, ManagerError> {
-        Ok(SessionWrite::ReadbackVerified(
-            self.handle.write_dpi(state).await?,
-        ))
+    async fn write_dpi(
+        &self,
+        state: DpiState,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<DpiState>, ManagerError> {
+        match verification {
+            VerificationMethod::Transport => {
+                self.handle.send_dpi(state).await?;
+                Ok(SessionWrite::Acknowledged)
+            }
+            VerificationMethod::Readback => Ok(SessionWrite::ReadbackVerified(
+                self.handle.write_dpi(state).await?,
+            )),
+        }
     }
 
     async fn write_preferences(
         &self,
         state: PreferencesState,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<PreferencesState>, ManagerError> {
-        Ok(SessionWrite::ReadbackVerified(
-            self.handle.write_preferences(state).await?,
-        ))
+        match verification {
+            VerificationMethod::Transport => {
+                self.handle.send_preferences(state).await?;
+                Ok(SessionWrite::Acknowledged)
+            }
+            VerificationMethod::Readback => Ok(SessionWrite::ReadbackVerified(
+                self.handle.write_preferences(state).await?,
+            )),
+        }
     }
 
     async fn write_buttons(
         &self,
         state: ButtonsState,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<ButtonsState>, ManagerError> {
-        Ok(SessionWrite::ReadbackVerified(
-            self.handle.write_buttons(state).await?,
-        ))
+        match verification {
+            VerificationMethod::Transport => {
+                self.handle.send_buttons(state).await?;
+                Ok(SessionWrite::Acknowledged)
+            }
+            VerificationMethod::Readback => Ok(SessionWrite::ReadbackVerified(
+                self.handle.write_buttons(state).await?,
+            )),
+        }
     }
 
-    async fn write_polling_rate(
+    async fn write_polling_rate_unchecked(
         &self,
+        profile: ProfileId,
         rate: PollingRate,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<PollingRate>, ManagerError> {
-        Ok(SessionWrite::ReadbackVerified(
-            self.handle.write_polling_rate(rate).await?,
-        ))
+        match verification {
+            VerificationMethod::Transport => {
+                self.handle
+                    .send_polling_rate_unchecked(profile, rate)
+                    .await?;
+                Ok(SessionWrite::Acknowledged)
+            }
+            VerificationMethod::Readback => Ok(SessionWrite::ReadbackVerified(
+                self.handle
+                    .write_polling_rate_unchecked(profile, rate)
+                    .await?,
+            )),
+        }
     }
 
     async fn write_profile_metadata(
@@ -418,37 +465,69 @@ impl DeviceSession for BleSession {
         Self::unsupported("read_buttons")
     }
 
-    async fn read_polling_rate(&self) -> Result<PollingRate, ManagerError> {
+    async fn read_polling_rate(&self, _profile: ProfileId) -> Result<PollingRate, ManagerError> {
         Self::unsupported("read_polling_rate")
     }
 
-    async fn write_dpi(&self, state: DpiState) -> Result<SessionWrite<DpiState>, ManagerError> {
-        self.handle.write_dpi(state).await?;
-        Ok(SessionWrite::Acknowledged)
+    async fn write_dpi(
+        &self,
+        state: DpiState,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<DpiState>, ManagerError> {
+        match verification {
+            VerificationMethod::Transport => {
+                self.handle.write_dpi(state).await?;
+                Ok(SessionWrite::Acknowledged)
+            }
+            VerificationMethod::Readback => Self::unsupported("write_dpi"),
+        }
     }
 
     async fn write_preferences(
         &self,
         state: PreferencesState,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<PreferencesState>, ManagerError> {
-        self.handle.write_preferences(state).await?;
-        Ok(SessionWrite::Acknowledged)
+        match verification {
+            VerificationMethod::Transport => {
+                self.handle.write_preferences(state).await?;
+                Ok(SessionWrite::Acknowledged)
+            }
+            VerificationMethod::Readback => Self::unsupported("write_preferences"),
+        }
     }
 
     async fn write_buttons(
         &self,
         state: ButtonsState,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<ButtonsState>, ManagerError> {
-        self.handle.write_buttons(state).await?;
-        Ok(SessionWrite::Acknowledged)
+        match verification {
+            VerificationMethod::Transport => {
+                self.handle.write_buttons(state).await?;
+                Ok(SessionWrite::Acknowledged)
+            }
+            VerificationMethod::Readback => Self::unsupported("write_buttons"),
+        }
     }
 
-    async fn write_polling_rate(
+    async fn write_polling_rate_unchecked(
         &self,
+        profile: ProfileId,
         rate: PollingRate,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<PollingRate>, ManagerError> {
-        self.handle.write_polling_rate(rate).await?;
-        Ok(SessionWrite::Acknowledged)
+        match verification {
+            VerificationMethod::Transport => {
+                // BLE has no readback path; an accepted application ACK is
+                // the strongest evidence available to the manager.
+                self.handle
+                    .write_polling_rate_unchecked(profile, rate)
+                    .await?;
+                Ok(SessionWrite::Acknowledged)
+            }
+            VerificationMethod::Readback => Self::unsupported("write_polling_rate_unchecked"),
+        }
     }
 
     async fn write_profile_metadata(
@@ -469,19 +548,12 @@ impl DeviceSession for BleSession {
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FakeWriteMode {
-    Readback,
-    Ack,
-}
-
-#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ScriptedWrite {
     Dpi(DpiState),
     Preferences(PreferencesState),
     Buttons(ButtonsState),
-    PollingRate(PollingRate),
+    PollingRate(ProfileId, PollingRate),
     ProfileMetadata(ProfileMetadata),
 }
 
@@ -489,7 +561,10 @@ pub(crate) enum ScriptedWrite {
 #[derive(Clone)]
 pub(crate) struct ScriptedFakeSession {
     transport: TransportKind,
-    write_mode: FakeWriteMode,
+    /// Default evidence for session writes that carry no per-call method
+    /// (profile metadata): USB readback evidence, BLE transport ACK. The four
+    /// resource writes take their `VerificationMethod` per call instead.
+    verification: VerificationMethod,
     metadata: Arc<Mutex<Option<ProfileMetadata>>>,
     profiles: Arc<Mutex<BTreeMap<ProfileId, ProfileSnapshot>>>,
     profile_sequences: Arc<Mutex<BTreeMap<ProfileId, VecDeque<ProfileSnapshot>>>>,
@@ -507,11 +582,11 @@ fn lock_scripted<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 impl ScriptedFakeSession {
-    fn new(transport: TransportKind, write_mode: FakeWriteMode) -> Self {
+    fn new(transport: TransportKind, verification: VerificationMethod) -> Self {
         let (input_events, _) = broadcast::channel(16);
         Self {
             transport,
-            write_mode,
+            verification,
             metadata: Arc::new(Mutex::new(None)),
             profiles: Arc::new(Mutex::new(BTreeMap::new())),
             profile_sequences: Arc::new(Mutex::new(BTreeMap::new())),
@@ -524,11 +599,11 @@ impl ScriptedFakeSession {
     }
 
     pub(crate) fn usb() -> Self {
-        Self::new(TransportKind::Wired, FakeWriteMode::Readback)
+        Self::new(TransportKind::Wired, VerificationMethod::Readback)
     }
 
     pub(crate) fn ble() -> Self {
-        Self::new(TransportKind::Ble, FakeWriteMode::Ack)
+        Self::new(TransportKind::Ble, VerificationMethod::Transport)
     }
 
     pub(crate) fn with_metadata(self, metadata: ProfileMetadata) -> Self {
@@ -563,6 +638,11 @@ impl ScriptedFakeSession {
         self
     }
 
+    /// Snapshot of every hardware write the fake has performed, in order.
+    pub(crate) fn writes(&self) -> Vec<ScriptedWrite> {
+        lock_scripted(&self.writes).clone()
+    }
+
     fn unsupported<T>(&self, operation: &'static str) -> Result<T, ManagerError> {
         Err(ManagerError::UnsupportedOperation {
             operation,
@@ -570,10 +650,17 @@ impl ScriptedFakeSession {
         })
     }
 
-    fn write_outcome<T>(&self, value: T) -> SessionWrite<T> {
-        match self.write_mode {
-            FakeWriteMode::Readback => SessionWrite::ReadbackVerified(value),
-            FakeWriteMode::Ack => SessionWrite::Acknowledged,
+    fn write_outcome<T>(&self, value: T, verification: VerificationMethod) -> SessionWrite<T> {
+        match verification {
+            VerificationMethod::Transport => SessionWrite::Acknowledged,
+            VerificationMethod::Readback => SessionWrite::ReadbackVerified(value),
+        }
+    }
+
+    fn readback_unsupported(&self, operation: &'static str) -> ManagerError {
+        ManagerError::UnsupportedOperation {
+            operation,
+            transport: self.transport,
         }
     }
 
@@ -667,7 +754,7 @@ impl DeviceSession for ScriptedFakeSession {
             })
     }
 
-    async fn read_polling_rate(&self) -> Result<PollingRate, ManagerError> {
+    async fn read_polling_rate(&self, profile: ProfileId) -> Result<PollingRate, ManagerError> {
         if self.is_ble() {
             return self.unsupported("read_polling_rate");
         }
@@ -676,55 +763,73 @@ impl DeviceSession for ScriptedFakeSession {
             .copied()
             .ok_or(ManagerError::MissingBaseline {
                 resource: "polling rate",
-                profile: None,
+                profile: Some(profile),
             })
     }
 
-    async fn write_dpi(&self, state: DpiState) -> Result<SessionWrite<DpiState>, ManagerError> {
-        lock_scripted(&self.writes).push(ScriptedWrite::Dpi(state.clone()));
-        if !self.is_ble() {
-            if let Some(snapshot) = lock_scripted(&self.profiles).get_mut(&state.profile) {
-                snapshot.dpi = state.clone();
-            }
+    async fn write_dpi(
+        &self,
+        state: DpiState,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<DpiState>, ManagerError> {
+        if self.is_ble() && verification == VerificationMethod::Readback {
+            return Err(self.readback_unsupported("write_dpi"));
         }
-        Ok(self.write_outcome(state))
+        lock_scripted(&self.writes).push(ScriptedWrite::Dpi(state.clone()));
+        if !self.is_ble()
+            && let Some(snapshot) = lock_scripted(&self.profiles).get_mut(&state.profile)
+        {
+            snapshot.dpi = state.clone();
+        }
+        Ok(self.write_outcome(state, verification))
     }
 
     async fn write_preferences(
         &self,
         state: PreferencesState,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<PreferencesState>, ManagerError> {
-        lock_scripted(&self.writes).push(ScriptedWrite::Preferences(state));
-        if !self.is_ble() {
-            if let Some(snapshot) = lock_scripted(&self.profiles).get_mut(&state.profile) {
-                snapshot.preferences = state;
-            }
+        if self.is_ble() && verification == VerificationMethod::Readback {
+            return Err(self.readback_unsupported("write_preferences"));
         }
-        Ok(self.write_outcome(state))
+        lock_scripted(&self.writes).push(ScriptedWrite::Preferences(state));
+        if !self.is_ble()
+            && let Some(snapshot) = lock_scripted(&self.profiles).get_mut(&state.profile)
+        {
+            snapshot.preferences = state;
+        }
+        Ok(self.write_outcome(state, verification))
     }
 
     async fn write_buttons(
         &self,
         state: ButtonsState,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<ButtonsState>, ManagerError> {
-        lock_scripted(&self.writes).push(ScriptedWrite::Buttons(state));
-        if !self.is_ble() {
-            if let Some(snapshot) = lock_scripted(&self.profiles).get_mut(&state.profile) {
-                snapshot.buttons = state;
-            }
+        if self.is_ble() && verification == VerificationMethod::Readback {
+            return Err(self.readback_unsupported("write_buttons"));
         }
-        Ok(self.write_outcome(state))
+        lock_scripted(&self.writes).push(ScriptedWrite::Buttons(state));
+        if !self.is_ble()
+            && let Some(snapshot) = lock_scripted(&self.profiles).get_mut(&state.profile)
+        {
+            snapshot.buttons = state;
+        }
+        Ok(self.write_outcome(state, verification))
     }
 
-    async fn write_polling_rate(
+    async fn write_polling_rate_unchecked(
         &self,
+        profile: ProfileId,
         rate: PollingRate,
+        verification: VerificationMethod,
     ) -> Result<SessionWrite<PollingRate>, ManagerError> {
-        lock_scripted(&self.writes).push(ScriptedWrite::PollingRate(rate));
-        if !self.is_ble() {
-            *lock_scripted(&self.polling_rate) = Some(rate);
+        if self.is_ble() && verification == VerificationMethod::Readback {
+            return Err(self.readback_unsupported("write_polling_rate_unchecked"));
         }
-        Ok(self.write_outcome(rate))
+        lock_scripted(&self.writes).push(ScriptedWrite::PollingRate(profile, rate));
+        *lock_scripted(&self.polling_rate) = Some(rate);
+        Ok(self.write_outcome(rate, verification))
     }
 
     async fn write_profile_metadata(
@@ -733,7 +838,7 @@ impl DeviceSession for ScriptedFakeSession {
     ) -> Result<SessionWrite<ProfileMetadata>, ManagerError> {
         lock_scripted(&self.writes).push(ScriptedWrite::ProfileMetadata(metadata));
         *lock_scripted(&self.metadata) = Some(metadata);
-        Ok(self.write_outcome(metadata))
+        Ok(self.write_outcome(metadata, self.verification))
     }
 
     async fn read_battery(&self, _timeout: Duration) -> Result<u8, ManagerError> {
@@ -857,24 +962,201 @@ impl SessionFactory for ScriptedFakeFactory {
 #[cfg(test)]
 mod tests {
     use super::{DeviceSession, ScriptedFakeSession, SessionWrite};
-    use attack_shark_x3::PollingRate;
+    use crate::error::ManagerError;
+    use crate::operation::VerificationMethod;
+    use attack_shark_x3::{
+        ButtonAssignment, ButtonsState, DpiState, DpiValue, PollingRate, PreferencesState,
+        ProfileId, StageIndex,
+    };
+
+    fn profile(value: u8) -> ProfileId {
+        ProfileId::try_from(value).expect("test profile must be valid")
+    }
+
+    fn snapshot() -> attack_shark_x3::driver::ProfileSnapshot {
+        use attack_shark_x3::ProfileMetadata;
+        let dpi = DpiState::new(
+            profile(2),
+            vec![DpiValue::new(800).expect("valid dpi")],
+            StageIndex::new(1).expect("valid stage"),
+            [0; 25],
+        )
+        .expect("valid dpi state");
+        let slots = [ButtonAssignment::default(); 18];
+        attack_shark_x3::driver::ProfileSnapshot {
+            persistent_metadata: ProfileMetadata::new(profile(2), profile(5))
+                .expect("valid metadata"),
+            target_profile: profile(2),
+            dpi,
+            preferences: PreferencesState::new(profile(2), 0, 0, 0, [0, 0, 0], 0, 0),
+            buttons: ButtonsState::new(profile(2), slots),
+        }
+    }
+
+    /// Values distinct from the baseline snapshot so state-update assertions
+    /// prove the write landed rather than echoing the seeded baseline.
+    fn written_resources() -> (DpiState, PreferencesState, ButtonsState) {
+        let dpi = DpiState::new(
+            profile(2),
+            vec![DpiValue::new(1600).expect("valid dpi")],
+            StageIndex::new(1).expect("valid stage"),
+            [0; 25],
+        )
+        .expect("valid dpi state");
+        let preferences = PreferencesState::new(profile(2), 1, 2, 3, [4, 5, 6], 7, 8);
+        let mut slots = [ButtonAssignment::default(); 18];
+        slots[0] = ButtonAssignment::new(0x01, 0x02, 0x03);
+        (dpi, preferences, ButtonsState::new(profile(2), slots))
+    }
 
     #[tokio::test]
-    async fn fake_sessions_preserve_transport_write_evidence() {
-        let usb = ScriptedFakeSession::usb();
+    async fn usb_fake_routes_transport_to_acknowledged() {
+        let usb = ScriptedFakeSession::usb().with_profile(snapshot());
+        let (dpi, preferences, buttons) = written_resources();
+
         assert_eq!(
-            usb.write_polling_rate(PollingRate::Hz1000)
+            usb.write_dpi(dpi, VerificationMethod::Transport)
                 .await
-                .expect("scripted USB write succeeds"),
+                .expect("USB transport DPI write succeeds"),
+            SessionWrite::Acknowledged
+        );
+        assert_eq!(
+            usb.write_preferences(preferences, VerificationMethod::Transport)
+                .await
+                .expect("USB transport preferences write succeeds"),
+            SessionWrite::Acknowledged
+        );
+        assert_eq!(
+            usb.write_buttons(buttons, VerificationMethod::Transport)
+                .await
+                .expect("USB transport buttons write succeeds"),
+            SessionWrite::Acknowledged
+        );
+        assert_eq!(
+            usb.write_polling_rate_unchecked(
+                profile(2),
+                PollingRate::Hz1000,
+                VerificationMethod::Transport
+            )
+            .await
+            .expect("USB transport polling rate write succeeds"),
+            SessionWrite::Acknowledged
+        );
+    }
+
+    #[tokio::test]
+    async fn usb_fake_routes_readback_to_readback_verified_and_updates_state() {
+        let usb = ScriptedFakeSession::usb().with_profile(snapshot());
+        let (dpi, preferences, buttons) = written_resources();
+
+        assert_eq!(
+            usb.write_dpi(dpi.clone(), VerificationMethod::Readback)
+                .await
+                .expect("USB readback DPI write succeeds"),
+            SessionWrite::ReadbackVerified(dpi.clone())
+        );
+        assert_eq!(
+            usb.write_preferences(preferences, VerificationMethod::Readback)
+                .await
+                .expect("USB readback preferences write succeeds"),
+            SessionWrite::ReadbackVerified(preferences)
+        );
+        assert_eq!(
+            usb.write_buttons(buttons, VerificationMethod::Readback)
+                .await
+                .expect("USB readback buttons write succeeds"),
+            SessionWrite::ReadbackVerified(buttons)
+        );
+        assert_eq!(
+            usb.write_polling_rate_unchecked(
+                profile(2),
+                PollingRate::Hz1000,
+                VerificationMethod::Readback
+            )
+            .await
+            .expect("USB readback polling rate write succeeds"),
             SessionWrite::ReadbackVerified(PollingRate::Hz1000)
         );
 
-        let ble = ScriptedFakeSession::ble();
+        // Successful writes land in the fake device state.
+        assert_eq!(usb.read_dpi(profile(2)).await.expect("read back DPI"), dpi);
         assert_eq!(
-            ble.write_polling_rate(PollingRate::Hz1000)
+            usb.read_preferences(profile(2))
                 .await
-                .expect("scripted BLE ACK succeeds"),
+                .expect("read back preferences"),
+            preferences
+        );
+        assert_eq!(
+            usb.read_buttons(profile(2))
+                .await
+                .expect("read back buttons"),
+            buttons
+        );
+        assert_eq!(
+            usb.read_polling_rate(profile(2))
+                .await
+                .expect("read back polling rate"),
+            PollingRate::Hz1000
+        );
+    }
+
+    #[tokio::test]
+    async fn ble_fake_accepts_transport_but_rejects_readback() {
+        let ble = ScriptedFakeSession::ble();
+        let (dpi, preferences, buttons) = written_resources();
+
+        assert_eq!(
+            ble.write_dpi(dpi, VerificationMethod::Transport)
+                .await
+                .expect("BLE transport DPI write succeeds"),
             SessionWrite::Acknowledged
         );
+        assert_eq!(
+            ble.write_preferences(preferences, VerificationMethod::Transport)
+                .await
+                .expect("BLE transport preferences write succeeds"),
+            SessionWrite::Acknowledged
+        );
+        assert_eq!(
+            ble.write_buttons(buttons, VerificationMethod::Transport)
+                .await
+                .expect("BLE transport buttons write succeeds"),
+            SessionWrite::Acknowledged
+        );
+        assert_eq!(
+            ble.write_polling_rate_unchecked(
+                profile(2),
+                PollingRate::Hz1000,
+                VerificationMethod::Transport
+            )
+            .await
+            .expect("BLE transport polling rate write succeeds"),
+            SessionWrite::Acknowledged
+        );
+
+        let (dpi, preferences, buttons) = written_resources();
+        assert!(matches!(
+            ble.write_dpi(dpi, VerificationMethod::Readback).await,
+            Err(ManagerError::UnsupportedOperation { .. })
+        ));
+        assert!(matches!(
+            ble.write_preferences(preferences, VerificationMethod::Readback)
+                .await,
+            Err(ManagerError::UnsupportedOperation { .. })
+        ));
+        assert!(matches!(
+            ble.write_buttons(buttons, VerificationMethod::Readback)
+                .await,
+            Err(ManagerError::UnsupportedOperation { .. })
+        ));
+        assert!(matches!(
+            ble.write_polling_rate_unchecked(
+                profile(2),
+                PollingRate::Hz1000,
+                VerificationMethod::Readback
+            )
+            .await,
+            Err(ManagerError::UnsupportedOperation { .. })
+        ));
     }
 }

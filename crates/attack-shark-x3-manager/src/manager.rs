@@ -13,6 +13,8 @@ use crate::state::{
     Timestamp,
 };
 
+const BATTERY_READ_TIMEOUT: Duration = Duration::from_secs(20);
+
 pub struct DeviceManager {
     store: StateStore,
     factory: Arc<dyn SessionFactory>,
@@ -88,13 +90,12 @@ impl DeviceManager {
         }
 
         let state = self.store.load()?;
-        if let Some(selected) = state.selected_device.as_ref() {
-            if discovered
+        if let Some(selected) = state.selected_device.as_ref()
+            && discovered
                 .iter()
                 .any(|device| device.connected && device.identity.id == *selected)
-            {
-                return Ok(selected.clone());
-            }
+        {
+            return Ok(selected.clone());
         }
 
         let mut candidates: Vec<DeviceId> = discovered
@@ -151,14 +152,14 @@ impl DeviceManager {
 
     pub async fn read_battery(&self, device: &DeviceId) -> Result<u8, ManagerError> {
         let (_identity, session) = self.open_session(device).await?;
-        session.read_battery(Duration::from_secs(5)).await
+        session.read_battery(BATTERY_READ_TIMEOUT).await
     }
 
     pub async fn read_status(&self, device: &DeviceId) -> Result<DeviceStatus, ManagerError> {
         let (identity, session) = self.open_session(device).await?;
         let usb = is_usb_transport(session.transport());
 
-        let battery = match session.read_battery(Duration::from_secs(5)).await {
+        let battery = match session.read_battery(BATTERY_READ_TIMEOUT).await {
             Ok(level) => Some(level),
             Err(ManagerError::UnsupportedOperation { .. }) => None,
             Err(error) => return Err(error),
@@ -174,14 +175,23 @@ impl DeviceManager {
             Err(error) => return Err(error),
         };
 
-        let polling_rate = match session.read_polling_rate().await {
-            Ok(rate) if usb => {
-                let resource = self.update_observed_polling_rate(device, rate)?;
-                Some(ResourceSnapshot { resource })
-            }
-            Ok(_) => None,
-            Err(ManagerError::UnsupportedOperation { .. }) => None,
-            Err(error) => return Err(error),
+        // Polling rate is per-profile and its readback reflects the profile
+        // that is currently live, so status reads the persistent current
+        // profile's rate.
+        let current_profile = profile_metadata
+            .as_ref()
+            .and_then(|snapshot| snapshot.resource.observed.as_ref())
+            .map(|observed| observed.value.current());
+        let polling_rate = match current_profile {
+            Some(profile) if usb => match session.read_polling_rate(profile).await {
+                Ok(rate) => {
+                    let resource = self.update_observed_polling_rate(device, profile, rate)?;
+                    Some(ResourceSnapshot { resource })
+                }
+                Err(ManagerError::UnsupportedOperation { .. }) => None,
+                Err(error) => return Err(error),
+            },
+            _ => None,
         };
 
         Ok(DeviceStatus {
@@ -331,6 +341,7 @@ impl DeviceManager {
     fn update_observed_polling_rate(
         &self,
         device: &DeviceId,
+        profile: ProfileId,
         value: attack_shark_x3::PollingRate,
     ) -> Result<ResourceState<attack_shark_x3::PollingRate>, ManagerError> {
         let now = self.now();
@@ -340,8 +351,12 @@ impl DeviceManager {
             .devices
             .get_mut(device)
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        set_observed(&mut device_state.polling_rate, value, now);
-        let resource = device_state.polling_rate.clone();
+        let profile_state = device_state
+            .profiles
+            .entry(profile)
+            .or_insert_with(ProfileState::empty);
+        set_observed(&mut profile_state.polling_rate, value, now);
+        let resource = profile_state.polling_rate.clone();
         txn.commit()?;
         Ok(resource)
     }
@@ -554,12 +569,16 @@ mod tests {
         manager.register_device(first).unwrap();
 
         // Mutate the device state to verify preservation
+        let profile = attack_shark_x3::ProfileId::new(1).unwrap();
         {
             let mut txn = store.transaction().unwrap();
             txn.state_mut()
                 .devices
                 .get_mut(&first_id)
                 .unwrap()
+                .profiles
+                .entry(profile)
+                .or_insert_with(crate::state::ProfileState::empty)
                 .polling_rate
                 .desired = Some(DesiredState {
                 value: PollingRate::Hz500,
@@ -577,7 +596,7 @@ mod tests {
         let state = store.load().unwrap();
         assert_eq!(state.selected_device, Some(first_id.clone()));
         assert_eq!(
-            state.devices[&first_id]
+            state.devices[&first_id].profiles[&profile]
                 .polling_rate
                 .desired
                 .as_ref()
@@ -616,10 +635,16 @@ mod tests {
         manager.register_device(identity).unwrap();
 
         // Seed a desired polling rate that must be preserved
+        let profile = attack_shark_x3::ProfileId::new(1).unwrap();
         {
             let mut txn = store.transaction().unwrap();
             let device_state = txn.state_mut().devices.get_mut(&id).unwrap();
-            device_state.polling_rate.desired = Some(DesiredState {
+            device_state
+                .profiles
+                .entry(profile)
+                .or_insert_with(crate::state::ProfileState::empty)
+                .polling_rate
+                .desired = Some(DesiredState {
                 value: PollingRate::Hz250,
                 source: DesiredSource::UserWrite,
                 verification: Verification::not_sent(),
@@ -654,12 +679,13 @@ mod tests {
         // Verify persisted state matches
         let persisted = store.load().unwrap();
         let device_state = &persisted.devices[&id];
+        let profile_state = &device_state.profiles[&profile];
         assert_eq!(
-            device_state.polling_rate.desired.as_ref().unwrap().value,
+            profile_state.polling_rate.desired.as_ref().unwrap().value,
             PollingRate::Hz250
         );
         assert_eq!(
-            device_state.polling_rate.observed.as_ref().unwrap().value,
+            profile_state.polling_rate.observed.as_ref().unwrap().value,
             PollingRate::Hz1000
         );
     }

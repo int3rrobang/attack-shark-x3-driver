@@ -5,7 +5,7 @@ use crate::backend::SessionWrite;
 use crate::device::DeviceId;
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
-use crate::operation::{ResourceSnapshot, UpdatePolicy, WriteOutcome};
+use crate::operation::{BaselineSource, ResourceSnapshot, UpdatePolicy, WriteOutcome};
 use crate::state::{
     ApplicationVerification, DesiredSource, DesiredState, ObservationSource, ObservedState,
     PersistenceVerification, ProfileState, StateFile, StateTransaction, Verification,
@@ -127,7 +127,9 @@ impl DeviceManager {
                 }
             }
 
-            let write = session.write_dpi(desired.clone()).await?;
+            let write = session
+                .write_dpi(desired.clone(), policy.verification)
+                .await?;
             let mut transaction = self.store().transaction()?;
             let outcome = persist_dpi_write(
                 &mut transaction,
@@ -142,7 +144,9 @@ impl DeviceManager {
             return finish_dpi_write(outcome, profile);
         }
 
-        let write = session.write_dpi(desired.clone()).await?;
+        let write = session
+            .write_dpi(desired.clone(), policy.verification)
+            .await?;
         let mut transaction = self.store().transaction()?;
         let outcome = persist_dpi_write(
             &mut transaction,
@@ -158,7 +162,9 @@ impl DeviceManager {
     }
     /// Applies a sparse DPI update after resolving a complete baseline.
     ///
-    /// USB always reads the current profile image immediately before merging.
+    /// By default USB resolves the baseline with a live read of the current
+    /// profile image immediately before merging; `BaselineSource::Stored`
+    /// merges against durable desired/observed evidence without a live read.
     /// BLE uses stored desired evidence first, then stored observed evidence,
     /// and only uses the explicitly captured profile image when authorized by
     /// `policy.allow_explicit_defaults`.
@@ -176,10 +182,14 @@ impl DeviceManager {
         }
 
         let (_identity, session) = self.open_session(device).await?;
-        let baseline = if session.transport() == TransportKind::Ble {
-            self.load_ble_dpi_baseline(device, profile, policy.allow_explicit_defaults)?
-        } else {
-            session.read_dpi(profile).await?
+        let baseline = match session.transport() {
+            TransportKind::Ble => {
+                self.load_stored_dpi_baseline(device, profile, policy.allow_explicit_defaults)?
+            }
+            TransportKind::Wired | TransportKind::Receiver => match policy.baseline {
+                BaselineSource::Live => session.read_dpi(profile).await?,
+                BaselineSource::Stored => self.load_stored_dpi_baseline(device, profile, false)?,
+            },
         };
         if baseline.profile != profile {
             return Err(ManagerError::InvalidUpdate(format!(
@@ -192,7 +202,16 @@ impl DeviceManager {
         self.update_dpi(device, profile, desired, policy).await
     }
 
-    fn load_ble_dpi_baseline(
+    /// Resolves the complete DPI baseline from the durable store without any
+    /// live read.
+    ///
+    /// Returns the stored desired evidence (unless it is explicit defaults
+    /// and not authorized by `allow_explicit_defaults`), then the stored
+    /// observed evidence, and only the captured evidence image when
+    /// authorized by `allow_explicit_defaults`. With no usable stored
+    /// baseline and no capture authorization, `ManagerError::MissingBaseline`
+    /// is returned.
+    fn load_stored_dpi_baseline(
         &self,
         device: &DeviceId,
         profile: ProfileId,
@@ -206,10 +225,10 @@ impl DeviceManager {
             .map(|profile_state| &profile_state.dpi);
 
         if let Some(resource) = resource {
-            if let Some(desired) = resource.desired.as_ref() {
-                if allow_explicit_defaults || desired.source != DesiredSource::ExplicitDefaults {
-                    return Ok(desired.value.clone());
-                }
+            if let Some(desired) = resource.desired.as_ref()
+                && (allow_explicit_defaults || desired.source != DesiredSource::ExplicitDefaults)
+            {
+                return Ok(desired.value.clone());
             }
             if let Some(observed) = resource.observed.as_ref() {
                 return Ok(observed.value.clone());
@@ -373,7 +392,6 @@ fn finish_dpi_write(
 #[cfg(test)]
 mod tests {
     use super::{DeviceManager, DpiDelta, SensorOptionsDelta};
-    use crate::UpdatePolicy;
     use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession};
     use crate::device::DeviceIdentity;
     use crate::error::ManagerError;
@@ -381,6 +399,7 @@ mod tests {
         DesiredSource, DesiredState, ObservationSource, ObservedState, StatePaths, StateStore,
         Timestamp, Verification,
     };
+    use crate::{BaselineSource, UpdatePolicy, VerificationMethod};
     use attack_shark_x3::{
         ButtonAssignment, ButtonsState, DpiState, DpiValue, PreferencesState, ProfileId,
         ProfileMetadata, StageIndex, TransportKind,
@@ -451,7 +470,15 @@ mod tests {
 
         let desired = dpi(profile, 800);
         let outcome = manager
-            .update_dpi(&device, profile, desired.clone(), UpdatePolicy::default())
+            .update_dpi(
+                &device,
+                profile,
+                desired.clone(),
+                UpdatePolicy {
+                    verification: VerificationMethod::Readback,
+                    ..UpdatePolicy::default()
+                },
+            )
             .await
             .unwrap();
         assert_eq!(outcome.desired, desired);
@@ -466,6 +493,45 @@ mod tests {
             resource.observed.as_ref().unwrap().source,
             ObservationSource::UsbReadback
         );
+    }
+
+    #[tokio::test]
+    async fn usb_transport_write_is_acknowledged_without_observed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let profile = ProfileId::new(1).unwrap();
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            ScriptedFakeSession::usb(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        let desired = dpi(profile, 800);
+        let outcome = manager
+            .update_dpi(
+                &device,
+                profile,
+                desired.clone(),
+                UpdatePolicy {
+                    verification: VerificationMethod::Transport,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.desired, desired);
+        assert!(outcome.observed.is_none());
+        assert_eq!(
+            outcome.verification.application,
+            crate::ApplicationVerification::Acknowledged
+        );
+        let resource = &store.load().unwrap().devices[&device].profiles[&profile].dpi;
+        assert!(resource.observed.is_none());
+        assert_eq!(resource.desired.as_ref().unwrap().value, desired);
     }
 
     #[tokio::test]
@@ -505,6 +571,37 @@ mod tests {
         let resource = &store.load().unwrap().devices[&device].profiles[&profile].dpi;
         assert!(resource.observed.is_none());
         assert_eq!(resource.desired.as_ref().unwrap().value, desired);
+    }
+
+    #[tokio::test]
+    async fn ble_readback_write_is_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = ble_identity();
+        let device = identity.id.clone();
+        let profile = ProfileId::new(1).unwrap();
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            ScriptedFakeSession::ble(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        let error = manager
+            .update_dpi(
+                &device,
+                profile,
+                dpi(profile, 800),
+                UpdatePolicy {
+                    allow_explicit_defaults: true,
+                    verification: VerificationMethod::Readback,
+                    baseline: BaselineSource::Live,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ManagerError::UnsupportedOperation { .. }));
     }
 
     #[tokio::test]
@@ -578,6 +675,49 @@ mod tests {
         assert_eq!(actual.stages, baseline.stages);
         assert_eq!(actual.sensor, baseline.sensor);
         assert_eq!(actual.preserved_tail, baseline.preserved_tail);
+    }
+
+    #[tokio::test]
+    async fn usb_dpi_delta_readback_verifies_merged_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let profile = ProfileId::new(1).unwrap();
+        let baseline = dpi(profile, 800);
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            ScriptedFakeSession::usb().with_profile(snapshot(profile, baseline.clone())),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        let outcome = manager
+            .update_dpi_delta(
+                &device,
+                profile,
+                DpiDelta {
+                    active_stage: Some(StageIndex::new(1).unwrap()),
+                    ..DpiDelta::default()
+                },
+                UpdatePolicy {
+                    verification: VerificationMethod::Readback,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.verification.application,
+            crate::ApplicationVerification::ReadbackVerified
+        );
+        let observed = outcome.observed.expect("readback must produce observed");
+        assert_eq!(observed.active_stage, StageIndex::new(1).unwrap());
+        assert_eq!(observed.stages, baseline.stages);
+        assert_eq!(observed.preserved_tail, baseline.preserved_tail);
+        let resource = &store.load().unwrap().devices[&device].profiles[&profile].dpi;
+        assert_eq!(resource.observed.as_ref().unwrap().value, outcome.desired);
     }
 
     #[tokio::test]
@@ -730,5 +870,109 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, ManagerError::InvalidUpdate(_)));
+    }
+
+    #[tokio::test]
+    async fn stored_baseline_dpi_delta_merges_without_live_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let profile = ProfileId::new(1).unwrap();
+        // No scripted profile: any live `read_dpi` would fail with
+        // MissingBaseline, so a successful merge proves the baseline came
+        // from the durable store.
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            ScriptedFakeSession::usb(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        let mut stored_baseline = dpi(profile, 800);
+        stored_baseline.preserved_tail = [0x22; 25];
+        stored_baseline.sensor.ripple_control = true;
+        let mut transaction = store.transaction().unwrap();
+        let profile_state = transaction
+            .state_mut()
+            .devices
+            .get_mut(&device)
+            .unwrap()
+            .profiles
+            .entry(profile)
+            .or_default();
+        profile_state.dpi.desired = Some(DesiredState {
+            value: stored_baseline.clone(),
+            source: DesiredSource::UserWrite,
+            verification: Verification::not_sent(),
+            updated_at: Timestamp::default(),
+        });
+        transaction.commit().unwrap();
+
+        let outcome = manager
+            .update_dpi_delta(
+                &device,
+                profile,
+                DpiDelta {
+                    sensor: Some(SensorOptionsDelta {
+                        motion_sync: Some(true),
+                        ..SensorOptionsDelta::default()
+                    }),
+                    ..DpiDelta::default()
+                },
+                UpdatePolicy {
+                    baseline: BaselineSource::Stored,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.desired.stages, stored_baseline.stages);
+        assert_eq!(
+            outcome.desired.preserved_tail,
+            stored_baseline.preserved_tail
+        );
+        assert!(outcome.desired.sensor.ripple_control);
+        assert!(outcome.desired.sensor.motion_sync);
+    }
+
+    #[tokio::test]
+    async fn stored_baseline_dpi_delta_requires_stored_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let profile = ProfileId::new(1).unwrap();
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            ScriptedFakeSession::usb(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store, factory);
+        manager.register_device(identity).unwrap();
+
+        let error = manager
+            .update_dpi_delta(
+                &device,
+                profile,
+                DpiDelta {
+                    active_stage: Some(StageIndex::new(1).unwrap()),
+                    ..DpiDelta::default()
+                },
+                UpdatePolicy {
+                    baseline: BaselineSource::Stored,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ManagerError::MissingBaseline {
+                resource: "DPI",
+                profile: Some(p),
+            } if p == profile
+        ));
     }
 }

@@ -16,6 +16,12 @@ use crate::error::StateError;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaHeader {
+    schema_version: u32,
+}
+
 /// Environment variable that overrides the resolved `state.json` location.
 pub const STATE_PATH_ENV: &str = "ATTACK_SHARK_X3_STATE_PATH";
 
@@ -194,13 +200,14 @@ fn lock_memory<'a>(state: &'a Mutex<StateFile>) -> MutexGuard<'a, StateFile> {
 fn load_state(path: &Path) -> Result<StateFile, StateError> {
     match fs::read(path) {
         Ok(bytes) => {
-            let file: StateFile = serde_json::from_slice(&bytes)?;
-            if file.schema_version != SCHEMA_VERSION {
+            let header: SchemaHeader = serde_json::from_slice(&bytes)?;
+            if header.schema_version != SCHEMA_VERSION {
                 return Err(StateError::UnsupportedSchema {
-                    found: file.schema_version,
+                    found: header.schema_version,
                     expected: SCHEMA_VERSION,
                 });
             }
+            let file: StateFile = serde_json::from_slice(&bytes)?;
             file.validate()?;
             Ok(file)
         }
@@ -396,10 +403,10 @@ fn sync_parent(_path: &Path) -> io::Result<()> {
 }
 
 fn ensure_parent(path: &Path) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
     }
     Ok(())
 }
@@ -409,7 +416,7 @@ mod tests {
     use super::{StatePaths, StateStore};
     use crate::device::DeviceIdentity;
     use crate::error::StateError;
-    use crate::state::model::{DeviceState, StateFile};
+    use crate::state::model::{DeviceState, SCHEMA_VERSION, StateFile};
     use std::fs;
     use std::path::Path;
 
@@ -453,7 +460,27 @@ mod tests {
         match store.load() {
             Err(StateError::UnsupportedSchema { found, expected }) => {
                 assert_eq!(found, 1);
-                assert_eq!(expected, 2);
+                assert_eq!(expected, SCHEMA_VERSION);
+            }
+            other => panic!("expected UnsupportedSchema, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_foreign_schema_before_decoding_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let store = StateStore::open(paths.clone());
+        let foreign_schema = SCHEMA_VERSION - 1;
+        let value = serde_json::json!({
+            "schemaVersion": foreign_schema,
+        });
+        fs::write(&paths.state_file, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        match store.load() {
+            Err(StateError::UnsupportedSchema { found, expected }) => {
+                assert_eq!(found, foreign_schema);
+                assert_eq!(expected, SCHEMA_VERSION);
             }
             other => panic!("expected UnsupportedSchema, got {other:?}"),
         }
