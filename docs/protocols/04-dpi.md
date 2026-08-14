@@ -50,7 +50,7 @@ The internal report is 56 bytes. Writes always send the first 52 bytes (compact 
 | 21     | High Flag 6    | `uint8`     | `0x01` if Stage 6 DPI > 10000, else `0x00`                       | live-confirmed |
 | 22-23  | High Flag 7-8 / X3 High 7-8 | `uint8[2]` | X11 fixed `0x00, 0x00`; X3 high bytes for stages 7 and 8 | static |
 | 24     | Active Stage   | `uint8`     | Index of the currently active DPI stage (X11 1-6, X3 1-8)        | live-confirmed |
-| 25-49  | Fixed Data     | `uint8[25]` | Captured from stock software; individual field meanings unknown. X11 last byte = `0x02`, X3 last byte = `0x01`. | static |
+| 25-49  | Stage color data | `uint8[25]` | Host-written per-stage RGB (25–48) + status byte (49); firmware treats the block opaquely, so the color reading is host-side only. X11 last byte = `0x02`, X3 last byte = `0x01`. | static-analysis + inference |
 | 50     | Checksum High  | `uint8`     | High byte of the 16-bit checksum                                 | static |
 | 51     | Checksum Low   | `uint8`     | Low byte of the 16-bit checksum                                  | static |
 | 52-55  | Padding        | `uint8[4]`  | Readback-only trailing zeros (fixed `0x00`); not sent in writes  | live-confirmed |
@@ -79,13 +79,13 @@ DPI values are not stored as literal integers. X11 wired/adapter values are mapp
 - **Range**: X11 wired/adapter support up to 22,000 DPI. X3 wired supports 50 to 26,000 DPI.
 - **Steps**: X3 wired requires integer multiples of 50. X11 wired/adapter use the existing map behavior.
 
-### Fixed-tail distinction (offsets 25–49)
+### Stage-color region (offsets 25–49)
 
-The 25-byte fixed-data region (offsets 25–49) differs between X11 and X3:
+The 25-byte region (offsets 25–49) differs between X11 and X3 in its final byte:
 - **X11**: last byte (offset 49) = `0x02`
 - **X3**: last byte (offset 49) = `0x01`
 
-The remaining bytes in this region are captured from stock software; individual field meanings are unknown and should not be invented. \[static-analysis via stock capture]
+Host software writes bytes 25–48 as per-stage RGB colors and byte 49 as a status byte, but the firmware treats the entire region opaquely — no firmware path reads the bytes individually. The per-stage-color reading is therefore host-side inference, not firmware-confirmed semantics; the bytes are preserved verbatim and their meaning must not be over-stated. \[static-analysis + inference]
 
 ## X3 Variable Stages
 

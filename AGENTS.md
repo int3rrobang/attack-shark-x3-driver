@@ -134,7 +134,7 @@ Run focused tests while developing, then run the full workspace suite before com
 
 ### Durable state model
 
-The manager persists device configuration to a JSON state file protected by a short-lived cross-process file lock (`fs2`).
+The manager persists device configuration to a JSON state file protected by a short-lived cross-process file lock (`fs2`). It never auto-applies desired state at startup, device discovery, or GUI launch; applying state is always an explicit user operation.
 
 - `ResourceState<T>` carries `desired: Option<DesiredState<T>>` and `observed: Option<ObservedState<T>>`. Both are optional; an empty resource is valid.
 - `DesiredState<T>` records the value, `DesiredSource` (`UserWrite`, `Imported`, `ExplicitDefaults`), `Verification`, and `updated_at` timestamp.
@@ -211,6 +211,7 @@ If a new feature needs protocol knowledge, implement it in `attack-shark-x3` or 
 - Low-level experimental tools may expose raw writes, but production-facing APIs must validate ranges and block known-dangerous operations.
 - Do not rename unknown fields based only on host UI labels. Describe how bytes are used when semantics are unresolved.
 - Do not describe RF slots as firmware versions or profile "personas."
+- Report `0x09` custom macros remain out of scope until a separately reviewed Rust implementation exists.
 - Codec integration tests live under `crates/attack-shark-x3/tests/` using golden fixtures from `fixtures/protocol/`. Not every codec has a test yet; add one when modifying a codec.
 
 ## Evidence labels

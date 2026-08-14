@@ -29,7 +29,6 @@ Brand aliases do not by themselves prove identical firmware. Each technical clai
 | [`research/`](research/README.md) | Dated investigations, binary-analysis provenance, and corrections |
 | [`evidence/`](evidence/README.md) | Raw descriptors, captures, packet dumps, and model-specific analyses |
 | [`ui-driver-spec.md`](ui-driver-spec.md) | Rust FA61 user-interface integration contract |
-| [`refactor-roadmap.md`](refactor-roadmap.md) | Rust-only architecture, durable-state model, GUI boundary, and phased implementation plan |
 | [`safety.md`](safety.md) | Shared hardware-test and recovery restrictions |
 
 ## Packet reports
