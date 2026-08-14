@@ -6,11 +6,11 @@ This directory separates model support, packet formats, transports, research pro
 
 | Layer | What it is | Source of truth | Status |
 |:------|:-----------|:----------------|:-------|
-| **Canonical** | Protocol pages, transport pages, device pages, and Rust source | Current Rust implementation (`attack-shark-x3`, `attack-shark-x3-manager`, `x3ctl`) | Active |
+| **Canonical** | Protocol pages, transport pages, device pages, and Rust source | Current Rust implementation (`attack-shark-x3`, `attack-shark-x3-manager`, `x3ctl`, `x3-gui`) | Active |
 | **Evidence** | Raw descriptors, captures, packet dumps under `evidence/` | Immutable byte-for-byte hardware artifacts | Immutable |
 | **Historical** | Deleted TypeScript/Bun tooling, old scripts, prior session records | Preserved for provenance only; not runnable | Deleted/archived |
 
-**Current Rust sources of truth.** The workspace is `attack-shark-x3` (low-level driver), `attack-shark-x3-manager` (stateful manager), and `x3ctl` (CLI). No TypeScript/Bun product, broker, daemon, IPC layer, or direct mode remains. CLI invocations use `cargo run -p x3ctl -- ...`. Where historical TypeScript tooling is referenced for provenance, it is explicitly labeled deleted and the raw evidence is the authoritative record.
+**Current Rust sources of truth.** The workspace is `attack-shark-x3` (low-level driver), `attack-shark-x3-manager` (stateful manager), `x3ctl` (CLI), and `x3-gui` (Slint desktop frontend). No TypeScript/Bun product, broker, daemon, IPC layer, or direct mode remains. CLI invocations use `cargo run -p x3ctl -- ...`. Where historical TypeScript tooling is referenced for provenance, it is explicitly labeled deleted and the raw evidence is the authoritative record.
 
 ## Choose a device
 

@@ -1,6 +1,25 @@
 # Polling rate (report `0x06`)
 
-Report `0x06` configures the mouse's global movement-reporting frequency. X11 USB modes and X3/FA61 wired use the same nine-byte packet. In the 2026-07-22 same-hardware probe, the exact X3 packet was accepted over BLE and changed the rate observed after USB reconnect; shorter legacy-shaped BLE packets were rejected.
+Report `0x06` configures the movement-reporting frequency of the selected
+profile. Byte 2 is the one-based target profile consumed by the shared
+dispatcher prelude; polling rate is **per-profile and persistent**, not a
+device-global tag. X11 USB modes and X3/FA61 wired use the same nine-byte
+packet. In the 2026-07-22 same-hardware probe, the exact X3 packet was accepted
+over BLE and changed the rate observed after USB reconnect; shorter legacy-shaped
+BLE packets were rejected. \[corrected]
+
+> **Warning — `0x06` is a save alias, not a safe standalone write.**
+> Report `0x06` **skips the profile loader**: byte 2 names the slot the
+> deferred writer serializes the complete *live* profile image into, so a
+> `0x06` write can persist the current live DPI, preferences, and buttons
+> under the target alias. A `0x06` ACK or rate readback never proves the
+> non-rate save image or persistence. Packet encoding (this page) is
+> transport-independent and safe to describe; safe-by-default behavior is a
+> manager policy on top (see
+> [Packet encoding vs. safe manager policy](#packet-encoding-vs-safe-manager-policy)
+> and [`docs/safety.md`](../safety.md)). Driver primitives are named
+> `*_unchecked`, and the BLE override requires explicit per-operation
+> authorization (`--allow-unverified-ble-rate-write`).
 
 ## Compatibility
 
@@ -32,16 +51,23 @@ The payload consists of a 9-byte buffer. The structure is identical for both **W
 |------------|--------------|-------------|---------------------------------------------------------|
 | 0          | Report ID    | `0x06`      | Must match the low byte of `wValue`                     |
 | 1          | Command      | `0x09`      | Internal command identifier                             |
-| 2          | Sub-command  | `0x01`      | Internal sub-command identifier                         |
+| 2          | Target Profile | `0x01-0x05` | One-based target profile; the slot the deferred writer serializes into |
 | 3          | Polling Rate | `0x01-0x08` | Encoded value for the frequency (see table below)       |
 | 4          | Checksum     | `0xXX`      | Complement of Byte 3 (`0xFF - Byte[3]`)                 |
 | 5-8        | Padding      | `0x00`      | Null padding bytes                                      |
 
 The X3 FA60 receiver returns the same nine-byte functional image with byte 1
-set to `0x0b` on a feature-report readback (`06 0b 01 rr ~rr 00 00 00 00`).
+set to `0x0b` on a feature-report readback (`06 0b <profile> rr ~rr 00 00 00 00`).
 Writes retain the canonical `0x09` form. The receiver-specific decoder accepts
 the readback variant without weakening wired validation. \[capture-confirmed +
 implementation]
+
+Byte 2 is validated as a one-based `ProfileId` (`1..=5`) on both encode and
+decode. Firmware static analysis of the M600-family image shows the shared
+dispatcher consumes byte 2 as the target profile for reports `0x04`, `0x05`,
+`0x06`, and `0x08`; report `0x06` **skips the profile loader** and its deferred
+writer serializes the complete *live* profile image into the slot named by
+byte 2. \[static-analysis, 2026-08-10 report section 25]
 
 ## Polling Rate Encoding
 
@@ -59,7 +85,9 @@ The checksum at index 4 is calculated using the formula: `0xFF - buffer[3]`.
 
 ## Complete Packet Payloads
 
-Stock FA61/X3 wired captures match this layout. Full 9-byte payloads for each rate:
+Stock FA61/X3 wired captures match this layout; byte 2 is the one-based target
+profile (captures and the factory-recovery sequence used profile 1). Full
+9-byte payloads for each rate at profile 1:
 
 | Rate (Hz) | Payload (hex)                       |
 |-----------|-------------------------------------|
@@ -67,6 +95,15 @@ Stock FA61/X3 wired captures match this layout. Full 9-byte payloads for each ra
 | 250 Hz    | `06090104fb00000000`                |
 | 500 Hz    | `06090102fd00000000`                |
 | 1000 Hz   | `06090101fe00000000`                |
+
+The same rates at profile 2 replace byte 2 with `02`:
+
+| Rate (Hz) | Payload (hex)                       |
+|-----------|-------------------------------------|
+| 125 Hz    | `06090208f700000000`                |
+| 250 Hz    | `06090204fb00000000`                |
+| 500 Hz    | `06090202fd00000000`                |
+| 1000 Hz   | `06090201fe00000000`                |
 
 Byte 3 is the encoded rate, byte 4 is `0xFF - Byte[3]`, bytes 5-8 are zero-pad.
 
@@ -90,35 +127,115 @@ Data (Hex):
     06 09 01 01 fe 00 00 00 00
 ```
 
-## Rust USB driver support
+## Rust driver support
 
-The native Rust driver treats polling rate as global USB state rather than
-profile-targeted state. `MouseHandle::read_polling_rate()` arms the one-shot
-`0xa0` mailbox with a fresh `0x06` selector, waits for readiness, fetches the
-nine-byte report once, and validates the report ID, declared length, sub-command,
-rate code, complement, and padding. Malformed observations are rearmed and
-retried under the normal bounded read policy.
+Polling rate is **profile-scoped**, not global. `MouseHandle::read_polling_rate(profile)`
+arms the one-shot `0xa0` mailbox with a fresh `0x06` selector carrying the
+requested profile, waits for readiness, fetches the nine-byte report once, and
+validates the report ID, declared length, profile byte, rate code, complement,
+and padding. Malformed observations are rearmed and retried under the normal
+bounded read policy.
 
-`MouseHandle::write_polling_rate(rate)` sends the validated nine-byte report,
-waits for the configured write delay (500 ms by default), and verifies a fresh
-readback. This proves immediate state only, not power-cycle persistence.
-These operations are exposed by the Rust API over USB. The production BLE API
-also accepts the exact nine-byte X3 packet and waits for the matching FEE4 ACK,
-but it cannot provide configuration readback.
+**Live-read limitation:** report `0x06` skips the profile loader, so the
+readback always reflects the profile that is *currently live* on the device.
+The readback's byte 2 mirrors the armed working alias/selector, not the loaded
+image; validating it is a wire-shape check, not a live-content proof. Reading a
+non-live profile therefore returns the live profile's rate. The manager reads
+the rate of the persistent current profile (see `status`), and callers must not
+treat a `0x06` read as a profile load or as persistence evidence.
 
-The CLI equivalents are:
+**Driver primitives are unchecked.** The low-level methods carry no safety
+precondition — they emit the packet directly and are named to say so:
+
+- `MouseHandle::send_polling_rate_unchecked(profile, rate)` submits exactly
+  one nine-byte feature report and completes on the transport-level
+  acknowledgment (USB `SET_REPORT` transfer success or BLE parser ACK
+  `10 50 00 06`). Neither is a readback or persistence proof.
+- `MouseHandle::write_polling_rate_unchecked(profile, rate)` sends the report,
+  holds the configured quiet period (500 ms wired or five seconds through the
+  FA60 receiver), re-arms a fresh `0xa0` read, and requires the returned rate
+  to match. It proves the immediate rate field only, not the non-rate save
+  image and not power-cycle persistence. On the FA60 receiver this is the
+  costly path: the prepared-read transaction temporarily suppresses pointer
+  traffic, while a send-only transport write does not (see the freeze-probe
+  timing in
+  [`usb-hid.md`](../transports/usb-hid.md#profile-switch-transport-freeze-probe)).
+  Readback is unsupported over BLE, which has no byte-for-byte readback path.
+- `BleHandle::write_polling_rate_unchecked(profile, rate)` sends the report
+  over BLE and returns the parser ACK; see the unchecked-BLE section below.
+
+Because byte 2 names the target profile while report `0x06` skips the profile
+loader, the deferred writer serializes the complete *live* image into the slot
+named by byte 2: the packet must carry the intended profile, and a `0x06`
+readback reflects the profile that is currently live, not a loaded image (see
+the live-read limitation above). ACK or rate readback of `0x06` never proves
+the non-rate save image or persistence; explicit stronger verification remains
+`x3ctl verify --method profile-reload|power-cycle`, which is unchanged.
+
+## Packet encoding vs. safe manager policy
+
+This page documents the packet encoding (layout, checksum, rate table,
+transport variants) and the driver primitives. Encoding knowledge is
+transport-independent and safe to describe; it does not make a write safe.
+Safe-by-default behavior is a **manager policy** layered on top, in
+[`docs/safety.md`](../safety.md#polling-rate-writes-report-0x06):
+
+- **Safe USB write** (`DeviceManager::update_polling_rate`): requires complete
+  desired DPI/preferences/buttons for the target, requires persistent metadata
+  `current == target`, freshly reads the complete profile in the same session,
+  and compares every non-rate section — any mismatch aborts **before any
+  hardware write**. The current rate is then read; an already-equal rate is a
+  **no-op with no hardware write**. Otherwise the rate is written last with
+  the requested post-write validation (`Transport` or `Readback`).
+- **Safe BLE write** of the same method fails with
+  `ManagerError::ExplicitAuthorizationRequired` before any session call: BLE
+  cannot freshly read the complete profile, so the preflight is impossible.
+- **Unchecked BLE override** (`DeviceManager::update_polling_rate_unverified_ble`,
+  CLI `rate set --allow-unverified-ble-rate-write`): BLE-only, transport
+  validation only, direct packet write, **ACK-only evidence** (`10 50 00 06`),
+  persistence recorded as `Unknown`. This is an explicit escape hatch for
+  informed users; authorization changes what may be sent, never what may be
+  claimed as verified.
+
+**Flash wear:** every complement-valid `0x06` write schedules a deferred
+complete-profile save that erases the shared `0x0007C000`-sector; an unchanged
+rate write is not idempotent with respect to flash wear, so avoid redundant
+writes. The manager's safe path already skips writes when the current rate
+equals the desired rate (a no-op), which avoids this wear; unchecked paths
+still emit every requested packet. The ACK (`10 50 00 06`) means "validated
+and queued", not "durably committed", and is not a batch/flush barrier.
+Configuration remains recoverable from a recorded backup or known-good packet;
+readback and verify are optional evidence-gathering, not a mandatory safety
+gate. \[static-analysis, 2026-08-10 report section 25]
+
+The CLI equivalents operate on the profile selected by the global `--profile`
+flag:
 
 ```text
-cargo run -p x3ctl -- rate get
-cargo run -p x3ctl -- rate set 1000
-
-# BLE (requires ble feature)
-cargo run -p x3ctl --features ble -- --transport ble rate get
-cargo run -p x3ctl --features ble -- --transport ble rate set 500
+cargo run -p x3ctl -- --profile 1 rate get
+cargo run -p x3ctl -- --profile 2 rate set 1000
+cargo run -p x3ctl -- --profile 2 rate get
 ```
 
-The BLE CLI command reports parser acceptance from the FEE4 ACK; it does not
-verify persistence or effective polling behavior.
+`rate set` routes through the manager's safe `update_polling_rate` preflight
+(complete desired non-rate image for the target, persistent metadata
+`current == target`, fresh same-session complete-profile read with every
+non-rate section equal, no-op when the current rate already matches). Over USB
+the default `--validation transport` accepts the transport-level
+acknowledgment (`SET_REPORT` submission success); `--validation readback`
+adds the armed `0xa0` rate readback, which proves the immediate rate field
+only. Over BLE the safe path fails with `ExplicitAuthorizationRequired`.
+
+The BLE override is an explicit per-invocation choice on `rate set`:
+
+```text
+cargo run -p x3ctl -- --transport ble --profile 2 rate set 1000 --allow-unverified-ble-rate-write
+```
+
+It calls `update_polling_rate_unverified_ble`: BLE-only, `--validation
+readback` rejected, direct packet write, ACK-only evidence (`10 50 00 06`),
+persistence `Unknown`. BLE `rate get` remains unsupported because BLE has no
+read path for report `0x06`.
 
 ## Hardware qualification
 
@@ -152,7 +269,7 @@ Two shorter legacy-shaped packets were also rejected over BLE:
 06 02 00 00 00 00 00 00 fd
 ```
 
-Both returned `10 50 01 06`. The exact packet therefore changes the global
+Both returned `10 50 01 06`. The exact packet therefore changes the
 working polling-rate state across BLE-to-USB transport switching, while the
 shorter form does not. The stock application still skips BLE report `0x06`;
 the reason for that policy is unresolved. \[corrected, live-confirmed]

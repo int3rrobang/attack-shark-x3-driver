@@ -32,6 +32,26 @@ the Rust driver; configuration changes were made through the stock application
 and each reversible change was restored during the guided run.
 
 
+## Button-action mapping session — 2026-08-14
+
+A stock-app button-assignment sweep on X3/FA61 wired, capturing the wire
+encoding of every action in the stock assignment menu (media, browser,
+shortcut presets, fire, easy aim, scroll actions).
+
+| Path | Transport | Description | Evidence |
+|:-----|:----------|:------------|:---------|
+| [`captures/2026-08-14-button-action-map-r2/`](captures/2026-08-14-button-action-map-r2/) | FA61 wired | First half: INIT through Multimedia > Volume + | capture-confirmed |
+| [`captures/2026-08-14-button-action-map-r2-remainder/`](captures/2026-08-14-button-action-map-r2-remainder/) | FA61 wired | Second half: Volume - through Shortcut, RESTORE to Forward, FINAL IDLE | capture-confirmed |
+| [`captures/2026-08-14-button-actions.json`](captures/2026-08-14-button-actions.json) | — | Parsed `0x08` writes: stock action, packet hex, slot-6 triplet, checksum | capture-confirmed |
+
+Button 4 (Forward slot, index 6) was rebound to each menu action in the
+stock app, one action per guided step; each write differs from the Forward
+baseline only at slot 6. The interpreted mapping is in
+[`../../protocols/08-button-mapping.md`](../../protocols/08-button-mapping.md),
+and every captured packet is a golden fixture in
+[`../../../fixtures/protocol/buttons.json`](../../../fixtures/protocol/buttons.json).
+Wheel-slot remaps and macro bindings were excluded.
+
 ## Probing sessions 2026-07-17
 
 All sessions used the wired FA61 Col04 path. They were driven by the historical (now-deleted) TypeScript scripts `scripts/fa61-profile-ab.ts` and `scripts/fa61-readback-benchmark.ts` and must not be generalized to BLE or to non-Col04 interfaces. The script references are provenance records — the raw JSON captures below are the authoritative evidence. Equivalent experiments can be reproduced using the Rust `x3ctl` CLI.

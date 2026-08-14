@@ -52,6 +52,69 @@ probe decoded `current=1, maximum=5` through the FA60 form before and after
 reversible rate/DPI/preferences writes, with exact final-state equality.
 \[live-confirmed]
 
+### Profile-switch behavior
+
+**Live-observed on the X3 via the FA60 receiver, 2026-08-04:** on a physical
+profile switch (profile-cycle, profile-plus, or profile-minus button), the LED
+normally used for DPI-stage indication flashes **N times in white**, where N is
+the one-based profile being switched to. A press that does not change the
+profile (clamp at maximum for profile-plus, clamp at minimum for
+profile-minus) produces **no flash**. The switch is accompanied by the
+auxiliary profile-sync input report (`03 00 80 <new-0-indexed> 00`, see
+[`usb-hid.md`](../transports/usb-hid.md)); no report is emitted when the
+profile does not change.
+The tested FA60 firmware has one confirmed exception: profile-minus `0x36`
+does not reliably execute the 2→1 transition. A controlled post-power-cycle
+probe produced no LED, profile event, or metadata change, while profile-cycle
+`0x34` in the same slot immediately switched 2→3 and emitted
+`03 00 80 02 00`. See the
+[transport evidence](../transports/usb-hid.md#profile-minus-2-to-1-observation).
+
+### Stale working button table after interleaved multi-profile writes
+
+**Observed on the X3 via the FA60 receiver, 2026-08-04:** after a session of
+interleaved per-profile button writes (each `0x08` write and armed read
+targets one profile and can replace the working button map, see above), the
+mouse's *working* table diverged from every persisted readback: persisted
+tables read back the written actions on all profiles, but presses of the two
+recently rewritten buttons stopped having any effect while the working profile
+was 2, and later switches into profile 1 reported the metadata profile 2.
+Other buttons and host-initiated profile switches kept working. The failure
+was not cleared by power-cycling the mouse or the dongle alone, but a full
+rewrite of all five profiles' button tables (to the original actions) followed
+by a mouse power cycle restored every button. \[live-confirmed] The lesson
+matches the existing serialization warnings: write to a profile while it is
+active when possible, and after heavy interleaved multi-profile traffic,
+power-cycle the mouse before relying on button behavior.
+
+A follow-up full-range profile-plus probe reproduced a more severe form of this
+hazard. Its setup repeatedly alternated host activation, a targeted button read,
+a temporary button write, a physical profile transition, and another activation
+and write to restore the source table. Before that sequence, profile 1 read
+active DPI stage 2 and preferences `02 01 00 00 00 ff 05 00`; afterward it
+consistently read active stage 4 and preferences `70 03 a8 00 ff 00 01 04`,
+despite the probe writing only report `0x08`. The altered DPI/preferences image
+survived a mouse power cycle. Two attempts to restore the recorded DPI through
+the typed report-`0x04` path did not verify, and subsequent reads remained
+unchanged, so further writes were stopped. \[live-confirmed, 2026-08-04]
+
+This establishes that immediate per-report readback is not sufficient recovery
+proof after interleaved multi-profile traffic. Do not automate temporary
+per-profile remaps by switching, writing, and switching back. Capture complete
+profile backups before any such experiment when the existing user configuration
+must be preserved. If replacing it is acceptable, the capture-confirmed stock
+reset image is also a known-good recovery source. Use a read-only event
+validator for range tests; the Rust `profile-navigation-probe` example follows
+that rule.
+
+A perceived momentary pointer freeze during switching was not reproduced in
+the receiver's device→host USB stream: a 2026-08-04 capture of a switch while
+the mouse was moved continuously showed no pause in the interrupt input
+reports (1 ms cadence preserved) and no zero-delta reports around the switch.
+\[corrected, live-confirmed] The earlier impression is attributed to the
+mechanical pause required to press the bottom-mounted DPI button, or to
+host-side cursor processing; it is not visible on the USB input path.
+
 ### Rust codec status
 
 The reusable Rust crate implements the pure packet boundary for profile work:
@@ -71,7 +134,7 @@ lengths and the X3 dongle writer; current Rust transport selection emits the
 model-correct form. The Rust driver serializes reads, profile activation, and
 bounded maximum-profile updates through one worker. A maximum update reads the
 persistent current profile, preserves it, rejects a lower maximum, sends the
-model-correct edge, waits 500 ms without target-section traffic, and verifies
+model-correct edge, holds the transport-specific quiet period, and verifies
 metadata. An unchanged maximum is a read-only no-op. Neither operation is a
 general metadata write or standalone reset.
 
@@ -148,14 +211,45 @@ Firmware analysis establishes five `0x80`-byte profile records. Targeted reports
 complete-record write. Profile metadata changes, targeted section traffic, and persistence
 must be serialized; an immediate ACK or metadata readback is not a completion barrier.
 
+### Stock-host exposure
+
+Static tracing of the deployed web bundle shows that its X3 route cannot
+construct this interleaving: `deviceNo=77` uses `/dpiX3`,
+`/parameterXThree`, and `/factoryIndex`; none imports the shared `0x0c`
+profile builder or exposes a profile selector. The only deployed caller of
+that builder is the MV6 profile UI. The legacy `X3.exe` configuration path is
+write-only and has no callsites for its loaded feature-read functions, so it
+also does not issue the target-changing read selectors.
+
+FA60 stock-application captures corroborate the static route. A profile-1 DPI
+change sent one compact report `0x04`, and a profile-1 button change sent one
+report `0x08`; neither interval contained report `0x0c` or an `0xa0` targeted
+read. The stock X3 path is therefore protected by absent cross-profile
+functionality, not by a proven host-side transaction barrier.
+
+The deployed web store's apparent ACK/retry serializer is inactive: a later
+duplicate `sendMessage` property replaces it with direct `socket.send`, while
+`isSending` is never set true. `WebDriver.exe` supplies fixed transport sleeps
+(about 200 ms wired and 500 ms FA60), but those are not firmware persistence
+barriers. Models that do expose profile controls, custom clients, and the Rust
+API must provide their own serialization.
+
+The Rust receiver policy now holds five seconds without targeted traffic after
+configuration and profile-control writes before issuing readback or returning
+to the caller. This matches the successful guarded-probe persistence window;
+wired traffic retains the established 500 ms delay. It reduces the reproduced
+race surface but remains a timing guard rather than explicit flash-completion
+evidence.
+
 The `M600-5.2` and `M600-5.4` BLE names are unrelated to these profile indices; they are
 RF/host slots. See the [correction ledger](../research/corrections.md).
 
 ## Reset safety
 
-A current-profile activation that preserves the existing maximum is distinct from reset.
-The Rust API exposes only that constrained operation and holds a 500 ms quiet period before
-metadata verification. It does not claim that metadata readback proves persistence.
+A current-profile activation that preserves the existing maximum is distinct
+from reset. The Rust API exposes only that constrained operation and holds a
+500 ms wired or five-second receiver quiet period before metadata verification.
+It does not claim that metadata readback proves persistence.
 
 The production reset flow sends `0c 0a 01 fe 01 fe` before reapplying every configuration
 section with target byte `01`. Preserve that complete sequence for reset operations.
@@ -260,6 +354,41 @@ profile 2:
 
 No separate apply/finalization command was found. Correct target selection and serialized
 edge-triggered metadata changes are the required controls.
+
+### Five-profile stock-image recovery — 2026-08-04
+
+**Live-confirmed on X3 via the FA60 receiver:** profile 1's DPI and preferences
+were recovered after the corrupted full-range probe by retargeting the
+capture-confirmed X3.exe profile-1 reset images to profiles 1 through 5 and
+recomputing each target packet. The same recovery also rewrote the
+capture-confirmed default button table and the global 1000 Hz polling-rate
+packet.
+
+The recovery did not require a pre-probe backup because replacing every user
+setting was explicitly acceptable. A backup remains necessary only when the
+previous custom configuration must be preserved. Arbitrary complete,
+codec-valid profile images should also work in principle, but the stock capture
+minimizes uncertainty about unresolved bytes. \[inference]
+
+The applied sequence was:
+
+1. keep `maximum_profile` at 5;
+2. create a real profile edge into profile 1, with no targeted section traffic
+   during the five-second receiver quiet period;
+3. for each profile 1 through 5, activate it, then write and read back DPI,
+   preferences, and buttons serially, retaining the five-second quiet period
+   after every write;
+4. write and verify the global 1000 Hz polling rate;
+5. return to profile 1;
+6. power-cycle both mouse and receiver, then activate and read all five
+   profiles.
+
+Every immediate readback matched, and all five complete images plus polling
+rate matched after the power cycle. The guarded
+`factory-profile-recovery` example defaults to an offline packet dry-run;
+hardware writes require `--apply-all-profiles`, and the final verification
+(profile activation plus section readback) requires
+`--verify-after-power-cycle`. \[live-confirmed]
 
 The wakeup-state read path comes from static factory-tool analysis. Its response and model
 coverage remain unconfirmed; the related write packet is documented under [`0x07`](07-wakeup-mode.md).

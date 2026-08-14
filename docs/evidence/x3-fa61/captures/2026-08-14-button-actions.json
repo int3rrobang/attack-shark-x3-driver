@@ -1,0 +1,491 @@
+{
+  "schemaVersion": 1,
+  "session": "2026-08-14 button-action mapping capture, wired FA61 (PID 0xfa61)",
+  "testSlot": {
+    "index": 6,
+    "button": "forward",
+    "baseline": "06 00 00"
+  },
+  "profile": 1,
+  "method": "stock app button-assignment UI, one action per write, guided USBPcap via tshark_mouse",
+  "writes": [
+    {
+      "action": "Left_Click",
+      "stepPcap": "CHANGE_button_4_to_Left_Click_and_confirm_the_write.pcapng",
+      "slot6": "02 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000200000500003c00000100000100000100000100000100000100000100000a000009000000be",
+      "checksum": 190
+    },
+    {
+      "action": "Right_Click",
+      "stepPcap": "CHANGE_button_4_to_Right_Click_and_confirm_the_write.pcapng",
+      "slot6": "03 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000300000500003c00000100000100000100000100000100000100000100000a000009000000bf",
+      "checksum": 191
+    },
+    {
+      "action": "Middle_Button",
+      "stepPcap": "CHANGE_button_4_to_Middle_Button_and_confirm_the_write.pcapng",
+      "slot6": "04 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000400000500003c00000100000100000100000100000100000100000100000a000009000000c0",
+      "checksum": 192
+    },
+    {
+      "action": "Backward",
+      "stepPcap": "CHANGE_button_4_to_Backward_and_confirm_the_write.pcapng",
+      "slot6": "05 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000500000500003c00000100000100000100000100000100000100000100000a000009000000c1",
+      "checksum": 193
+    },
+    {
+      "action": "Double_Click",
+      "stepPcap": "CHANGE_button_4_to_Double_Click_and_confirm_the_write.pcapng",
+      "slot6": "07 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000700000500003c00000100000100000100000100000100000100000100000a000009000000c3",
+      "checksum": 195
+    },
+    {
+      "action": "Fire_Button",
+      "stepPcap": "CHANGE_button_4_to_Fire_Button_and_confirm_the_write.pcapng",
+      "slot6": "08 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000800000500003c00000100000100000100000100000100000100000100000a000009000000c4",
+      "checksum": 196
+    },
+    {
+      "action": "Easy_Aim",
+      "stepPcap": "CHANGE_button_4_to_Easy_Aim_and_confirm_the_write.pcapng",
+      "slot6": "10 00 03",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001000030500003c00000100000100000100000100000100000100000100000a000009000000cf",
+      "checksum": 207
+    },
+    {
+      "action": "Assign_A_Shortcut_-_record_a_custom_combo__e.g._Ctrl_Shift_A_",
+      "stepPcap": "CHANGE_button_4_to_Assign_A_Shortcut_-_record_a_custom_combo__e.g._Ctrl_Shift_A__and_confirm_the_write.pcapng",
+      "slot6": "11 03 04",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001103040500003c00000100000100000100000100000100000100000100000a000009000000d4",
+      "checksum": 212
+    },
+    {
+      "action": "Scroll_Up",
+      "stepPcap": "CHANGE_button_4_to_Scroll_Up_and_confirm_the_write.pcapng",
+      "slot6": "09 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000900000500003c00000100000100000100000100000100000100000100000a000009000000c5",
+      "checksum": 197
+    },
+    {
+      "action": "Scroll_Down",
+      "stepPcap": "CHANGE_button_4_to_Scroll_Down_and_confirm_the_write.pcapng",
+      "slot6": "0a 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000a00000500003c00000100000100000100000100000100000100000100000a000009000000c6",
+      "checksum": 198
+    },
+    {
+      "action": "Button_Off",
+      "stepPcap": "CHANGE_button_4_to_Button_Off_and_confirm_the_write.pcapng",
+      "slot6": "01 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000100000500003c00000100000100000100000100000100000100000100000a000009000000bd",
+      "checksum": 189
+    },
+    {
+      "action": "DPI___DPI_Cycle",
+      "stepPcap": "CHANGE_button_4_to_DPI___DPI_Cycle_and_confirm_the_write.pcapng",
+      "slot6": "0d 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000d00000500003c00000100000100000100000100000100000100000100000a000009000000c9",
+      "checksum": 201
+    },
+    {
+      "action": "DPI___DPI__",
+      "stepPcap": "CHANGE_button_4_to_DPI___DPI___and_confirm_the_write.pcapng",
+      "slot6": "0e 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000e00000500003c00000100000100000100000100000100000100000100000a000009000000ca",
+      "checksum": 202
+    },
+    {
+      "action": "DPI___DPI_-",
+      "stepPcap": "CHANGE_button_4_to_DPI___DPI_-_and_confirm_the_write.pcapng",
+      "slot6": "0f 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00000f00000500003c00000100000100000100000100000100000100000100000a000009000000cb",
+      "checksum": 203
+    },
+    {
+      "action": "Multimedia___Media_Player",
+      "stepPcap": "CHANGE_button_4_to_Multimedia___Media_Player_and_confirm_the_write.pcapng",
+      "slot6": "15 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001500000500003c00000100000100000100000100000100000100000100000a000009000000d1",
+      "checksum": 209
+    },
+    {
+      "action": "Multimedia___Play___Pause",
+      "stepPcap": "CHANGE_button_4_to_Multimedia___Play___Pause_and_confirm_the_write.pcapng",
+      "slot6": "18 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001800000500003c00000100000100000100000100000100000100000100000a000009000000d4",
+      "checksum": 212
+    },
+    {
+      "action": "Multimedia___Stop",
+      "stepPcap": "CHANGE_button_4_to_Multimedia___Stop_and_confirm_the_write.pcapng",
+      "slot6": "19 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001900000500003c00000100000100000100000100000100000100000100000a000009000000d5",
+      "checksum": 213
+    },
+    {
+      "action": "Multimedia___Previous_Track",
+      "stepPcap": "CHANGE_button_4_to_Multimedia___Previous_Track_and_confirm_the_write.pcapng",
+      "slot6": "16 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001600000500003c00000100000100000100000100000100000100000100000a000009000000d2",
+      "checksum": 210
+    },
+    {
+      "action": "Multimedia___Next_Track",
+      "stepPcap": "CHANGE_button_4_to_Multimedia___Next_Track_and_confirm_the_write.pcapng",
+      "slot6": "17 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001700000500003c00000100000100000100000100000100000100000100000a000009000000d3",
+      "checksum": 211
+    },
+    {
+      "action": "Multimedia___Volume__",
+      "stepPcap": "CHANGE_button_4_to_Multimedia___Volume___and_confirm_the_write.pcapng",
+      "slot6": "1b 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001b00000500003c00000100000100000100000100000100000100000100000a000009000000d7",
+      "checksum": 215
+    },
+    {
+      "action": "Multimedia___Volume_-",
+      "stepPcap": "CHANGE_button_4_to_Multimedia___Volume_-_and_confirm_the_write.pcapng",
+      "slot6": "1c 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001c00000500003c00000100000100000100000100000100000100000100000a000009000000d8",
+      "checksum": 216
+    },
+    {
+      "action": "Multimedia___Mute",
+      "stepPcap": "CHANGE_button_4_to_Multimedia___Mute_and_confirm_the_write.pcapng",
+      "slot6": "1a 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001a00000500003c00000100000100000100000100000100000100000100000a000009000000d6",
+      "checksum": 214
+    },
+    {
+      "action": "Browser___Browser_Home",
+      "stepPcap": "CHANGE_button_4_to_Browser___Browser_Home_and_confirm_the_write.pcapng",
+      "slot6": "25 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00002500000500003c00000100000100000100000100000100000100000100000a000009000000e1",
+      "checksum": 225
+    },
+    {
+      "action": "Browser___Browser_Favorites",
+      "stepPcap": "CHANGE_button_4_to_Browser___Browser_Favorites_and_confirm_the_write.pcapng",
+      "slot6": "11 03 12",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001103120500003c00000100000100000100000100000100000100000100000a000009000000e2",
+      "checksum": 226
+    },
+    {
+      "action": "Browser___Browser_Forward",
+      "stepPcap": "CHANGE_button_4_to_Browser___Browser_Forward_and_confirm_the_write.pcapng",
+      "slot6": "20 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00002000000500003c00000100000100000100000100000100000100000100000a000009000000dc",
+      "checksum": 220
+    },
+    {
+      "action": "Browser___Browser_Backward",
+      "stepPcap": "CHANGE_button_4_to_Browser___Browser_Backward_and_confirm_the_write.pcapng",
+      "slot6": "21 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00002100000500003c00000100000100000100000100000100000100000100000a000009000000dd",
+      "checksum": 221
+    },
+    {
+      "action": "Browser___Browser_Stop",
+      "stepPcap": "CHANGE_button_4_to_Browser___Browser_Stop_and_confirm_the_write.pcapng",
+      "slot6": "22 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00002200000500003c00000100000100000100000100000100000100000100000a000009000000de",
+      "checksum": 222
+    },
+    {
+      "action": "Browser___Browser_Refresh",
+      "stepPcap": "CHANGE_button_4_to_Browser___Browser_Refresh_and_confirm_the_write.pcapng",
+      "slot6": "24 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00002400000500003c00000100000100000100000100000100000100000100000a000009000000e0",
+      "checksum": 224
+    },
+    {
+      "action": "Browser___Browser_Search",
+      "stepPcap": "CHANGE_button_4_to_Browser___Browser_Search_and_confirm_the_write.pcapng",
+      "slot6": "26 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00002600000500003c00000100000100000100000100000100000100000100000a000009000000e2",
+      "checksum": 226
+    },
+    {
+      "action": "Browser___Email",
+      "stepPcap": "CHANGE_button_4_to_Browser___Email_and_confirm_the_write.pcapng",
+      "slot6": "1e 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001e00000500003c00000100000100000100000100000100000100000100000a000009000000da",
+      "checksum": 218
+    },
+    {
+      "action": "Browser___Calculator",
+      "stepPcap": "CHANGE_button_4_to_Browser___Calculator_and_confirm_the_write.pcapng",
+      "slot6": "1d 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001d00000500003c00000100000100000100000100000100000100000100000a000009000000d9",
+      "checksum": 217
+    },
+    {
+      "action": "Browser___My_Computer",
+      "stepPcap": "CHANGE_button_4_to_Browser___My_Computer_and_confirm_the_write.pcapng",
+      "slot6": "23 00 00",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00002300000500003c00000100000100000100000100000100000100000100000a000009000000df",
+      "checksum": 223
+    },
+    {
+      "action": "Shortcut___Cut",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Cut_and_confirm_the_write.pcapng",
+      "slot6": "11 01 1b",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f000011011b0500003c00000100000100000100000100000100000100000100000a000009000000e9",
+      "checksum": 233
+    },
+    {
+      "action": "Shortcut___Copy",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Copy_and_confirm_the_write.pcapng",
+      "slot6": "11 01 06",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001101060500003c00000100000100000100000100000100000100000100000a000009000000d4",
+      "checksum": 212
+    },
+    {
+      "action": "Shortcut___Paste",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Paste_and_confirm_the_write.pcapng",
+      "slot6": "11 01 19",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001101190500003c00000100000100000100000100000100000100000100000a000009000000e7",
+      "checksum": 231
+    },
+    {
+      "action": "Shortcut___Open",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Open_and_confirm_the_write.pcapng",
+      "slot6": "11 01 12",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001101120500003c00000100000100000100000100000100000100000100000a000009000000e0",
+      "checksum": 224
+    },
+    {
+      "action": "Shortcut___Save",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Save_and_confirm_the_write.pcapng",
+      "slot6": "11 01 16",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001101160500003c00000100000100000100000100000100000100000100000a000009000000e4",
+      "checksum": 228
+    },
+    {
+      "action": "Shortcut___Find",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Find_and_confirm_the_write.pcapng",
+      "slot6": "11 01 09",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001101090500003c00000100000100000100000100000100000100000100000a000009000000d7",
+      "checksum": 215
+    },
+    {
+      "action": "Shortcut___Redo",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Redo_and_confirm_the_write.pcapng",
+      "slot6": "11 01 1c",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f000011011c0500003c00000100000100000100000100000100000100000100000a000009000000ea",
+      "checksum": 234
+    },
+    {
+      "action": "Shortcut___Select_All",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Select_All_and_confirm_the_write.pcapng",
+      "slot6": "11 01 04",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001101040500003c00000100000100000100000100000100000100000100000a000009000000d2",
+      "checksum": 210
+    },
+    {
+      "action": "Shortcut___Print",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Print_and_confirm_the_write.pcapng",
+      "slot6": "11 01 13",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001101130500003c00000100000100000100000100000100000100000100000a000009000000e1",
+      "checksum": 225
+    },
+    {
+      "action": "Shortcut___Close_Window",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Close_Window_and_confirm_the_write.pcapng",
+      "slot6": "11 04 3d",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f000011043d0500003c00000100000100000100000100000100000100000100000a0000090000010e",
+      "checksum": 270
+    },
+    {
+      "action": "Shortcut___Swap_Windows",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Swap_Windows_and_confirm_the_write.pcapng",
+      "slot6": "11 04 2b",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f000011042b0500003c00000100000100000100000100000100000100000100000a000009000000fc",
+      "checksum": 252
+    },
+    {
+      "action": "Shortcut___Show_Desktop",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Show_Desktop_and_confirm_the_write.pcapng",
+      "slot6": "11 08 07",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001108070500003c00000100000100000100000100000100000100000100000a000009000000dc",
+      "checksum": 220
+    },
+    {
+      "action": "Shortcut___Run_Command",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Run_Command_and_confirm_the_write.pcapng",
+      "slot6": "11 08 15",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f00001108150500003c00000100000100000100000100000100000100000100000a000009000000ea",
+      "checksum": 234
+    },
+    {
+      "action": "Shortcut___Lock_PC",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Lock_PC_and_confirm_the_write.pcapng",
+      "slot6": "11 08 0f",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f000011080f0500003c00000100000100000100000100000100000100000100000a000009000000e4",
+      "checksum": 228
+    },
+    {
+      "action": "Shortcut___Screen_Capture",
+      "stepPcap": "CHANGE_button_4_to_Shortcut___Screen_Capture_and_confirm_the_write.pcapng",
+      "slot6": "11 0a 16",
+      "changedSlots": [
+        6
+      ],
+      "packetHex": "083b010200000300000400000d00003c00000f0000110a160500003c00000100000100000100000100000100000100000100000a000009000000ed",
+      "checksum": 237
+    },
+    {
+      "action": "RESTORE Forward",
+      "stepPcap": "RESTORE_button_4_to_Forward_and_confirm_the_write.pcapng",
+      "slot6": "06 00 00",
+      "changedSlots": [],
+      "packetHex": "083b010200000300000400000d00003c00000f00000600000500003c00000100000100000100000100000100000100000100000a000009000000c2",
+      "checksum": 194
+    }
+  ]
+}

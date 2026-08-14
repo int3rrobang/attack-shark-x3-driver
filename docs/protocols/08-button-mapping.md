@@ -58,8 +58,11 @@ live-confirmed):
 
 Scroll-up (index 4, offset 15) and scroll-down (index 5, offset 18) slots
 exist in the 18-slot table but are intentionally not exposed by the CLI.
-Direct scroll remaps remain unsafe because actions may repeat until unplug
-or reboot.
+Direct scroll-wheel remaps remain unsafe because actions may repeat until
+unplug or reboot. This concerns remapping the physical wheel slots
+(indices 4 and 5). Binding Scroll Up or Scroll Down as an action on another
+button is a normal button binding and is safe: it changes only that
+button's slot and emits scroll events only while the button is held.
 
 The DPI-button slot (index 3) is exposed through the safe CLI.
 Interactive probe on FA61 wired and FA60 receiver (2026-07-28) confirmed
@@ -125,6 +128,69 @@ The following action bytes are confirmed on X3/FA61 wired (live-confirmed 2026-0
 
 Profile cycling actions are X3-specific and not present in the X11 `FirmwareAction` enum. Button bindings are per-profile: the cycle/plus/minus binding must be written to every profile that should respond to the physical button.
 
+### Stock-app action palette — capture-confirmed 2026-08-14
+
+The stock app's full button-assignment menu was captured on X3/FA61 wired
+(2026-08-14) by rebinding button 4 (Forward slot, index 6) to each action
+and recording the resulting `0x08` write. Every write is a complete 59-byte
+table differing from the Forward baseline only at slot 6; all checksums
+validate. Raw evidence: `docs/evidence/x3-fa61/captures/2026-08-14-button-actions.json`
+and the paired session captures. \[capture-confirmed]
+
+| Action | Byte | Notes |
+|:-------|:-----|:------|
+| Fire button | `0x08` | |
+| Scroll up | `0x09` | factory wheel slots instead use `0x3c`; whether the encodings are interchangeable is unresolved |
+| Scroll down | `0x0a` | |
+| Easy aim (sniping DPI) | `0x10` | observed as `10 00 03`; the parameter's meaning is unconfirmed |
+| Media player | `0x15` | |
+| Previous track | `0x16` | |
+| Next track | `0x17` | |
+| Play / pause | `0x18` | |
+| Stop | `0x19` | |
+| Mute | `0x1a` | |
+| Volume plus | `0x1b` | |
+| Volume minus | `0x1c` | |
+| Calculator | `0x1d` | |
+| Email | `0x1e` | |
+| Browser forward | `0x20` | |
+| Browser backward | `0x21` | |
+| Browser stop | `0x22` | |
+| My computer | `0x23` | |
+| Browser refresh | `0x24` | |
+| Browser home | `0x25` | |
+| Browser search | `0x26` | |
+| Browser favorites | `11 03 12` | encoded as a keyboard shortcut: Ctrl+Shift+O |
+
+The stock "Shortcut" presets are all keyboard-shortcut encodings (`0x11`,
+modifier bits, keyboard-page HID usage), confirming the existing codec
+encoding: \[capture-confirmed]
+
+| Preset | Triplet | Keys |
+|:-------|:--------|:-----|
+| Cut | `11 01 1b` | Ctrl+X |
+| Copy | `11 01 06` | Ctrl+C |
+| Paste | `11 01 19` | Ctrl+V |
+| Open | `11 01 12` | Ctrl+O |
+| Save | `11 01 16` | Ctrl+S |
+| Find | `11 01 09` | Ctrl+F |
+| Redo | `11 01 1c` | Ctrl+Y |
+| Select all | `11 01 04` | Ctrl+A |
+| Print | `11 01 13` | Ctrl+P |
+| Close window | `11 04 3d` | Alt+F4 |
+| Swap windows | `11 04 2b` | Alt+Tab |
+| Show desktop | `11 08 07` | Win+D |
+| Run command | `11 08 15` | Win+R |
+| Lock PC | `11 08 0f` | Win+L |
+| Screen capture | `11 0a 16` | Win+Shift+S |
+
+The captured triplets match the deployed web bundle's `FUN_*` wire table
+(`FUN_BROWSER_FORWARD:[32,0,0]` ↔ `20 00 00`, `FUN_CUT:[17,1,27]` ↔
+`11 01 1b`, …), cross-confirming both sources. The Rust codec types every
+action above except Easy Aim (`0x10`, whose parameter is unconfirmed); a
+custom recorded shortcut (for example Ctrl+Shift+A = `11 03 04`) emits the
+same `0x11` encoding as the presets.
+
 The Rust protocol crate exposes the verified encoding as
 `X3ButtonAction`. It distinguishes parameterless confirmed actions from
 keyboard shortcuts (`0x11`, modifier bits Ctrl=`0x01`, Shift=`0x02`,
@@ -132,13 +198,17 @@ Alt=`0x04`, Win=`0x08`, followed by a keyboard-page HID usage) and macro
 references (`0x12`, zero modifier, reference in byte 2). `ButtonAssignment`
 remains the lossless representation for unknown actions, unresolved firmware
 revisions, and nonzero parameters that have not been confirmed. The manager's
-safe API intentionally exposes only the parameterless action subset listed
-above.
+safe API exposes the parameterless actions above plus the stock shortcut
+presets and browser favorites; Easy Aim, custom macro references, and
+arbitrary raw assignments remain outside it.
 
-The stock native program's larger selector-to-wire table contains additional
-media, browser, shortcut, and firmware-only entries. Their native UI labels
-must not be copied into the Rust action enum without model/transport-specific
-live confirmation; native selectors are not wire action bytes.
+The stock native program's selector-to-wire table contains additional
+media, browser, shortcut, and firmware-only entries. The media, browser,
+and shortcut wire encodings are capture-confirmed on X3/FA61 wired
+(2026-08-14, tables above) and typed in the Rust stack; the remaining
+firmware-only entries still lack confirmed wire bytes. Native UI labels are
+never a substitute for a captured wire byte — each entry must be observed
+before it is typed.
 
 Confirmed slot indices on X3/FA61 wired:
 

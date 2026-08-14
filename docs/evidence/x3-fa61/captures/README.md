@@ -26,6 +26,22 @@ The receiver run used `fa60-driver-safe`; the wired run used
 `fa61-driver-safe`. The harness captured all USB traffic, retained the combined
 session, and split each guided interval by its wall-clock boundaries.
 
+## Button-action mapping session — 2026-08-14
+
+- [`2026-08-14-button-action-map-r2/`](2026-08-14-button-action-map-r2/) — first half: INIT through Multimedia > Volume +
+- [`2026-08-14-button-action-map-r2-remainder/`](2026-08-14-button-action-map-r2-remainder/) — second half: Volume - through Shortcut, RESTORE, FINAL IDLE
+- [`2026-08-14-button-actions.json`](2026-08-14-button-actions.json) — parsed `0x08` writes: stock-app action, full 59-byte packet, slot-6 triplet, checksum
+
+Each session directory contains one combined capture and one capture per
+guided step. The stock app rebinds button 4 (Forward slot, index 6) to every
+action in its assignment menu, one action per step, on X3/FA61 wired; every
+write is a complete 59-byte table that differs from the Forward baseline only
+at slot 6 (verified, checksums valid). The plan split into two runs because
+the first command was truncated mid-paste after Volume +; button 4 carried
+Volume + across the boundary. Wheel-slot remaps and macro bindings were
+excluded. The parsed mapping lives in the paired JSON and in
+`../../protocols/08-button-mapping.md`.
+
 ## Guided order
 
 Both presets use this order:
