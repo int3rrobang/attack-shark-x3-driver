@@ -48,6 +48,16 @@ path = "examples/dpi-framing-probe.rs"
 required-features = ["usb"]
 
 [[example]]
+name = "factory-profile-recovery"
+path = "examples/factory-profile-recovery.rs"
+required-features = ["usb"]
+
+[[example]]
+name = "profile-switch-transport-probe"
+path = "examples/profile-switch-transport-probe.rs"
+required-features = ["usb"]
+
+[[example]]
 name = "hid-enum"
 path = "examples/hid-enum.rs"
 required-features = ["usb"]

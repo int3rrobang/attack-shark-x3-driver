@@ -50,6 +50,9 @@ impl ReadPolicy {
         Self {
             readiness_timeout: Duration::from_secs(2),
             poll_interval: Duration::from_millis(5),
+            // Targeted traffic can perturb deferred profile persistence. The
+            // receiver's verified writes need a five-second quiet window.
+            write_delay: Duration::from_secs(5),
             ..Self::default()
         }
     }
@@ -106,8 +109,6 @@ pub enum DriverError {
         section: &'static str,
         profile: ProfileId,
     },
-    #[error("the global {section} write did not verify")]
-    GlobalWriteVerificationMismatch { section: &'static str },
 
     #[error("profile {profile} is already active")]
     ProfileAlreadyActive { profile: ProfileId },
@@ -334,14 +335,34 @@ impl MouseHandle {
             .await
     }
 
-    /// Reads the global polling rate through a serialized USB readback.
+    /// Reads the live polling rate through a serialized USB readback armed for
+    /// the explicit target profile.
+    ///
+    /// Report `0x06` skips the profile loader, so the readback reflects the
+    /// profile that is currently live on the device. The readback's profile
+    /// byte is validated against the requested profile and the armed selector
+    /// carries the requested profile.
     ///
     /// # Errors
     ///
     /// Returns transport, retry-exhaustion, protocol-validation, or worker
     /// lifecycle errors.
-    pub async fn read_polling_rate(&self) -> Result<PollingRate, DriverError> {
-        self.request(Command::PollingRate).await
+    pub async fn read_polling_rate(&self, profile: ProfileId) -> Result<PollingRate, DriverError> {
+        self.request(|reply| Command::PollingRate { profile, reply })
+            .await
+    }
+
+    /// Submits the DPI write packet without readback or verification.
+    ///
+    /// This is a stock-style send-only path: exactly one report is emitted
+    /// and nothing is read back or persisted.
+    ///
+    /// # Errors
+    ///
+    /// Returns encoding or transport errors.
+    pub async fn send_dpi(&self, state: DpiState) -> Result<(), DriverError> {
+        self.request(|reply| Command::SendDpi { state, reply })
+            .await
     }
 
     /// Writes DPI and returns the state confirmed by a fresh readback.
@@ -352,6 +373,19 @@ impl MouseHandle {
     /// write-verification, or worker lifecycle errors.
     pub async fn write_dpi(&self, state: DpiState) -> Result<DpiState, DriverError> {
         self.request(|reply| Command::WriteDpi { state, reply })
+            .await
+    }
+
+    /// Submits the preferences write packet without readback or verification.
+    ///
+    /// This is a stock-style send-only path: exactly one report is emitted
+    /// and nothing is read back or persisted.
+    ///
+    /// # Errors
+    ///
+    /// Returns encoding or transport errors.
+    pub async fn send_preferences(&self, state: PreferencesState) -> Result<(), DriverError> {
+        self.request(|reply| Command::SendPreferences { state, reply })
             .await
     }
 
@@ -369,6 +403,19 @@ impl MouseHandle {
             .await
     }
 
+    /// Submits the button-table write packet without readback or verification.
+    ///
+    /// This is a stock-style send-only path: exactly one report is emitted
+    /// and nothing is read back or persisted.
+    ///
+    /// # Errors
+    ///
+    /// Returns encoding or transport errors.
+    pub async fn send_buttons(&self, state: ButtonsState) -> Result<(), DriverError> {
+        self.request(|reply| Command::SendButtons { state, reply })
+            .await
+    }
+
     /// Writes the complete button table and returns the state confirmed by a
     /// fresh readback.
     ///
@@ -381,16 +428,53 @@ impl MouseHandle {
             .await
     }
 
-    /// Writes the global polling rate and returns the state confirmed by a
-    /// fresh readback.
+    /// Submits the polling-rate report without readback or verification.
+    ///
+    /// This is a stock-style send-only path: exactly one report is emitted and
+    /// nothing is read back or persisted. Report `0x06` skips the profile
+    /// loader; byte 2 is a save alias, and the complete live image may be
+    /// persisted into that slot by the device's deferred writer. This method
+    /// provides no live-image safety precondition.
+    ///
+    /// # Errors
+    ///
+    /// Returns encoding or transport errors.
+    pub async fn send_polling_rate_unchecked(
+        &self,
+        profile: ProfileId,
+        rate: PollingRate,
+    ) -> Result<(), DriverError> {
+        self.request(|reply| Command::SendPollingRateUnchecked {
+            profile,
+            rate,
+            reply,
+        })
+        .await
+    }
+
+    /// Writes the polling rate for the explicit target profile and verifies
+    /// the immediate rate field with a fresh readback.
+    ///
+    /// Report `0x06` skips the profile loader; byte 2 is a save alias, and the
+    /// complete live image may be persisted into that slot by the device's
+    /// deferred writer. This method provides no live-image safety
+    /// precondition: the readback verifies the immediate rate field only.
     ///
     /// # Errors
     ///
     /// Returns transport, retry-exhaustion, readback-validation,
     /// write-verification, or worker lifecycle errors.
-    pub async fn write_polling_rate(&self, rate: PollingRate) -> Result<PollingRate, DriverError> {
-        self.request(|reply| Command::WritePollingRate { rate, reply })
-            .await
+    pub async fn write_polling_rate_unchecked(
+        &self,
+        profile: ProfileId,
+        rate: PollingRate,
+    ) -> Result<PollingRate, DriverError> {
+        self.request(|reply| Command::WritePollingRateUnchecked {
+            profile,
+            rate,
+            reply,
+        })
+        .await
     }
 
     /// Activates a profile after validating and preserving the current maximum.
@@ -486,7 +570,10 @@ pub(crate) enum Command {
         profile: ProfileId,
         reply: Reply<ButtonsState>,
     },
-    PollingRate(Reply<PollingRate>),
+    PollingRate {
+        profile: ProfileId,
+        reply: Reply<PollingRate>,
+    },
     WriteDpi {
         state: DpiState,
         reply: Reply<DpiState>,
@@ -499,7 +586,25 @@ pub(crate) enum Command {
         state: ButtonsState,
         reply: Reply<ButtonsState>,
     },
-    WritePollingRate {
+    SendDpi {
+        state: DpiState,
+        reply: Reply<()>,
+    },
+    SendPreferences {
+        state: PreferencesState,
+        reply: Reply<()>,
+    },
+    SendButtons {
+        state: ButtonsState,
+        reply: Reply<()>,
+    },
+    SendPollingRateUnchecked {
+        profile: ProfileId,
+        rate: PollingRate,
+        reply: Reply<()>,
+    },
+    WritePollingRateUnchecked {
+        profile: ProfileId,
         rate: PollingRate,
         reply: Reply<PollingRate>,
     },
@@ -519,4 +624,21 @@ pub(crate) enum Command {
         bytes: Vec<u8>,
         reply: Reply<()>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::ReadPolicy;
+
+    #[test]
+    fn receiver_policy_remains_bounded() {
+        let policy = ReadPolicy::receiver_default();
+
+        assert_eq!(policy.readiness_timeout, Duration::from_secs(2));
+        assert_eq!(policy.max_attempts.get(), 4);
+        assert_eq!(policy.poll_interval, Duration::from_millis(5));
+        assert_eq!(policy.write_delay, Duration::from_secs(5));
+    }
 }

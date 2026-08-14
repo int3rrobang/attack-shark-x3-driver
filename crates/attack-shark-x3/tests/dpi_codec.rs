@@ -121,6 +121,16 @@ fn rewrite_checksum(packet: &mut [u8]) {
 }
 
 #[test]
+fn captured_stock_reset_constructor_matches_x3_exe_packet() {
+    let expected = from_hex(
+        "04380100003f00000f1f2f3f63070000000000000002000002ff000000ff000000ffffff0000ffffff00ffff4000ffffff010e7d",
+    );
+    let state = DpiState::captured_stock_reset(profile(1)).unwrap();
+    let encoded = DpiReport::encode_framed(&state, DpiFraming::Compact).unwrap();
+    assert_eq!(encoded.as_bytes(), expected);
+}
+
+#[test]
 fn captured_and_implementation_fixtures_round_trip_byte_for_byte() {
     let catalog = fixtures();
     assert_eq!(catalog.schema_version, 1);

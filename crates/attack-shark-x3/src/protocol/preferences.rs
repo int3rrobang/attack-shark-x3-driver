@@ -72,6 +72,16 @@ impl PreferencesState {
         }
     }
 
+    /// Reproduces the preferences state written by the stock X3 reset flow,
+    /// retargeted to `profile`.
+    ///
+    /// Source: `docs/evidence/x3-fa61/reset-packets.json`
+    /// (`preferences.profile1`).
+    #[must_use]
+    pub const fn captured_stock_reset(profile: ProfileId) -> Self {
+        Self::new(profile, 0x00, 0x03, 0xa8, [0x00, 0x00, 0xff], 0x01, 0x04)
+    }
+
     #[must_use]
     pub const fn host_color_bytes(self) -> [u8; 3] {
         self.host_color

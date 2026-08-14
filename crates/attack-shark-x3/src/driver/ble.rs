@@ -23,7 +23,7 @@ use tokio::{
 
 use crate::{
     ButtonsReport, ButtonsState, DpiReport, DpiState, PollingRate, PollingRateReport,
-    PreferencesReport, PreferencesState, ProfileControlFraming, ProfileControlReport,
+    PreferencesReport, PreferencesState, ProfileControlFraming, ProfileControlReport, ProfileId,
     ProfileMetadata, ProtocolError, TransportKind,
 };
 #[cfg(windows)]
@@ -137,7 +137,7 @@ impl Default for BlePolicy {
 pub enum BleReport {
     Dpi(DpiState),
     Preferences(PreferencesState),
-    PollingRate(PollingRate),
+    PollingRate(ProfileId, PollingRate),
     Buttons(ButtonsState),
     ProfileControl(ProfileMetadata),
 }
@@ -149,7 +149,7 @@ impl BleReport {
         match self {
             Self::Dpi(_) => 0x04,
             Self::Preferences(_) => 0x05,
-            Self::PollingRate(_) => 0x06,
+            Self::PollingRate(_, _) => 0x06,
             Self::Buttons(_) => 0x08,
             Self::ProfileControl(_) => 0x0c,
         }
@@ -168,9 +168,9 @@ impl BleReport {
                 PreferencesReport::decode(report.as_bytes(), state.profile)?;
                 Ok(report.as_bytes().to_vec())
             }
-            Self::PollingRate(rate) => {
-                let report = PollingRateReport::encode(rate);
-                PollingRateReport::decode(report.as_bytes())?;
+            Self::PollingRate(profile, rate) => {
+                let report = PollingRateReport::encode(profile, rate);
+                PollingRateReport::decode(report.as_bytes(), profile)?;
                 Ok(report.as_bytes().to_vec())
             }
             Self::Buttons(state) => {
@@ -540,14 +540,26 @@ impl BleHandle {
         self.write(BleReport::Preferences(state)).await
     }
 
-    /// Encodes and writes a polling-rate report.
+    /// Encodes and writes a polling-rate report for the explicit target
+    /// profile.
+    ///
+    /// Report `0x06` skips the profile loader; byte 2 is a save alias, and the
+    /// complete live image may be persisted into that slot by the device's
+    /// deferred writer. BLE has no readback path, so this method provides no
+    /// live-image safety precondition: the FEE4 ACK is parser-acceptance
+    /// evidence for the immediate rate field only and does not prove the
+    /// deferred save landed in the intended slot.
     ///
     /// # Errors
     ///
     /// Returns the same validation, transport, rejection, and ACK errors as
     /// [`Self::write`].
-    pub async fn write_polling_rate(&self, rate: PollingRate) -> Result<BleWriteReceipt, BleError> {
-        self.write(BleReport::PollingRate(rate)).await
+    pub async fn write_polling_rate_unchecked(
+        &self,
+        profile: ProfileId,
+        rate: PollingRate,
+    ) -> Result<BleWriteReceipt, BleError> {
+        self.write(BleReport::PollingRate(profile, rate)).await
     }
 
     /// Encodes and writes a complete button table.
@@ -919,7 +931,7 @@ mod tests {
         for report in [
             BleReport::Dpi(dpi),
             BleReport::Preferences(preferences),
-            BleReport::PollingRate(PollingRate::Hz1000),
+            BleReport::PollingRate(profile(), PollingRate::Hz1000),
             BleReport::Buttons(ButtonsState::new(profile(), slots)),
         ] {
             assert!(!report.encode().expect("typed report validates").is_empty());

@@ -30,8 +30,8 @@ pub const DEFAULT_BUTTON_SLOTS: [ButtonAssignment; BUTTON_SLOT_COUNT] = [
     ButtonAssignment::new(0x01, 0x00, 0x00), // 13: disabled
     ButtonAssignment::new(0x01, 0x00, 0x00), // 14: disabled
     ButtonAssignment::new(0x01, 0x00, 0x00), // 15: disabled
-    ButtonAssignment::new(0x0a, 0x00, 0x00), // 16: unknown (0x0a)
-    ButtonAssignment::new(0x09, 0x00, 0x00), // 17: unknown (0x09)
+    ButtonAssignment::new(0x0a, 0x00, 0x00), // 16: scroll-down (0x0a, capture-confirmed)
+    ButtonAssignment::new(0x09, 0x00, 0x00), // 17: scroll-up (0x09, capture-confirmed)
 ];
 
 const SLOTS_START: usize = 3;
@@ -154,9 +154,12 @@ impl HidKeyboardUsage {
 
 /// A typed X3 button action.
 ///
-/// Parameterless variants cover the currently confirmed safe X3 actions.
-/// Keyboard shortcuts and macro references retain their distinct wire
-/// encodings. Any other raw assignment must remain a [`ButtonAssignment`].
+/// Parameterless variants cover the currently confirmed safe X3 actions:
+/// mouse buttons, DPI controls, profile controls (capture/live-confirmed),
+/// and the stock-app media/browser/fire/scroll families (capture-confirmed
+/// 2026-08-14). Keyboard shortcuts and macro references retain their
+/// distinct wire encodings. Any other raw assignment must remain a
+/// [`ButtonAssignment`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -168,12 +171,32 @@ pub enum X3ButtonAction {
     Backward,
     Forward,
     DoubleClick,
+    FireButton,
+    ScrollUp,
+    ScrollDown,
     DpiCycle,
     DpiPlus,
     DpiMinus,
     ProfileCycle,
     ProfilePlus,
     ProfileMinus,
+    MediaPlayer,
+    PreviousTrack,
+    NextTrack,
+    PlayPause,
+    Stop,
+    Mute,
+    VolumeUp,
+    VolumeDown,
+    Calculator,
+    Email,
+    BrowserForward,
+    BrowserBackward,
+    BrowserStop,
+    MyComputer,
+    BrowserRefresh,
+    BrowserHome,
+    BrowserSearch,
     KeyboardShortcut {
         modifiers: KeyboardModifiers,
         key: HidKeyboardUsage,
@@ -195,12 +218,32 @@ impl X3ButtonAction {
             Self::Backward => (0x05, 0, 0),
             Self::Forward => (0x06, 0, 0),
             Self::DoubleClick => (0x07, 0, 0),
+            Self::FireButton => (0x08, 0, 0),
+            Self::ScrollUp => (0x09, 0, 0),
+            Self::ScrollDown => (0x0a, 0, 0),
             Self::DpiCycle => (0x0d, 0, 0),
             Self::DpiPlus => (0x0e, 0, 0),
             Self::DpiMinus => (0x0f, 0, 0),
             Self::ProfileCycle => (0x34, 0, 0),
             Self::ProfilePlus => (0x35, 0, 0),
             Self::ProfileMinus => (0x36, 0, 0),
+            Self::MediaPlayer => (0x15, 0, 0),
+            Self::PreviousTrack => (0x16, 0, 0),
+            Self::NextTrack => (0x17, 0, 0),
+            Self::PlayPause => (0x18, 0, 0),
+            Self::Stop => (0x19, 0, 0),
+            Self::Mute => (0x1a, 0, 0),
+            Self::VolumeUp => (0x1b, 0, 0),
+            Self::VolumeDown => (0x1c, 0, 0),
+            Self::Calculator => (0x1d, 0, 0),
+            Self::Email => (0x1e, 0, 0),
+            Self::BrowserForward => (0x20, 0, 0),
+            Self::BrowserBackward => (0x21, 0, 0),
+            Self::BrowserStop => (0x22, 0, 0),
+            Self::MyComputer => (0x23, 0, 0),
+            Self::BrowserRefresh => (0x24, 0, 0),
+            Self::BrowserHome => (0x25, 0, 0),
+            Self::BrowserSearch => (0x26, 0, 0),
             Self::KeyboardShortcut { modifiers, key } => (0x11, modifiers.bits(), key.get()),
             Self::Macro { reference } => (0x12, 0, reference),
         };
@@ -220,9 +263,29 @@ impl TryFrom<ButtonAssignment> for X3ButtonAction {
             0x05 => Some(Self::Backward),
             0x06 => Some(Self::Forward),
             0x07 => Some(Self::DoubleClick),
+            0x08 => Some(Self::FireButton),
+            0x09 => Some(Self::ScrollUp),
+            0x0a => Some(Self::ScrollDown),
             0x0d => Some(Self::DpiCycle),
             0x0e => Some(Self::DpiPlus),
             0x0f => Some(Self::DpiMinus),
+            0x15 => Some(Self::MediaPlayer),
+            0x16 => Some(Self::PreviousTrack),
+            0x17 => Some(Self::NextTrack),
+            0x18 => Some(Self::PlayPause),
+            0x19 => Some(Self::Stop),
+            0x1a => Some(Self::Mute),
+            0x1b => Some(Self::VolumeUp),
+            0x1c => Some(Self::VolumeDown),
+            0x1d => Some(Self::Calculator),
+            0x1e => Some(Self::Email),
+            0x20 => Some(Self::BrowserForward),
+            0x21 => Some(Self::BrowserBackward),
+            0x22 => Some(Self::BrowserStop),
+            0x23 => Some(Self::MyComputer),
+            0x24 => Some(Self::BrowserRefresh),
+            0x25 => Some(Self::BrowserHome),
+            0x26 => Some(Self::BrowserSearch),
             0x34 => Some(Self::ProfileCycle),
             0x35 => Some(Self::ProfilePlus),
             0x36 => Some(Self::ProfileMinus),
@@ -429,12 +492,32 @@ mod action_tests {
             X3ButtonAction::Backward,
             X3ButtonAction::Forward,
             X3ButtonAction::DoubleClick,
+            X3ButtonAction::FireButton,
+            X3ButtonAction::ScrollUp,
+            X3ButtonAction::ScrollDown,
             X3ButtonAction::DpiCycle,
             X3ButtonAction::DpiPlus,
             X3ButtonAction::DpiMinus,
             X3ButtonAction::ProfileCycle,
             X3ButtonAction::ProfilePlus,
             X3ButtonAction::ProfileMinus,
+            X3ButtonAction::MediaPlayer,
+            X3ButtonAction::PreviousTrack,
+            X3ButtonAction::NextTrack,
+            X3ButtonAction::PlayPause,
+            X3ButtonAction::Stop,
+            X3ButtonAction::Mute,
+            X3ButtonAction::VolumeUp,
+            X3ButtonAction::VolumeDown,
+            X3ButtonAction::Calculator,
+            X3ButtonAction::Email,
+            X3ButtonAction::BrowserForward,
+            X3ButtonAction::BrowserBackward,
+            X3ButtonAction::BrowserStop,
+            X3ButtonAction::MyComputer,
+            X3ButtonAction::BrowserRefresh,
+            X3ButtonAction::BrowserHome,
+            X3ButtonAction::BrowserSearch,
         ];
         for action in actions {
             let assignment = action.to_assignment();
@@ -464,10 +547,11 @@ mod action_tests {
 
     #[test]
     fn unknown_or_malformed_assignments_stay_raw() {
+        // 0x3c is the factory wheel-slot encoding; it is not a typed action.
         assert_eq!(
-            X3ButtonAction::try_from(ButtonAssignment::new(0x08, 0, 0)),
+            X3ButtonAction::try_from(ButtonAssignment::new(0x3c, 0, 0)),
             Err(ButtonActionError::Unsupported {
-                action: 0x08,
+                action: 0x3c,
                 modifier: 0,
                 key_code: 0,
             })

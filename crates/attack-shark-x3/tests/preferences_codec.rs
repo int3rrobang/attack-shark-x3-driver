@@ -54,6 +54,14 @@ struct KnownState {
     padding: Vec<u8>,
 }
 
+#[test]
+fn captured_stock_reset_constructor_matches_x3_exe_packet() {
+    let expected = from_hex("050f010003a80000ff010401af");
+    let state = PreferencesState::captured_stock_reset(profile(1));
+    let encoded = PreferencesReport::encode_framed(&state, PreferencesFraming::Compact);
+    assert_eq!(encoded.as_bytes(), expected);
+}
+
 fn fixtures() -> FixtureCatalog {
     serde_json::from_str(include_str!("../../../fixtures/protocol/preferences.json"))
         .expect("the checked-in preferences fixture catalog must be valid JSON")

@@ -26,7 +26,6 @@ use super::handle::{Command, DriverError, MouseHandle, ProfileSnapshot, ReadFail
 use super::usb::{self, DeviceSelector};
 
 const MAX_FEATURE_REPORT_LENGTH: usize = 128;
-const PROFILE_ACTIVATION_QUIET_PERIOD: Duration = Duration::from_millis(500);
 const RECEIVER_READINESS_DELAY: Duration = Duration::from_millis(500);
 
 pub(crate) trait FeatureTransport: Send + 'static {
@@ -60,8 +59,8 @@ impl Worker {
                 Command::Buttons { profile, reply } => {
                     let _ = reply.send(self.read_buttons(profile));
                 }
-                Command::PollingRate(reply) => {
-                    let _ = reply.send(self.read_polling_rate());
+                Command::PollingRate { profile, reply } => {
+                    let _ = reply.send(self.read_polling_rate(profile));
                 }
                 Command::WriteDpi { state, reply } => {
                     let _ = reply.send(self.write_dpi(&state));
@@ -72,8 +71,28 @@ impl Worker {
                 Command::WriteButtons { state, reply } => {
                     let _ = reply.send(self.write_buttons(state));
                 }
-                Command::WritePollingRate { rate, reply } => {
-                    let _ = reply.send(self.write_polling_rate(rate));
+                Command::SendDpi { state, reply } => {
+                    let _ = reply.send(self.send_dpi(&state));
+                }
+                Command::SendPreferences { state, reply } => {
+                    let _ = reply.send(self.send_preferences(&state));
+                }
+                Command::SendButtons { state, reply } => {
+                    let _ = reply.send(self.send_buttons(&state));
+                }
+                Command::SendPollingRateUnchecked {
+                    profile,
+                    rate,
+                    reply,
+                } => {
+                    let _ = reply.send(self.send_polling_rate_unchecked(profile, rate));
+                }
+                Command::WritePollingRateUnchecked {
+                    profile,
+                    rate,
+                    reply,
+                } => {
+                    let _ = reply.send(self.write_polling_rate_unchecked(profile, rate));
                 }
                 Command::SetMaximumProfile { maximum, reply } => {
                     let _ = reply.send(self.set_maximum_profile(maximum));
@@ -129,19 +148,23 @@ impl Worker {
         })
     }
 
-    fn read_polling_rate(&mut self) -> Result<PollingRate, DriverError> {
+    fn read_polling_rate(&mut self, profile: ProfileId) -> Result<PollingRate, DriverError> {
         let transport_kind = self.transport_kind;
-        self.armed_read(ReadbackRequest::PollingRate, move |packet| {
-            PollingRateReport::decode_for_transport(packet, transport_kind)
+        self.armed_read(ReadbackRequest::PollingRate(profile), move |packet| {
+            PollingRateReport::decode_for_transport(packet, transport_kind, profile)
                 .map(|report| report.rate)
         })
     }
 
-    fn write_dpi(&mut self, state: &DpiState) -> Result<DpiState, DriverError> {
+    fn send_dpi(&mut self, state: &DpiState) -> Result<(), DriverError> {
         let report = DpiReport::encode(state, self.transport_kind)?;
         self.transport
             .send_feature_report(report.as_bytes())
-            .map_err(DriverError::Transport)?;
+            .map_err(DriverError::Transport)
+    }
+
+    fn write_dpi(&mut self, state: &DpiState) -> Result<DpiState, DriverError> {
+        self.send_dpi(state)?;
         self.sleep_after_write();
         let actual = self.read_dpi(state.profile)?;
         if actual != *state {
@@ -153,19 +176,23 @@ impl Worker {
         Ok(actual)
     }
 
-    fn write_preferences(
-        &mut self,
-        state: PreferencesState,
-    ) -> Result<PreferencesState, DriverError> {
+    fn send_preferences(&mut self, state: &PreferencesState) -> Result<(), DriverError> {
         let framing = match self.transport_kind {
             TransportKind::Receiver | TransportKind::Wired | TransportKind::Ble => {
                 crate::PreferencesFraming::Compact
             }
         };
-        let report = PreferencesReport::encode_framed(&state, framing);
+        let report = PreferencesReport::encode_framed(state, framing);
         self.transport
             .send_feature_report(report.as_bytes())
-            .map_err(DriverError::Transport)?;
+            .map_err(DriverError::Transport)
+    }
+
+    fn write_preferences(
+        &mut self,
+        state: PreferencesState,
+    ) -> Result<PreferencesState, DriverError> {
+        self.send_preferences(&state)?;
         self.sleep_after_write();
         let actual = self.read_preferences(state.profile)?;
         if actual != state {
@@ -177,11 +204,15 @@ impl Worker {
         Ok(actual)
     }
 
-    fn write_buttons(&mut self, state: ButtonsState) -> Result<ButtonsState, DriverError> {
-        let report = ButtonsReport::encode(&state);
+    fn send_buttons(&mut self, state: &ButtonsState) -> Result<(), DriverError> {
+        let report = ButtonsReport::encode(state);
         self.transport
             .send_feature_report(report.as_bytes())
-            .map_err(DriverError::Transport)?;
+            .map_err(DriverError::Transport)
+    }
+
+    fn write_buttons(&mut self, state: ButtonsState) -> Result<ButtonsState, DriverError> {
+        self.send_buttons(&state)?;
         self.sleep_after_write();
         let actual = self.read_buttons(state.profile)?;
         if actual != state {
@@ -193,16 +224,29 @@ impl Worker {
         Ok(actual)
     }
 
-    fn write_polling_rate(&mut self, rate: PollingRate) -> Result<PollingRate, DriverError> {
-        let report = PollingRateReport::encode(rate);
+    fn send_polling_rate_unchecked(
+        &mut self,
+        profile: ProfileId,
+        rate: PollingRate,
+    ) -> Result<(), DriverError> {
+        let report = PollingRateReport::encode(profile, rate);
         self.transport
             .send_feature_report(report.as_bytes())
-            .map_err(DriverError::Transport)?;
+            .map_err(DriverError::Transport)
+    }
+
+    fn write_polling_rate_unchecked(
+        &mut self,
+        profile: ProfileId,
+        rate: PollingRate,
+    ) -> Result<PollingRate, DriverError> {
+        self.send_polling_rate_unchecked(profile, rate)?;
         self.sleep_after_write();
-        let actual = self.read_polling_rate()?;
+        let actual = self.read_polling_rate(profile)?;
         if actual != rate {
-            return Err(DriverError::GlobalWriteVerificationMismatch {
+            return Err(DriverError::WriteVerificationMismatch {
                 section: "polling rate",
+                profile,
             });
         }
         Ok(actual)
@@ -228,7 +272,7 @@ impl Worker {
         self.transport
             .send_feature_report(report.as_bytes())
             .map_err(DriverError::Transport)?;
-        thread::sleep(PROFILE_ACTIVATION_QUIET_PERIOD);
+        self.sleep_after_write();
         let actual = self.read_profile_metadata()?;
         if actual != expected {
             return Err(DriverError::WriteVerificationMismatch {
@@ -259,7 +303,7 @@ impl Worker {
         self.transport
             .send_feature_report(report.as_bytes())
             .map_err(DriverError::Transport)?;
-        thread::sleep(PROFILE_ACTIVATION_QUIET_PERIOD);
+        self.sleep_after_write();
         let actual = self.read_profile_metadata()?;
         if actual != expected {
             return Err(DriverError::WriteVerificationMismatch {
@@ -392,6 +436,7 @@ pub(crate) fn spawn_worker(
 ) -> Result<MouseHandle, DriverError> {
     let (commands, requests) = mpsc::channel();
     let (opened, result) = mpsc::sync_channel(1);
+    let (input_events, _) = broadcast::channel(16);
     thread::Builder::new()
         .name("attack-shark-x3-hid".to_owned())
         .spawn(move || match open_transport() {
@@ -413,7 +458,6 @@ pub(crate) fn spawn_worker(
     result
         .recv()
         .map_err(|_| DriverError::WorkerUnavailable)??;
-    let (input_events, _) = broadcast::channel(16);
     Ok(MouseHandle {
         commands,
         input_events,
@@ -459,10 +503,10 @@ pub(crate) fn spawn_input_worker(
                     Ok(length) if length <= buffer.len() => {
                         let packet = &buffer[..length];
                         if let Some(event) = decode_input_report(packet) {
-                            if let InputEvent::BatteryChanged(battery) = event {
-                                if let Ok(mut cached) = battery_level.lock() {
-                                    *cached = Some(battery.level);
-                                }
+                            if let InputEvent::BatteryChanged(battery) = event
+                                && let Ok(mut cached) = battery_level.lock()
+                            {
+                                *cached = Some(battery.level);
                             }
                             let _ = input_events.send(event);
                         }
@@ -495,7 +539,7 @@ mod tests {
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use super::{
@@ -513,7 +557,10 @@ mod tests {
     const PROFILE_2_DPI: &str = "04380200003f00000f1f2f3f63070000000000000002000002ff000000ff000000ffffff0000ffffff00ffff4000ffffff030e7f00000000";
     const PROFILE_2_PREFERENCES: &str = "050f0270030800ff000104017f0000";
     const PROFILE_2_BUTTONS: &str = "083b020200000300000400000d00003c00000f00000600000500003c00000000000000000000000000000000000000000000000a000009000000bb";
-    const POLLING_RATE: &str = "06090101fe00000000";
+    // Nine-byte report-`0x06` readbacks: byte 2 mirrors the working alias.
+    const POLLING_RATE_1: &str = "06090101fe00000000";
+    const POLLING_RATE_2: &str = "06090201fe00000000";
+    const POLLING_RATE_2_500: &str = "06090202fd00000000";
 
     enum Step {
         Send(Vec<u8>),
@@ -696,13 +743,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn polling_rate_read_is_global_and_uses_the_armed_mailbox() {
+    async fn polling_rate_read_targets_requested_profile_and_uses_the_armed_mailbox() {
+        let target = profile(2);
         let mut steps = Vec::new();
-        successful_read(&mut steps, ReadbackRequest::PollingRate, POLLING_RATE);
+        successful_read(
+            &mut steps,
+            ReadbackRequest::PollingRate(target),
+            POLLING_RATE_2,
+        );
         let (handle, remaining) = handle(steps, test_policy(2));
 
         let actual = handle
-            .read_polling_rate()
+            .read_polling_rate(target)
             .await
             .expect("polling-rate readback must decode");
         assert_eq!(actual, PollingRate::Hz1000);
@@ -710,47 +762,177 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn polling_rate_write_sends_packet_and_verifies_readback() {
-        let rate = PollingRate::Hz500;
-        let report = PollingRateReport::encode(rate);
-        let mut steps = vec![Step::Send(report.as_bytes().to_vec())];
+    async fn polling_rate_read_validates_the_readback_profile_byte() {
+        // Wire-shape contract only: the readback's profile byte must match the
+        // armed selector; the read path does not claim any content proof.
+        let target = profile(2);
+        let mut steps = Vec::new();
         successful_read(
             &mut steps,
-            ReadbackRequest::PollingRate,
-            "06090102fd00000000",
+            ReadbackRequest::PollingRate(target),
+            POLLING_RATE_1,
         );
-        let (handle, remaining) = handle(steps, test_policy(2));
+        let (handle, remaining) = handle(steps, test_policy(1));
 
-        let actual = handle
-            .write_polling_rate(rate)
+        let error = handle
+            .read_polling_rate(target)
             .await
-            .expect("polling-rate write must verify");
-        assert_eq!(actual, rate);
+            .expect_err("readback profile byte mismatch must fail");
+        assert!(matches!(
+            error,
+            DriverError::ReadAttemptsExhausted {
+                attempts: 1,
+                last: ReadFailure::Protocol(ProtocolError::ProfileMismatch {
+                    expected: 2,
+                    actual: 1,
+                }),
+            }
+        ));
         assert_eq!(remaining.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
-    async fn polling_rate_write_rejects_mismatched_readback() {
-        let rate = PollingRate::Hz500;
-        let report = PollingRateReport::encode(rate);
+    async fn polling_rate_write_sends_target_packet_and_verifies_readback() {
+        // Verified write without any profile snapshot: the worker emits the
+        // target-correct `0x06` packet (byte 2 = `02`) and validates the
+        // fresh profile-scoped readback, exactly as the stock path does.
+        let target = profile(2);
+        let rate = PollingRate::Hz1000;
+        let report = PollingRateReport::encode(target, rate);
         let mut steps = vec![Step::Send(report.as_bytes().to_vec())];
         successful_read(
             &mut steps,
-            ReadbackRequest::PollingRate,
-            "06090101fe00000000",
+            ReadbackRequest::PollingRate(target),
+            POLLING_RATE_2,
+        );
+        let (handle, remaining) = handle(steps, test_policy(2));
+
+        let actual = handle
+            .write_polling_rate_unchecked(target, rate)
+            .await
+            .expect("polling-rate write for profile 2 must verify");
+        assert_eq!(actual, rate);
+        assert_eq!(report.as_bytes()[2], 0x02);
+        assert_eq!(remaining.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn polling_rate_write_rejects_mismatched_rate_readback() {
+        let target = profile(2);
+        let rate = PollingRate::Hz1000;
+        let report = PollingRateReport::encode(target, rate);
+        let mut steps = vec![Step::Send(report.as_bytes().to_vec())];
+        successful_read(
+            &mut steps,
+            ReadbackRequest::PollingRate(target),
+            POLLING_RATE_2_500,
         );
         let (handle, remaining) = handle(steps, test_policy(2));
 
         let error = handle
-            .write_polling_rate(rate)
+            .write_polling_rate_unchecked(target, rate)
             .await
             .expect_err("different rate readback must fail verification");
         assert!(matches!(
             error,
-            DriverError::GlobalWriteVerificationMismatch {
-                section: "polling rate"
-            }
+            DriverError::WriteVerificationMismatch {
+                section: "polling rate",
+                profile,
+            } if profile == target
         ));
+        assert_eq!(remaining.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn send_dpi_submits_one_report_without_readback() {
+        // The script contains only the outgoing packet: any readback or
+        // selector send would consume a missing step and fail the call, so
+        // success plus an exhausted script proves exactly one report is sent.
+        let target = profile(2);
+        let state = DpiReport::decode(&bytes(PROFILE_2_DPI), TransportKind::Wired, target)
+            .expect("fixture DPI must decode")
+            .state;
+        let encoded =
+            DpiReport::encode(&state, TransportKind::Wired).expect("fixture DPI must encode");
+        let (handle, remaining) = handle(
+            vec![Step::Send(encoded.as_bytes().to_vec())],
+            test_policy(2),
+        );
+
+        handle
+            .send_dpi(state)
+            .await
+            .expect("send-only DPI write must submit exactly one report");
+        assert_eq!(remaining.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn send_preferences_submits_one_report_without_readback() {
+        let target = profile(2);
+        let state = PreferencesReport::decode(&bytes(PROFILE_2_PREFERENCES), target)
+            .expect("fixture preferences must decode")
+            .state;
+        let encoded = PreferencesReport::encode_framed(&state, PreferencesFraming::Compact);
+        let (handle, remaining) = handle(
+            vec![Step::Send(encoded.as_bytes().to_vec())],
+            test_policy(2),
+        );
+
+        handle
+            .send_preferences(state)
+            .await
+            .expect("send-only preferences write must submit exactly one report");
+        assert_eq!(remaining.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn send_buttons_submits_one_report_without_readback() {
+        let target = profile(2);
+        let state = ButtonsReport::decode(&bytes(PROFILE_2_BUTTONS), target)
+            .expect("fixture buttons must decode")
+            .state;
+        let encoded = ButtonsReport::encode(&state);
+        let (handle, remaining) = handle(
+            vec![Step::Send(encoded.as_bytes().to_vec())],
+            test_policy(2),
+        );
+
+        handle
+            .send_buttons(state)
+            .await
+            .expect("send-only buttons write must submit exactly one report");
+        assert_eq!(remaining.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn send_polling_rate_unchecked_submits_one_target_report_without_readback() {
+        let target = profile(2);
+        let rate = PollingRate::Hz1000;
+        let report = PollingRateReport::encode(target, rate);
+        assert_eq!(report.as_bytes()[2], 0x02);
+        let (handle, remaining) =
+            handle(vec![Step::Send(report.as_bytes().to_vec())], test_policy(2));
+
+        handle
+            .send_polling_rate_unchecked(target, rate)
+            .await
+            .expect("send-only polling-rate write must submit exactly one report");
+        assert_eq!(remaining.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn send_transport_error_propagates_without_readback() {
+        let target = profile(2);
+        let state = DpiReport::decode(&bytes(PROFILE_2_DPI), TransportKind::Wired, target)
+            .expect("fixture DPI must decode")
+            .state;
+        let (handle, remaining) = handle(vec![Step::SendError], test_policy(2));
+
+        let error = handle
+            .send_dpi(state)
+            .await
+            .expect_err("send-only write must surface the transport failure");
+        assert!(matches!(error, DriverError::Transport(_)));
         assert_eq!(remaining.load(Ordering::SeqCst), 0);
     }
 
@@ -994,6 +1176,38 @@ mod tests {
         assert_eq!(remaining.load(Ordering::SeqCst), 0);
     }
 
+    #[tokio::test]
+    async fn profile_activation_holds_the_configured_quiet_period() {
+        let target = profile(1);
+        let maximum = profile(5);
+        let expected = ProfileMetadata::new(target, maximum).expect("fixture range is valid");
+        let control = ProfileControlReport::encode(expected, ProfileControlFraming::Compact);
+        let mut steps = Vec::new();
+        successful_read(
+            &mut steps,
+            ReadbackRequest::ProfileMetadata,
+            PROFILE_2_METADATA,
+        );
+        steps.push(Step::Send(control.as_bytes().to_vec()));
+        successful_read(
+            &mut steps,
+            ReadbackRequest::ProfileMetadata,
+            "0c0a0101fe05fa000000",
+        );
+        let quiet_period = Duration::from_millis(25);
+        let mut policy = test_policy(2);
+        policy.write_delay = quiet_period;
+        let (handle, remaining) = handle(steps, policy);
+
+        let started = Instant::now();
+        handle
+            .activate_profile(target)
+            .await
+            .expect("profile activation metadata must verify");
+
+        assert!(started.elapsed() >= quiet_period);
+        assert_eq!(remaining.load(Ordering::SeqCst), 0);
+    }
     #[tokio::test]
     async fn idempotent_profile_activation_is_rejected_before_control_write() {
         let target = profile(2);

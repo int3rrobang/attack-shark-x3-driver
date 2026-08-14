@@ -1,7 +1,7 @@
 use std::{error::Error, io, time::Duration};
 
 use attack_shark_x3::{
-    DeviceSelector, DpiValue, MouseHandle, PollingRate, ProfileSnapshot, UsbDeviceKind,
+    DeviceSelector, DpiValue, MouseHandle, PollingRate, ProfileId, ProfileSnapshot, UsbDeviceKind,
 };
 use tokio::time::sleep;
 
@@ -16,22 +16,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("capturing the current configuration before any write");
     let original_metadata = handle.read_profile_metadata().await?;
     settle("metadata read").await;
-    let original_rate = handle.read_polling_rate().await?;
-    settle("polling-rate read").await;
     let original_profile = handle.read_profile(original_metadata.current()).await?;
     settle("profile read").await;
+    let original_rate = handle
+        .read_polling_rate(original_metadata.current())
+        .await?;
+    settle("polling-rate read").await;
     print_snapshot("backup", original_rate, &original_profile);
 
-    probe_polling_rate(&handle, original_rate).await?;
+    probe_polling_rate(&handle, original_metadata.current(), original_rate).await?;
     probe_dpi(&handle, &original_profile).await?;
     probe_preferences(&handle, &original_profile).await?;
 
     println!("performing final readback and comparing it with the backup");
     let final_metadata = handle.read_profile_metadata().await?;
     settle("final metadata read").await;
-    let final_rate = handle.read_polling_rate().await?;
-    settle("final polling-rate read").await;
     let final_profile = handle.read_profile(original_metadata.current()).await?;
+    settle("final profile read").await;
+    let final_rate = handle
+        .read_polling_rate(original_metadata.current())
+        .await?;
+    settle("final polling-rate read").await;
 
     if final_metadata != original_metadata
         || final_rate != original_rate
@@ -50,17 +55,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 async fn probe_polling_rate(
     handle: &MouseHandle,
+    profile: ProfileId,
     original: PollingRate,
 ) -> Result<(), Box<dyn Error>> {
     let candidate = match original {
         PollingRate::Hz125 => PollingRate::Hz250,
         PollingRate::Hz250 | PollingRate::Hz500 | PollingRate::Hz1000 => PollingRate::Hz125,
     };
-    println!("probing polling rate: {original} -> {candidate} -> {original}");
+    println!("probing polling rate for profile {profile}: {original} -> {candidate} -> {original}");
 
-    let probe_result = handle.write_polling_rate(candidate).await;
+    let probe_result = handle
+        .write_polling_rate_unchecked(profile, candidate)
+        .await;
     settle("polling-rate probe write").await;
-    let restore_result = handle.write_polling_rate(original).await;
+    let restore_result = handle.write_polling_rate_unchecked(profile, original).await;
     settle("polling-rate restore").await;
 
     probe_result

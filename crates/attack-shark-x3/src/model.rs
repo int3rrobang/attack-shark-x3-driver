@@ -104,7 +104,7 @@ impl DpiValue {
     /// Creates a DPI value when it is in range and aligned to the wire step.
     #[must_use]
     pub const fn new(value: u16) -> Option<Self> {
-        if value >= Self::MIN && value <= Self::MAX && value % Self::STEP == 0 {
+        if value >= Self::MIN && value <= Self::MAX && value / Self::STEP * Self::STEP == value {
             Some(Self(value))
         } else {
             None

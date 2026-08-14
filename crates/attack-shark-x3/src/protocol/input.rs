@@ -177,7 +177,9 @@ pub fn decode_input_report(packet: &[u8]) -> Option<InputEvent> {
                 mode: raw_report[3],
             }))
         }
-        PROFILE_SYNC_EVENT_TYPE => Some(InputEvent::ProfileSync(profile_event(raw_report)?)),
+        PROFILE_SYNC_EVENT_TYPE => Some(InputEvent::ProfileSync(zero_indexed_profile_event(
+            raw_report,
+        )?)),
         _ => None,
     }
 }
@@ -196,6 +198,18 @@ fn profile_event(raw_report: [u8; INPUT_REPORT_LENGTH]) -> Option<ProfileChanged
     Some(ProfileChangedEvent {
         raw_report,
         profile: ProfileId::try_from(raw_report[3]).ok()?,
+    })
+}
+
+fn zero_indexed_profile_event(
+    raw_report: [u8; INPUT_REPORT_LENGTH],
+) -> Option<ProfileChangedEvent> {
+    if raw_report[4] != 0 {
+        return None;
+    }
+    Some(ProfileChangedEvent {
+        raw_report,
+        profile: ProfileId::try_from(raw_report[3].checked_add(1)?).ok()?,
     })
 }
 
@@ -312,6 +326,22 @@ mod tests {
                 index: DpiIndex::new(10).expect("DPI index 10 is valid"),
             }))
         );
+    }
+
+    #[test]
+    fn decodes_profile_sync_payload_as_zero_indexed() {
+        for zero_indexed in 0..ProfileId::MAX {
+            let packet = [0x03, 0x00, 0x80, zero_indexed, 0x00];
+            assert_eq!(
+                decode_input_report(&packet),
+                Some(InputEvent::ProfileSync(super::ProfileChangedEvent {
+                    raw_report: packet,
+                    profile: ProfileId::try_from(zero_indexed + 1)
+                        .expect("zero-indexed firmware profile is valid"),
+                }))
+            );
+        }
+        assert_eq!(decode_input_report(&[0x03, 0x00, 0x80, 0x05, 0x00]), None);
     }
 
     #[test]

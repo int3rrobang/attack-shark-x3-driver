@@ -1,10 +1,9 @@
-use crate::ProtocolError;
+use crate::{ProfileId, ProtocolError};
 
 pub const POLLING_RATE_REPORT_ID: u8 = 0x06;
 pub const POLLING_RATE_DECLARED_LENGTH: u8 = 0x09;
 pub const POLLING_RATE_REPORT_LENGTH: usize = 9;
 
-const POLLING_RATE_SUBCOMMAND: u8 = 0x01;
 const PADDING_START: usize = 5;
 
 /// A polling rate supported by the X3/M600 USB configuration protocol.
@@ -79,8 +78,13 @@ impl std::fmt::Display for PollingRate {
 }
 
 /// A validated report-`0x06` decode.
+///
+/// Byte 2 is the one-based target profile consumed by the shared dispatcher
+/// prelude; report `0x06` skips the profile loader but still names the slot
+/// that the deferred writer serializes the live image into.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodedPollingRateReport {
+    pub profile: ProfileId,
     pub rate: PollingRate,
 }
 
@@ -91,15 +95,16 @@ pub struct PollingRateReport {
 }
 
 impl PollingRateReport {
-    /// Encodes a USB wired or receiver polling-rate report.
+    /// Encodes a USB wired or receiver polling-rate report for the explicit
+    /// target profile.
     #[must_use]
-    pub fn encode(rate: PollingRate) -> Self {
+    pub fn encode(profile: ProfileId, rate: PollingRate) -> Self {
         let code = rate.code();
         Self {
             bytes: [
                 POLLING_RATE_REPORT_ID,
                 POLLING_RATE_DECLARED_LENGTH,
-                POLLING_RATE_SUBCOMMAND,
+                profile.get(),
                 code,
                 !code,
                 0,
@@ -114,10 +119,13 @@ impl PollingRateReport {
     ///
     /// # Errors
     ///
-    /// Rejects malformed length, identity, sub-command, rate code,
-    /// complement, or padding bytes.
-    pub fn decode(packet: &[u8]) -> Result<DecodedPollingRateReport, ProtocolError> {
-        Self::decode_with_declared_length(packet, POLLING_RATE_DECLARED_LENGTH)
+    /// Rejects malformed length, identity, profile, rate code, complement, or
+    /// padding bytes.
+    pub fn decode(
+        packet: &[u8],
+        expected_profile: ProfileId,
+    ) -> Result<DecodedPollingRateReport, ProtocolError> {
+        Self::decode_with_declared_length(packet, POLLING_RATE_DECLARED_LENGTH, expected_profile)
     }
 
     /// Decodes a report-`0x06` readback for a selected USB transport.
@@ -127,22 +135,24 @@ impl PollingRateReport {
     ///
     /// # Errors
     ///
-    /// Rejects malformed length, identity, sub-command, rate code,
-    /// complement, or padding bytes.
+    /// Rejects malformed length, identity, profile, rate code, complement, or
+    /// padding bytes.
     pub fn decode_for_transport(
         packet: &[u8],
         transport: crate::TransportKind,
+        expected_profile: ProfileId,
     ) -> Result<DecodedPollingRateReport, ProtocolError> {
         let declared_length = match transport {
             crate::TransportKind::Receiver => 0x0b,
             crate::TransportKind::Wired | crate::TransportKind::Ble => POLLING_RATE_DECLARED_LENGTH,
         };
-        Self::decode_with_declared_length(packet, declared_length)
+        Self::decode_with_declared_length(packet, declared_length, expected_profile)
     }
 
     fn decode_with_declared_length(
         packet: &[u8],
         declared_length: u8,
+        expected_profile: ProfileId,
     ) -> Result<DecodedPollingRateReport, ProtocolError> {
         if packet.len() != POLLING_RATE_REPORT_LENGTH {
             return Err(ProtocolError::InvalidReportLength {
@@ -162,13 +172,19 @@ impl PollingRateReport {
                 actual: packet[1],
             });
         }
-        validate_fixed_byte(packet, 2, POLLING_RATE_SUBCOMMAND)?;
+        let profile = ProfileId::try_from(packet[2])?;
+        if profile != expected_profile {
+            return Err(ProtocolError::ProfileMismatch {
+                expected: expected_profile.get(),
+                actual: packet[2],
+            });
+        }
         let rate = PollingRate::from_code(packet[3])?;
         validate_complement(packet[3], packet[4])?;
         for offset in PADDING_START..POLLING_RATE_REPORT_LENGTH {
             validate_fixed_byte(packet, offset, 0)?;
         }
-        Ok(DecodedPollingRateReport { rate })
+        Ok(DecodedPollingRateReport { profile, rate })
     }
 
     #[must_use]
@@ -205,38 +221,56 @@ fn validate_fixed_byte(packet: &[u8], offset: usize, expected: u8) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::{PollingRate, PollingRateReport};
-    use crate::{ProtocolError, TransportKind};
+    use crate::{ProfileId, ProtocolError, TransportKind};
+
+    fn profile(value: u8) -> ProfileId {
+        ProfileId::try_from(value).expect("test profile must be valid")
+    }
 
     #[test]
-    fn encodes_all_supported_rates() {
+    fn encodes_all_supported_rates_for_profile_one() {
         assert_eq!(
-            PollingRateReport::encode(PollingRate::Hz125).as_bytes(),
+            PollingRateReport::encode(profile(1), PollingRate::Hz125).as_bytes(),
             b"\x06\x09\x01\x08\xf7\x00\x00\x00\x00"
         );
         assert_eq!(
-            PollingRateReport::encode(PollingRate::Hz250).as_bytes(),
+            PollingRateReport::encode(profile(1), PollingRate::Hz250).as_bytes(),
             b"\x06\x09\x01\x04\xfb\x00\x00\x00\x00"
         );
         assert_eq!(
-            PollingRateReport::encode(PollingRate::Hz500).as_bytes(),
+            PollingRateReport::encode(profile(1), PollingRate::Hz500).as_bytes(),
             b"\x06\x09\x01\x02\xfd\x00\x00\x00\x00"
         );
         assert_eq!(
-            PollingRateReport::encode(PollingRate::Hz1000).as_bytes(),
+            PollingRateReport::encode(profile(1), PollingRate::Hz1000).as_bytes(),
             b"\x06\x09\x01\x01\xfe\x00\x00\x00\x00"
         );
     }
 
     #[test]
+    fn encodes_profile_two_in_report_byte_two() {
+        assert_eq!(
+            PollingRateReport::encode(profile(2), PollingRate::Hz1000).as_bytes(),
+            b"\x06\x09\x02\x01\xfe\x00\x00\x00\x00"
+        );
+        assert_eq!(
+            PollingRateReport::encode(profile(2), PollingRate::Hz500).as_bytes(),
+            b"\x06\x09\x02\x02\xfd\x00\x00\x00\x00"
+        );
+    }
+
+    #[test]
     fn decodes_and_rejects_malformed_reports() {
-        let packet = PollingRateReport::encode(PollingRate::Hz1000);
-        let decoded = PollingRateReport::decode(packet.as_bytes()).expect("valid rate report");
+        let packet = PollingRateReport::encode(profile(2), PollingRate::Hz1000);
+        let decoded =
+            PollingRateReport::decode(packet.as_bytes(), profile(2)).expect("valid rate report");
+        assert_eq!(decoded.profile, profile(2));
         assert_eq!(decoded.rate, PollingRate::Hz1000);
 
         let mut wrong_complement = *packet.as_bytes();
         wrong_complement[4] = 0;
         assert!(matches!(
-            PollingRateReport::decode(&wrong_complement),
+            PollingRateReport::decode(&wrong_complement, profile(2)),
             Err(ProtocolError::InvalidComplement {
                 field: "polling rate",
                 ..
@@ -246,7 +280,7 @@ mod tests {
         let mut wrong_padding = *packet.as_bytes();
         wrong_padding[8] = 1;
         assert!(matches!(
-            PollingRateReport::decode(&wrong_padding),
+            PollingRateReport::decode(&wrong_padding, profile(2)),
             Err(ProtocolError::InvalidFixedByte {
                 offset: 8,
                 expected: 0,
@@ -256,12 +290,37 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_readback_targeting_a_different_profile() {
+        let packet = PollingRateReport::encode(profile(1), PollingRate::Hz1000);
+        assert!(matches!(
+            PollingRateReport::decode(packet.as_bytes(), profile(2)),
+            Err(ProtocolError::ProfileMismatch {
+                expected: 2,
+                actual: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_an_invalid_profile_byte() {
+        let packet = PollingRateReport::encode(profile(1), PollingRate::Hz1000);
+        let mut invalid = *packet.as_bytes();
+        invalid[2] = 0;
+        assert!(matches!(
+            PollingRateReport::decode(&invalid, profile(1)),
+            Err(ProtocolError::InvalidProfile { value: 0 })
+        ));
+    }
+
+    #[test]
     fn decodes_receiver_readback_declared_length() {
-        let packet = b"\x06\x0b\x01\x02\xfd\x00\x00\x00\x00";
-        let decoded = PollingRateReport::decode_for_transport(packet, TransportKind::Receiver)
-            .expect("FA60 receiver readback must decode");
+        let packet = b"\x06\x0b\x02\x02\xfd\x00\x00\x00\x00";
+        let decoded =
+            PollingRateReport::decode_for_transport(packet, TransportKind::Receiver, profile(2))
+                .expect("FA60 receiver readback must decode");
+        assert_eq!(decoded.profile, profile(2));
         assert_eq!(decoded.rate, PollingRate::Hz500);
-        assert!(PollingRateReport::decode(packet).is_err());
+        assert!(PollingRateReport::decode(packet, profile(2)).is_err());
     }
 
     #[test]

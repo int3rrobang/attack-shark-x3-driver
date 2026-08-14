@@ -188,7 +188,7 @@ impl ProfileMetadataReport {
 pub enum ReadbackRequest {
     Version,
     ProfileMetadata,
-    PollingRate,
+    PollingRate(ProfileId),
     Dpi(ProfileId),
     Preferences(ProfileId),
     Buttons(ProfileId),
@@ -199,7 +199,7 @@ impl ReadbackRequest {
     pub const fn report_id(self) -> u8 {
         match self {
             Self::Version => 0x0b,
-            Self::PollingRate => 0x06,
+            Self::PollingRate(_) => 0x06,
             Self::ProfileMetadata => PROFILE_REPORT_ID,
             Self::Dpi(_) => 0x04,
             Self::Preferences(_) => 0x05,
@@ -212,7 +212,7 @@ impl ReadbackRequest {
         match self {
             Self::Version => 0x08,
             Self::ProfileMetadata => PROFILE_DECLARED_LENGTH,
-            Self::PollingRate => 0x09,
+            Self::PollingRate(_) => 0x09,
             Self::Dpi(_) => 0x38,
             Self::Preferences(_) => 0x0f,
             Self::Buttons(_) => 0x3b,
@@ -226,10 +226,11 @@ impl ReadbackRequest {
     #[must_use]
     pub const fn target_profile(self) -> Option<ProfileId> {
         match self {
-            Self::Dpi(profile) | Self::Preferences(profile) | Self::Buttons(profile) => {
-                Some(profile)
-            }
-            Self::Version | Self::ProfileMetadata | Self::PollingRate => None,
+            Self::Dpi(profile)
+            | Self::Preferences(profile)
+            | Self::Buttons(profile)
+            | Self::PollingRate(profile) => Some(profile),
+            Self::Version | Self::ProfileMetadata => None,
         }
     }
 

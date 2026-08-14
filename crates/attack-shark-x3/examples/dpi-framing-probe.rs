@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("\n--- backup ---");
     let backup_dpi = handle.read_dpi(profile).await?;
     settle("DPI read").await;
-    let backup_rate = handle.read_polling_rate().await?;
+    let backup_rate = handle.read_polling_rate(profile).await?;
     settle("polling-rate read").await;
     let backup_prefs = handle.read_preferences(profile).await?;
     settle("preferences read").await;
@@ -97,7 +97,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     settle("DPI readback").await;
 
     // (b) Polling rate read (unrelated report 0x06)
-    let rate_ok = match handle.read_polling_rate().await {
+    let rate_ok = match handle.read_polling_rate(profile).await {
         Ok(rate) => {
             let matches = rate == backup_rate;
             println!(
@@ -158,7 +158,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     settle("DPI restore").await;
 
     // Final health check
-    match handle.read_polling_rate().await {
+    match handle.read_polling_rate(profile).await {
         Ok(rate) => println!("final polling-rate check: {rate} (device responsive)"),
         Err(e) => println!("final polling-rate check: FAILED ({e})"),
     }

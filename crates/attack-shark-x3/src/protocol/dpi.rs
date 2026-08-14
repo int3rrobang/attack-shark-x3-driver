@@ -15,6 +15,7 @@ const CAPTURED_EMPTY_PROFILE_TAIL: [u8; FIXED_TAIL_LENGTH] = [
     0xff, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0xff,
     0x00, 0xff, 0xff, 0x40, 0x00, 0xff, 0xff, 0xff, 0x01,
 ];
+const CAPTURED_STOCK_RESET_STAGES: [u16; 6] = [800, 1600, 2400, 3200, 5000, 26000];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -97,6 +98,24 @@ impl DpiState {
             active_stage,
             CAPTURED_EMPTY_PROFILE_TAIL,
         )
+    }
+
+    /// Reproduces the complete DPI state written by the stock X3 reset flow,
+    /// retargeted to `profile`.
+    ///
+    /// Source: `docs/evidence/x3-fa61/reset-packets.json` (`dpi.profile1`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the capture-qualified stage values or active stage
+    /// cannot be represented by the protocol model.
+    pub fn captured_stock_reset(profile: ProfileId) -> Result<Self, ProtocolError> {
+        let stages = CAPTURED_STOCK_RESET_STAGES
+            .into_iter()
+            .map(DpiValue::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        let active_stage = StageIndex::try_from(2)?;
+        Self::new(profile, stages, active_stage, CAPTURED_EMPTY_PROFILE_TAIL)
     }
 }
 
