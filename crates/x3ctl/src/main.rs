@@ -9,20 +9,21 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use attack_shark_x3_manager::{
-    ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport, DeviceId, DeviceManager,
-    DeviceStatus, DpiDelta, DpiState, DpiValue, LiftOffDistance, PollingRate, PreferencesDelta,
-    PreferencesFraming, PreferencesState, ProfileId, ResourceSnapshot, SafeButtonAction,
-    SafeButtonSlot, SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind,
-    TransportSelection, UpdatePolicy, VerificationMethod, encode_debug_buttons, encode_debug_dpi,
-    encode_debug_prefs,
+    BaselineSource, ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport, DeviceId,
+    DeviceManager, DeviceStatus, DpiDelta, DpiState, DpiValue, LiftOffDistance, PollingRate,
+    PreferencesDelta, PreferencesFraming, PreferencesState, ProfileId, ResourceSnapshot,
+    SafeButtonAction, SafeButtonSlot, SensorOptions, SensorOptionsDelta, StageIndex, StateStore,
+    TransportKind, TransportSelection, UpdatePolicy, VerificationMethod, encode_debug_buttons,
+    encode_debug_dpi, encode_debug_prefs,
 };
 use clap::Parser;
 use serde::Serialize;
 
 use args::{
-    ActionArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, DebugDpiArgs, DebugPrefsArgs,
-    DpiCommand, DpiSetArgs, LodArg, PrefsCommand, PrefsSetArgs, ProfileCommand, ProfileSetArgs,
-    RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg, VerifyMethodArg,
+    ActionArg, BaselineArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, DebugDpiArgs,
+    DebugPrefsArgs, DpiCommand, DpiSetArgs, LodArg, PrefsCommand, PrefsSetArgs, ProfileCommand,
+    ProfileSetArgs, RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg, ValidationArg,
+    VerifyMethodArg,
 };
 use output::Output;
 
@@ -53,8 +54,17 @@ enum Action {
         profile: ProfileId,
         delta: DpiDelta,
     },
-    RateGet,
+    RateGet {
+        profile: ProfileId,
+    },
     RateSet {
+        profile: ProfileId,
+        rate: PollingRate,
+    },
+    /// Explicitly authorized BLE-only direct packet write: transport ACK only,
+    /// no profile-image checks, persistence unknown.
+    RateSetUnverifiedBle {
+        profile: ProfileId,
         rate: PollingRate,
     },
     PrefsGet {
@@ -161,12 +171,23 @@ fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
             DpiCommand::Set(args) => build_dpi_action(cli, args),
         },
         Command::Rate(command) => match command {
-            RateCommand::Get => Ok(Action::RateGet),
-            RateCommand::Set(RateSetArgs { hz }) => Ok(Action::RateSet {
-                rate: PollingRate::new(*hz).ok_or_else(|| {
-                    "polling rate must be one of 125, 250, 500, or 1000 Hz".to_owned()
-                })?,
+            RateCommand::Get => Ok(Action::RateGet {
+                profile: parse_profile(cli.profile)?,
             }),
+            RateCommand::Set(RateSetArgs {
+                hz,
+                allow_unverified_ble_rate_write,
+            }) => {
+                let profile = parse_profile(cli.profile)?;
+                let rate = PollingRate::new(*hz).ok_or_else(|| {
+                    "polling rate must be one of 125, 250, 500, or 1000 Hz".to_owned()
+                })?;
+                if *allow_unverified_ble_rate_write {
+                    Ok(Action::RateSetUnverifiedBle { profile, rate })
+                } else {
+                    Ok(Action::RateSet { profile, rate })
+                }
+            }
         },
         Command::Prefs(command) => match command {
             PrefsCommand::Get => Ok(Action::PrefsGet {
@@ -204,14 +225,14 @@ fn build_dpi_action(cli: &Cli, args: &DpiSetArgs) -> Result<Action, String> {
     let profile = parse_profile(cli.profile)?;
     let stages = parse_dpi_stages(&args.stages)?;
     let active_stage = args.active_stage.map(parse_stage).transpose()?;
-    if let (Some(stages), Some(active)) = (stages.as_ref(), active_stage) {
-        if active.get() as usize > stages.len() {
-            return Err(format!(
-                "active stage {} exceeds the configured stage count {}",
-                active,
-                stages.len()
-            ));
-        }
+    if let (Some(stages), Some(active)) = (stages.as_ref(), active_stage)
+        && active.get() as usize > stages.len()
+    {
+        return Err(format!(
+            "active stage {} exceeds the configured stage count {}",
+            active,
+            stages.len()
+        ));
     }
 
     let sensor = if args.lod.is_some()
@@ -280,6 +301,42 @@ fn build_bind_action(cli: &Cli, args: &BindSetArgs) -> Result<Action, String> {
         ActionArg::ProfileCycle => SafeButtonAction::ProfileCycle,
         ActionArg::ProfilePlus => SafeButtonAction::ProfilePlus,
         ActionArg::ProfileMinus => SafeButtonAction::ProfileMinus,
+        ActionArg::FireButton => SafeButtonAction::FireButton,
+        ActionArg::ScrollUp => SafeButtonAction::ScrollUp,
+        ActionArg::ScrollDown => SafeButtonAction::ScrollDown,
+        ActionArg::MediaPlayer => SafeButtonAction::MediaPlayer,
+        ActionArg::PreviousTrack => SafeButtonAction::PreviousTrack,
+        ActionArg::NextTrack => SafeButtonAction::NextTrack,
+        ActionArg::PlayPause => SafeButtonAction::PlayPause,
+        ActionArg::Stop => SafeButtonAction::Stop,
+        ActionArg::Mute => SafeButtonAction::Mute,
+        ActionArg::VolumeUp => SafeButtonAction::VolumeUp,
+        ActionArg::VolumeDown => SafeButtonAction::VolumeDown,
+        ActionArg::Calculator => SafeButtonAction::Calculator,
+        ActionArg::Email => SafeButtonAction::Email,
+        ActionArg::BrowserForward => SafeButtonAction::BrowserForward,
+        ActionArg::BrowserBackward => SafeButtonAction::BrowserBackward,
+        ActionArg::BrowserStop => SafeButtonAction::BrowserStop,
+        ActionArg::MyComputer => SafeButtonAction::MyComputer,
+        ActionArg::BrowserRefresh => SafeButtonAction::BrowserRefresh,
+        ActionArg::BrowserHome => SafeButtonAction::BrowserHome,
+        ActionArg::BrowserSearch => SafeButtonAction::BrowserSearch,
+        ActionArg::BrowserFavorites => SafeButtonAction::BrowserFavorites,
+        ActionArg::Cut => SafeButtonAction::Cut,
+        ActionArg::Copy => SafeButtonAction::Copy,
+        ActionArg::Paste => SafeButtonAction::Paste,
+        ActionArg::Open => SafeButtonAction::Open,
+        ActionArg::Save => SafeButtonAction::Save,
+        ActionArg::Find => SafeButtonAction::Find,
+        ActionArg::Redo => SafeButtonAction::Redo,
+        ActionArg::SelectAll => SafeButtonAction::SelectAll,
+        ActionArg::Print => SafeButtonAction::Print,
+        ActionArg::CloseWindow => SafeButtonAction::CloseWindow,
+        ActionArg::SwapWindows => SafeButtonAction::SwapWindows,
+        ActionArg::ShowDesktop => SafeButtonAction::ShowDesktop,
+        ActionArg::RunCommand => SafeButtonAction::RunCommand,
+        ActionArg::LockPc => SafeButtonAction::LockPc,
+        ActionArg::ScreenCapture => SafeButtonAction::ScreenCapture,
     };
     let delta = ButtonSlotDelta::new(slot, action);
     Ok(Action::BindSet { profile, delta })
@@ -377,26 +434,57 @@ async fn dispatch(
         Action::DpiSet { profile, delta } => {
             let device = resolve_hardware(manager, cli, selection).await?;
             let outcome = manager
-                .update_dpi_delta(&device, profile, delta, update_policy(cli.replace_defaults))
+                .update_dpi_delta(
+                    &device,
+                    profile,
+                    delta,
+                    update_policy(cli.replace_defaults, cli.validation, cli.baseline),
+                )
                 .await
                 .map_err(|error| error.to_string())?;
             output.print(format!("Updated DPI for profile {profile}"), &outcome)
         }
-        Action::RateGet => {
+        Action::RateGet { profile } => {
             let device = resolve_hardware(manager, cli, selection).await?;
             let snapshot = manager
-                .read_polling_rate(&device)
+                .read_polling_rate(&device, profile)
                 .await
                 .map_err(|error| error.to_string())?;
-            output.print(format_rate_human(&snapshot), &snapshot)
+            output.print(format_rate_human(profile, &snapshot), &snapshot)
         }
-        Action::RateSet { rate } => {
+        Action::RateSet { profile, rate } => {
             let device = resolve_hardware(manager, cli, selection).await?;
             let outcome = manager
-                .update_polling_rate(&device, rate, update_policy(cli.replace_defaults))
+                .update_polling_rate(
+                    &device,
+                    profile,
+                    rate,
+                    update_policy(cli.replace_defaults, cli.validation, cli.baseline),
+                )
                 .await
                 .map_err(|error| error.to_string())?;
-            output.print(format!("Set polling rate to {rate}"), &outcome)
+            output.print(
+                format!("Set polling rate for profile {profile} to {rate}"),
+                &outcome,
+            )
+        }
+        Action::RateSetUnverifiedBle { profile, rate } => {
+            let device = resolve_hardware(manager, cli, selection).await?;
+            let outcome = manager
+                .update_polling_rate_unverified_ble(
+                    &device,
+                    profile,
+                    rate,
+                    update_policy(cli.replace_defaults, cli.validation, cli.baseline),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            output.print(
+                format!(
+                    "Polling-rate packet accepted for profile {profile} to {rate} (unverified BLE write; persistence not verified)"
+                ),
+                &outcome,
+            )
         }
         Action::PrefsGet { profile } => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -413,7 +501,7 @@ async fn dispatch(
                     &device,
                     profile,
                     delta,
-                    update_policy(cli.replace_defaults),
+                    update_policy(cli.replace_defaults, cli.validation, cli.baseline),
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -433,7 +521,12 @@ async fn dispatch(
         Action::BindSet { profile, delta } => {
             let device = resolve_hardware(manager, cli, selection).await?;
             let outcome = manager
-                .update_button_slot(&device, profile, delta, update_policy(cli.replace_defaults))
+                .update_button_slot(
+                    &device,
+                    profile,
+                    delta,
+                    update_policy(cli.replace_defaults, cli.validation, cli.baseline),
+                )
                 .await
                 .map_err(|error| error.to_string())?;
             output.print(
@@ -629,10 +722,21 @@ fn parse_tail(raw: &[u8]) -> Result<[u8; 25], String> {
         .map_err(|_| "debug DPI preserved tail must contain exactly 25 bytes".to_owned())
 }
 
-fn update_policy(replace_defaults: bool) -> UpdatePolicy {
+fn update_policy(
+    replace_defaults: bool,
+    validation: ValidationArg,
+    baseline: BaselineArg,
+) -> UpdatePolicy {
     UpdatePolicy {
         allow_explicit_defaults: replace_defaults,
-        verification: VerificationMethod::Immediate,
+        verification: match validation {
+            ValidationArg::Transport => VerificationMethod::Transport,
+            ValidationArg::Readback => VerificationMethod::Readback,
+        },
+        baseline: match baseline {
+            BaselineArg::Live => BaselineSource::Live,
+            BaselineArg::Stored => BaselineSource::Stored,
+        },
     }
 }
 
@@ -738,10 +842,10 @@ fn format_dpi_human(profile: ProfileId, snapshot: &ResourceSnapshot<DpiState>) -
     )
 }
 
-fn format_rate_human(snapshot: &ResourceSnapshot<PollingRate>) -> String {
+fn format_rate_human(profile: ProfileId, snapshot: &ResourceSnapshot<PollingRate>) -> String {
     match resource_value(snapshot) {
-        Some(rate) => format!("Polling rate: {rate}"),
-        None => "Polling rate: no data".to_owned(),
+        Some(rate) => format!("Polling rate (profile {profile}): {rate}"),
+        None => format!("Polling rate (profile {profile}): no data"),
     }
 }
 
@@ -791,13 +895,36 @@ fn button_action_name(action: u8) -> &'static str {
         0x05 => "backward",
         0x06 => "forward",
         0x07 => "double-click",
+        0x08 => "fire-button",
+        0x09 => "scroll-up",
+        0x0a => "scroll-down",
         0x0d => "dpi-cycle",
         0x0e => "dpi-plus",
         0x0f => "dpi-minus",
+        0x10 => "easy-aim",
+        0x11 => "shortcut",
+        0x12 => "macro",
+        0x15 => "media-player",
+        0x16 => "previous-track",
+        0x17 => "next-track",
+        0x18 => "play-pause",
+        0x19 => "stop",
+        0x1a => "mute",
+        0x1b => "volume-up",
+        0x1c => "volume-down",
+        0x1d => "calculator",
+        0x1e => "email",
+        0x20 => "browser-forward",
+        0x21 => "browser-backward",
+        0x22 => "browser-stop",
+        0x23 => "my-computer",
+        0x24 => "browser-refresh",
+        0x25 => "browser-home",
+        0x26 => "browser-search",
         0x34 => "profile-cycle",
         0x35 => "profile-plus",
         0x36 => "profile-minus",
-        0x3c => "scroll-up",
+        0x3c => "wheel-scroll-up",
         _ => "unknown",
     }
 }
@@ -811,19 +938,19 @@ fn format_status_human(status: &DeviceStatus) -> String {
     if let Some(battery) = status.battery {
         text.push_str(&format!("\n  battery:   {battery}%"));
     }
-    if let Some(metadata_snapshot) = &status.profile_metadata {
-        if let Some(metadata) = resource_value(metadata_snapshot) {
-            text.push_str(&format!(
-                "\n  profile:   {} (max {})",
-                metadata.current(),
-                metadata.maximum()
-            ));
-        }
+    if let Some(metadata_snapshot) = &status.profile_metadata
+        && let Some(metadata) = resource_value(metadata_snapshot)
+    {
+        text.push_str(&format!(
+            "\n  profile:   {} (max {})",
+            metadata.current(),
+            metadata.maximum()
+        ));
     }
-    if let Some(rate_snapshot) = &status.polling_rate {
-        if let Some(rate) = resource_value(rate_snapshot) {
-            text.push_str(&format!("\n  rate:      {rate}"));
-        }
+    if let Some(rate_snapshot) = &status.polling_rate
+        && let Some(rate) = resource_value(rate_snapshot)
+    {
+        text.push_str(&format!("\n  rate:      {rate}"));
     }
     text
 }
@@ -837,8 +964,9 @@ fn action_name(action: &Action) -> &'static str {
         Action::ProfileSet { .. } => "set profile",
         Action::DpiGet { .. } => "read DPI",
         Action::DpiSet { .. } => "set DPI",
-        Action::RateGet => "read polling rate",
+        Action::RateGet { .. } => "read polling rate",
         Action::RateSet { .. } => "set polling rate",
+        Action::RateSetUnverifiedBle { .. } => "set polling rate (unverified BLE packet write)",
         Action::PrefsGet { .. } => "read preferences",
         Action::PrefsSet { .. } => "set preferences",
         Action::BindGet { .. } => "read buttons",
@@ -887,6 +1015,35 @@ mod tests {
                 assert_eq!(delta.assignment().key_code, 0);
             }
             other => panic!("expected BindSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_bind_action_maps_captured_stock_actions() {
+        for (name, expected) in [
+            ("volume-up", [0x1b_u8, 0x00, 0x00]),
+            ("fire-button", [0x08_u8, 0x00, 0x00]),
+            ("scroll-up", [0x09_u8, 0x00, 0x00]),
+            ("cut", [0x11_u8, 0x01, 0x1b]),
+            ("browser-favorites", [0x11_u8, 0x03, 0x12]),
+            ("screen-capture", [0x11_u8, 0x0a, 0x16]),
+        ] {
+            let cli = args::Cli::try_parse_from([
+                "x3ctl", "bind", "set", "--slot", "forward", "--action", name,
+            ])
+            .expect("parse");
+            let command = cli.command.as_ref().unwrap();
+            let args = match command {
+                Command::Bind(BindCommand::Set(args)) => args,
+                other => panic!("expected BindSet, got {other:?}"),
+            };
+            let action = build_bind_action(&cli, args).expect("build");
+            match action {
+                Action::BindSet { delta, .. } => {
+                    assert_eq!(delta.assignment().as_bytes(), expected, "{name}");
+                }
+                other => panic!("expected BindSet, got {other:?}"),
+            }
         }
     }
 
@@ -947,6 +1104,71 @@ mod tests {
         );
         assert!(parse_dpi_stages(&Some("801".into())).is_err());
         assert!(parse_dpi_stages(&Some("".into())).is_err());
+    }
+
+    #[test]
+    fn build_rate_action_routes_unverified_ble_flag() {
+        let cli = args::Cli::try_parse_from(["x3ctl", "rate", "set", "1000"]).expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        let action = build_action(&cli, command).expect("build");
+        assert!(matches!(
+            action,
+            Action::RateSet {
+                rate: PollingRate::Hz1000,
+                ..
+            }
+        ));
+
+        let cli = args::Cli::try_parse_from([
+            "x3ctl",
+            "rate",
+            "set",
+            "1000",
+            "--allow-unverified-ble-rate-write",
+        ])
+        .expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        let action = build_action(&cli, command).expect("build");
+        let rate = match action {
+            Action::RateSetUnverifiedBle { rate, .. } => rate,
+            other => panic!("expected RateSetUnverifiedBle, got {other:?}"),
+        };
+        assert_eq!(rate, PollingRate::Hz1000);
+        assert_eq!(
+            action_name(&Action::RateSetUnverifiedBle {
+                profile: ProfileId::try_from(1).unwrap(),
+                rate,
+            }),
+            "set polling rate (unverified BLE packet write)"
+        );
+    }
+
+    #[test]
+    fn build_rate_action_still_validates_rate_with_unverified_flag() {
+        let cli = args::Cli::try_parse_from([
+            "x3ctl",
+            "rate",
+            "set",
+            "999",
+            "--allow-unverified-ble-rate-write",
+        ])
+        .expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        let error = build_action(&cli, command).expect_err("invalid rate must fail");
+        assert!(error.contains("polling rate must be one of"));
+    }
+
+    #[test]
+    fn update_policy_maps_validation_flag_to_verification_method() {
+        let transport = update_policy(false, ValidationArg::Transport, BaselineArg::Live);
+        assert!(!transport.allow_explicit_defaults);
+        assert_eq!(transport.verification, VerificationMethod::Transport);
+        assert_eq!(transport.baseline, BaselineSource::Live);
+
+        let readback = update_policy(true, ValidationArg::Readback, BaselineArg::Stored);
+        assert!(readback.allow_explicit_defaults);
+        assert_eq!(readback.verification, VerificationMethod::Readback);
+        assert_eq!(readback.baseline, BaselineSource::Stored);
     }
 
     #[test]

@@ -37,6 +37,78 @@ pub enum ActionArg {
     ProfilePlus,
     #[value(alias = "profile-minus")]
     ProfileMinus,
+    #[value(alias = "fire-button")]
+    FireButton,
+    #[value(alias = "scroll-up")]
+    ScrollUp,
+    #[value(alias = "scroll-down")]
+    ScrollDown,
+    #[value(alias = "media-player")]
+    MediaPlayer,
+    #[value(alias = "previous-track")]
+    PreviousTrack,
+    #[value(alias = "next-track")]
+    NextTrack,
+    #[value(alias = "play-pause")]
+    PlayPause,
+    #[value(alias = "stop")]
+    Stop,
+    #[value(alias = "mute")]
+    Mute,
+    #[value(alias = "volume-up")]
+    VolumeUp,
+    #[value(alias = "volume-down")]
+    VolumeDown,
+    #[value(alias = "calculator")]
+    Calculator,
+    #[value(alias = "email")]
+    Email,
+    #[value(alias = "browser-forward")]
+    BrowserForward,
+    #[value(alias = "browser-backward")]
+    BrowserBackward,
+    #[value(alias = "browser-stop")]
+    BrowserStop,
+    #[value(alias = "my-computer")]
+    MyComputer,
+    #[value(alias = "browser-refresh")]
+    BrowserRefresh,
+    #[value(alias = "browser-home")]
+    BrowserHome,
+    #[value(alias = "browser-search")]
+    BrowserSearch,
+    #[value(alias = "browser-favorites")]
+    BrowserFavorites,
+    #[value(alias = "cut")]
+    Cut,
+    #[value(alias = "copy")]
+    Copy,
+    #[value(alias = "paste")]
+    Paste,
+    #[value(alias = "open")]
+    Open,
+    #[value(alias = "save")]
+    Save,
+    #[value(alias = "find")]
+    Find,
+    #[value(alias = "redo")]
+    Redo,
+    #[value(alias = "select-all")]
+    SelectAll,
+    #[value(alias = "print")]
+    Print,
+    #[value(alias = "close-window")]
+    CloseWindow,
+    #[value(alias = "swap-windows")]
+    SwapWindows,
+    #[value(alias = "show-desktop")]
+    ShowDesktop,
+    #[value(alias = "run-command")]
+    RunCommand,
+    #[value(alias = "lock-pc")]
+    LockPc,
+    #[value(alias = "screen-capture")]
+    ScreenCapture,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
@@ -66,6 +138,24 @@ pub enum VerifyMethodArg {
     PowerCycle,
 }
 
+/// Post-write validation: transport evidence (USB submission or BLE ACK) or USB readback.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum ValidationArg {
+    /// Accept transport evidence without re-reading (USB submission or BLE parser ACK).
+    Transport,
+    /// Re-read the device over USB after the write to confirm the immediate applied state.
+    Readback,
+}
+
+/// Delta-merge baseline: read the live image from the device or merge against the durable stored baseline.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum BaselineArg {
+    /// Read the live image from the device immediately before merging.
+    Live,
+    /// Merge against durable stored baseline without a live read (single-writer assumption).
+    Stored,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub enum PreferencesFramingArg {
     Compact,
@@ -81,6 +171,12 @@ pub enum PreferencesFramingArg {
 pub struct Cli {
     #[arg(long, value_enum, default_value_t = TransportArg::Auto, global = true)]
     pub transport: TransportArg,
+    /// Validate writes by transport evidence (default) or USB readback.
+    #[arg(long, value_enum, default_value_t = ValidationArg::Transport, global = true)]
+    pub validation: ValidationArg,
+    /// Merge against the live device image (default) or the durable stored baseline.
+    #[arg(long, value_enum, default_value_t = BaselineArg::Live, global = true)]
+    pub baseline: BaselineArg,
     /// Exact stable device ID reported by `x3ctl devices`.
     #[arg(long, global = true)]
     pub device: Option<String>,
@@ -115,7 +211,7 @@ pub enum Command {
     /// Read or update DPI configuration.
     #[command(subcommand)]
     Dpi(DpiCommand),
-    /// Read or update polling rate.
+    /// Read or update the polling rate of the profile selected by --profile.
     #[command(subcommand)]
     Rate(RateCommand),
     /// Read or update raw preference fields.
@@ -192,6 +288,15 @@ pub enum RateCommand {
 #[derive(Debug, Args)]
 pub struct RateSetArgs {
     pub hz: u16,
+    /// Authorize a single unverified BLE-only polling-rate write.
+    ///
+    /// Skips the loader and the complete-profile safety checks: the raw
+    /// polling-rate packet is sent directly over BLE and only the transport
+    /// ACK is accepted as evidence. Persistence is not verified and there is
+    /// no readback over BLE. This flag authorizes exactly one `rate set`
+    /// invocation and has no effect on other commands.
+    #[arg(long)]
+    pub allow_unverified_ble_rate_write: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -320,8 +425,9 @@ fn parse_color(raw: &str) -> Result<[u8; 3], String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, OutputFormat, SlotArg,
-        StateCommand, TransportArg,
+        ActionArg, BaselineArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, OutputFormat,
+        RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg, ValidationArg,
+        VerifyMethodArg,
     };
     use clap::Parser;
 
@@ -351,6 +457,159 @@ mod tests {
         assert_eq!(cli.output, OutputFormat::Json);
         assert_eq!(cli.transport, TransportArg::Receiver);
         assert_eq!(cli.profile, 3);
+    }
+
+    #[test]
+    fn validation_defaults_to_transport_and_parses_for_all_set_actions() {
+        let default =
+            Cli::try_parse_from(["x3ctl", "dpi", "set", "--stages", "800"]).expect("parse");
+        assert_eq!(default.validation, ValidationArg::Transport);
+
+        let sets: &[&[&str]] = &[
+            &["profile", "set"],
+            &["dpi", "set", "--stages", "800,1600"],
+            &["rate", "set", "1000"],
+            &["prefs", "set", "--debounce", "2"],
+            &["bind", "set", "--slot", "left", "--action", "left-click"],
+        ];
+        for (value, expected) in [
+            ("transport", ValidationArg::Transport),
+            ("readback", ValidationArg::Readback),
+        ] {
+            for set in sets {
+                let mut argv = vec!["x3ctl", "--validation", value];
+                argv.extend_from_slice(set);
+                let cli = Cli::try_parse_from(&argv)
+                    .unwrap_or_else(|error| panic!("--validation {value} with {set:?}: {error}"));
+                assert_eq!(cli.validation, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn baseline_defaults_to_live_and_parses_for_all_set_actions() {
+        let default =
+            Cli::try_parse_from(["x3ctl", "dpi", "set", "--stages", "800"]).expect("parse");
+        assert_eq!(default.baseline, BaselineArg::Live);
+
+        let sets: &[&[&str]] = &[
+            &["profile", "set"],
+            &["dpi", "set", "--stages", "800,1600"],
+            &["rate", "set", "1000"],
+            &["prefs", "set", "--debounce", "2"],
+            &["bind", "set", "--slot", "left", "--action", "left-click"],
+        ];
+        for (value, expected) in [("live", BaselineArg::Live), ("stored", BaselineArg::Stored)] {
+            for set in sets {
+                let mut argv = vec!["x3ctl", "--baseline", value];
+                argv.extend_from_slice(set);
+                let cli = Cli::try_parse_from(&argv)
+                    .unwrap_or_else(|error| panic!("--baseline {value} with {set:?}: {error}"));
+                assert_eq!(cli.baseline, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn rate_set_unverified_ble_flag_defaults_false_and_parses_explicit_true() {
+        let default = Cli::try_parse_from(["x3ctl", "rate", "set", "1000"]).expect("parse");
+        let (hz, flag) = match default.command {
+            Some(Command::Rate(RateCommand::Set(RateSetArgs {
+                hz,
+                allow_unverified_ble_rate_write,
+            }))) => (hz, allow_unverified_ble_rate_write),
+            other => panic!("expected RateSet, got {other:?}"),
+        };
+        assert_eq!(hz, 1000);
+        assert!(!flag);
+
+        let explicit = Cli::try_parse_from([
+            "x3ctl",
+            "rate",
+            "set",
+            "1000",
+            "--allow-unverified-ble-rate-write",
+        ])
+        .expect("parse");
+        match explicit.command {
+            Some(Command::Rate(RateCommand::Set(RateSetArgs {
+                hz,
+                allow_unverified_ble_rate_write,
+            }))) => {
+                assert_eq!(hz, 1000);
+                assert!(allow_unverified_ble_rate_write);
+            }
+            other => panic!("expected RateSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rate_set_unverified_ble_flag_accepts_global_argument_placement() {
+        let cli = Cli::try_parse_from([
+            "x3ctl",
+            "--validation",
+            "transport",
+            "--profile",
+            "2",
+            "rate",
+            "set",
+            "500",
+            "--allow-unverified-ble-rate-write",
+        ])
+        .expect("parse");
+        assert_eq!(cli.validation, ValidationArg::Transport);
+        assert_eq!(cli.profile, 2);
+        match cli.command {
+            Some(Command::Rate(RateCommand::Set(RateSetArgs {
+                hz,
+                allow_unverified_ble_rate_write,
+            }))) => {
+                assert_eq!(hz, 500);
+                assert!(allow_unverified_ble_rate_write);
+            }
+            other => panic!("expected RateSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rate_set_unverified_ble_flag_is_command_specific() {
+        // Rejected on rate get and on other set commands.
+        assert!(
+            Cli::try_parse_from(["x3ctl", "rate", "get", "--allow-unverified-ble-rate-write"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "x3ctl",
+                "dpi",
+                "set",
+                "--stages",
+                "800",
+                "--allow-unverified-ble-rate-write"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn verify_method_flag_stays_separate_from_validation() {
+        let cli = Cli::try_parse_from([
+            "x3ctl",
+            "--validation",
+            "readback",
+            "verify",
+            "--method",
+            "profile-reload",
+        ])
+        .expect("parse");
+        assert_eq!(cli.validation, ValidationArg::Readback);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Verify {
+                method: VerifyMethodArg::ProfileReload,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -428,6 +687,28 @@ mod tests {
                 "profile-minus",
                 SlotArg::Left,
                 ActionArg::ProfileMinus,
+            ),
+            ("left", "fire-button", SlotArg::Left, ActionArg::FireButton),
+            ("left", "scroll-up", SlotArg::Left, ActionArg::ScrollUp),
+            ("left", "volume-up", SlotArg::Left, ActionArg::VolumeUp),
+            (
+                "left",
+                "browser-home",
+                SlotArg::Left,
+                ActionArg::BrowserHome,
+            ),
+            (
+                "left",
+                "browser-favorites",
+                SlotArg::Left,
+                ActionArg::BrowserFavorites,
+            ),
+            ("left", "cut", SlotArg::Left, ActionArg::Cut),
+            (
+                "left",
+                "screen-capture",
+                SlotArg::Left,
+                ActionArg::ScreenCapture,
             ),
         ];
         for &(slot, action, expected_slot, expected_action) in cases {
