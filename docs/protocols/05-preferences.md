@@ -129,16 +129,27 @@ a possible explanation, not a confirmed one. \[corrected, live-confirmed]
 
 The mouse enters a deep power-saving mode after a period of inactivity.
 
-> **X3 caveat**: Sleep and deep-sleep behaviour is **not fully characterized** on X3. The fields follow the same encoding but actual sleep/deep-sleep transitions have not been confirmed via live testing on X3 hardware. \[inference]
+> **X3 caveat**: The wire encoding below is capture-confirmed from controlled
+> stock-app selections on wired FA61. Actual sleep/deep-sleep transitions have
+> not been timed on X3 hardware. \[capture-confirmed encoding; effect untested]
 
 - **Minutes Range**: 1 to 60.
-- **Index 5 Formula**: `0x08 + (Minutes * 0x10)`
+- **Index 5 Formula**: `0x08 | ((minutes % 16) << 4)`
 - **Bucket (Index 4 High Nibble)**:
-    - `0`: 1–16 minutes
-    - `1`: 17–32 minutes
-    - `2`: 33–48 minutes
-    - `3`: 49–60 minutes
-    - Formula: `floor((minutes - 1) / 16)`
+    - `0`: 1–15 minutes
+    - `1`: 16–31 minutes
+    - `2`: 32–47 minutes
+    - `3`: 48–60 minutes
+    - Formula: `floor(minutes / 16)`
+
+Exact multiples of 16 advance the bucket and set byte 5 to `0x08`. Controlled
+stock-app captures produced `(configuration, byte 5)` pairs `(0x03, 0xf8)` at
+15 minutes, `(0x13, 0x08)` at 16, `(0x13, 0x18)` at 17, `(0x23, 0x08)` at 32,
+`(0x23, 0x18)` at 33, and `(0x33, 0x08)` at 48. The full packets and clean
+single-write captures are preserved in
+[`../evidence/x3-fa61/captures/2026-08-15-deep-sleep-boundaries.json`](../evidence/x3-fa61/captures/2026-08-15-deep-sleep-boundaries.json).
+The earlier `(bucket 0, 0x08)` interpretation as 16 minutes was incorrect; that
+pair decodes to zero and is outside the supported range.
 
 ### 3. LED Speed (Index 4 Low Nibble)
 
@@ -203,3 +214,55 @@ Calculated as the sum of bytes from index 3 to 10, masked to 16 bits, stored big
 `Checksum = (Byte[3] + Byte[4] + ... + Byte[10]) & 0xFFFF`
 
 X3 rejects packets with an 8-bit or state-byte checksum (X11 format) — see the live ACK evidence table above. \[live-confirmed]
+
+---
+
+## Typed conversion helpers (Rust)
+
+The `attack-shark-x3` crate exposes checked, allocation-free newtypes for the
+three user-facing timing controls — `DebounceMs`, `SleepTimer`, and
+`DeepSleepMinutes` — re-exported at the crate root. A GUI should edit these
+controls through the helpers instead of embedding the packet formulas. The raw
+`PreferencesState` fields remain the wire values and are preserved byte for
+byte; the helpers are an optional, checked view on top.
+
+| Newtype | User value | Wire value | Exact conversion |
+|:--------|:-----------|:-----------|:-----------------|
+| `DebounceMs` | even `4..=50` ms | byte 10: `2..=25` | `raw = ((ms - 4) / 2) + 2`; `ms = (raw - 2) * 2 + 4` |
+| `SleepTimer` | `0.5..=30` min in `0.5` steps | byte 9: `1..=60` | `raw = minutes * 2`, the half-minute count |
+| `DeepSleepMinutes` | `1..=60` min | config high nibble + byte 5 | see below |
+
+Constructors (`new`) and wire decoders (`from_raw`, `from_configuration`)
+return `None` for invalid user values and noncanonical wire bytes; they never
+round, clamp, or guess.
+
+### Deep-sleep split encoding
+
+`DeepSleepMinutes` splits one minute value across two wire fields:
+
+- config byte high nibble — the bucket `minutes / 16` (`0..=3`), matching the
+  bucket table in [Field 2](#2-deep-sleep-configuration-index-4--5);
+- byte 5 — `0x08 | ((minutes % 16) << 4)`; the low nibble is the fixed `0x08`
+  marker.
+
+Decoding (`DeepSleepMinutes::from_raw(bucket, byte)` or
+`from_configuration(config, byte)`) accepts only canonical states:
+
+- deep-sleep byte low nibble `0x08`;
+- bucket `0..=3`;
+- `minutes = bucket * 16 + (byte >> 4)` in `1..=60`.
+
+Encoding replaces only the configuration high nibble: `configuration_with`
+preserves the caller's low configuration nibble (LED speed and any other
+low-nibble bits) and returns the new configuration byte.
+
+### X3 evidence caveat
+
+The raw field offsets and checksums are live/capture-confirmed. The split
+deep-sleep formula comes from the stock builder: byte 5 wraps at 16-minute
+boundaries, and the configuration bucket retains the missing range information.
+The repository contains a live-confirmed raw `(bucket 0, byte 0x08)` pair,
+consistent with 16 minutes under that formula; it does not contain controlled,
+labeled captures for 16, 32, or 48 minutes. The **effects** of sleep and
+deep-sleep fields remain **not fully live-characterized** on X3 hardware, and
+the host-labeled light/color bytes remain opaque.

@@ -1,7 +1,7 @@
 use attack_shark_x3::protocol::checksum::sum16;
 use attack_shark_x3::{
-    PreferencesFraming, PreferencesReport, PreferencesState, ProfileId, ProtocolError,
-    TransportKind,
+    DebounceMs, DeepSleepMinutes, PreferencesFraming, PreferencesReport, PreferencesState,
+    ProfileId, ProtocolError, SleepTimer, TransportKind,
 };
 use serde::Deserialize;
 
@@ -266,5 +266,229 @@ fn decoder_rejects_target_mismatch_identity_length_and_padding() {
             expected: 0,
             actual: 1
         })
+    );
+}
+
+#[test]
+fn debounce_boundaries_round_trip_and_reject_invalid() {
+    assert_eq!(DebounceMs::MIN_MS, 4);
+    assert_eq!(DebounceMs::MAX_MS, 50);
+    assert_eq!(DebounceMs::MIN_RAW, 2);
+    assert_eq!(DebounceMs::MAX_RAW, 25);
+
+    for ms in (DebounceMs::MIN_MS..=DebounceMs::MAX_MS).step_by(2) {
+        let debounce = DebounceMs::new(ms).expect("even in-range debounce must construct");
+        assert_eq!(debounce.get(), ms);
+        let raw = debounce.raw();
+        assert_eq!(raw, ((ms - 4) / 2) + 2);
+        assert_eq!(DebounceMs::from_raw(raw), Some(debounce));
+    }
+
+    // Canonical raw edge decodes.
+    assert_eq!(DebounceMs::from_raw(2).map(DebounceMs::get), Some(4));
+    assert_eq!(DebounceMs::from_raw(25).map(DebounceMs::get), Some(50));
+    assert_eq!(
+        DebounceMs::new(8).map(|value| value.to_string()),
+        Some("8 ms".into())
+    );
+
+    // Odd, below-range, and above-range user values are rejected, never rounded.
+    for ms in [0, 2, 3, 5, 49, 51, 255] {
+        assert_eq!(
+            DebounceMs::new(ms),
+            None,
+            "debounce {ms} ms must be rejected"
+        );
+    }
+    // Noncanonical wire bytes are rejected.
+    for raw in [0, 1, 26, 255] {
+        assert_eq!(
+            DebounceMs::from_raw(raw),
+            None,
+            "raw {raw} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn sleep_timer_boundaries_round_trip_and_reject_invalid() {
+    assert_eq!(SleepTimer::MIN_HALF_MINUTES, 1);
+    assert_eq!(SleepTimer::MAX_HALF_MINUTES, 60);
+    assert_eq!(SleepTimer::MIN_RAW, 1);
+    assert_eq!(SleepTimer::MAX_RAW, 60);
+
+    for half_minutes in SleepTimer::MIN_HALF_MINUTES..=SleepTimer::MAX_HALF_MINUTES {
+        let timer = SleepTimer::new(half_minutes).expect("in-range half-minute sleep timer");
+        assert_eq!(timer.get(), half_minutes);
+        assert_eq!(timer.raw(), half_minutes);
+        assert_eq!(SleepTimer::from_raw(half_minutes), Some(timer));
+        assert_eq!(timer.minutes(), f64::from(half_minutes) / 2.0);
+    }
+
+    assert_eq!(SleepTimer::new(1).map(SleepTimer::minutes), Some(0.5));
+    assert_eq!(SleepTimer::new(60).map(SleepTimer::minutes), Some(30.0));
+    assert_eq!(SleepTimer::from_raw(1).map(SleepTimer::minutes), Some(0.5));
+    assert_eq!(
+        SleepTimer::from_raw(60).map(SleepTimer::minutes),
+        Some(30.0)
+    );
+    assert_eq!(
+        SleepTimer::new(2).map(|value| value.to_string()),
+        Some("1 min".into())
+    );
+    assert_eq!(
+        SleepTimer::new(1).map(|value| value.to_string()),
+        Some("0.5 min".into())
+    );
+
+    for value in [0, 61, 255] {
+        assert_eq!(
+            SleepTimer::new(value),
+            None,
+            "user {value} must be rejected"
+        );
+        assert_eq!(
+            SleepTimer::from_raw(value),
+            None,
+            "raw {value} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn deep_sleep_bucket_edges_round_trip() {
+    // Values on both sides of every bucket boundary, including the exact
+    // 16-minute boundaries, round trip through both wire fields.
+    for minutes in [1, 15, 16, 17, 31, 32, 33, 47, 48, 49, 59, 60] {
+        let deep = DeepSleepMinutes::new(minutes).expect("supported minutes must construct");
+        assert_eq!(deep.get(), minutes);
+        let decoded = DeepSleepMinutes::from_raw(deep.bucket(), deep.deep_sleep_byte())
+            .unwrap_or_else(|| panic!("bucket edge {minutes} minutes must round trip"));
+        assert_eq!(decoded, deep);
+    }
+
+    // Canonical wire images around the bucket edges. The 15/16/17, 32/33,
+    // and 48-minute images are capture-confirmed from the stock app.
+    let cases = [
+        (1, 0, 0x18),
+        (15, 0, 0xf8),
+        (16, 1, 0x08),
+        (17, 1, 0x18),
+        (31, 1, 0xf8),
+        (32, 2, 0x08),
+        (33, 2, 0x18),
+        (47, 2, 0xf8),
+        (48, 3, 0x08),
+        (49, 3, 0x18),
+        (59, 3, 0xb8),
+        (60, 3, 0xc8),
+    ];
+    for (minutes, bucket, byte) in cases {
+        let deep = DeepSleepMinutes::new(minutes).expect("supported minutes must construct");
+        assert_eq!(deep.bucket(), bucket, "minutes {minutes} bucket");
+        assert_eq!(
+            deep.deep_sleep_byte(),
+            byte,
+            "minutes {minutes} deep-sleep byte"
+        );
+        assert_eq!(DeepSleepMinutes::from_raw(bucket, byte), Some(deep));
+    }
+}
+
+#[test]
+fn deep_sleep_rejects_noncanonical_raw_states() {
+    // Bucket zero plus a zero high nibble represents zero minutes, but the
+    // capture-confirmed boundary forms in buckets 1..=3 are canonical.
+    assert_eq!(DeepSleepMinutes::from_raw(0, 0x08), None);
+    for (bucket, minutes) in [(1, 16), (2, 32), (3, 48)] {
+        assert_eq!(
+            DeepSleepMinutes::from_raw(bucket, 0x08),
+            DeepSleepMinutes::new(minutes)
+        );
+    }
+    // The low nibble of the deep-sleep byte must be the fixed 0x08 marker.
+    for byte in [0x00, 0x10, 0x19, 0xff] {
+        assert_eq!(
+            DeepSleepMinutes::from_raw(0, byte),
+            None,
+            "byte {byte:#04x} has a noncanonical low nibble and must be rejected"
+        );
+    }
+    // Buckets above 3 always exceed the 60-minute ceiling.
+    for bucket in [4, 5, 15] {
+        for byte in [0x18, 0xf8] {
+            assert_eq!(
+                DeepSleepMinutes::from_raw(bucket, byte),
+                None,
+                "bucket {bucket} byte {byte:#04x} must be rejected"
+            );
+        }
+    }
+    // Bucket 3 covers 48..=60; higher nibbles overflow the range.
+    assert_eq!(DeepSleepMinutes::from_raw(3, 0xd8), None); // 61 minutes
+    assert_eq!(
+        DeepSleepMinutes::from_raw(3, 0xc8),
+        DeepSleepMinutes::new(60)
+    );
+
+    for minutes in [0, 61, 255] {
+        assert_eq!(
+            DeepSleepMinutes::new(minutes),
+            None,
+            "minutes {minutes} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn deep_sleep_preserves_low_configuration_nibble() {
+    for minutes in [1, 5, 17, 49, 59, 60] {
+        let deep = DeepSleepMinutes::new(minutes).expect("supported minutes must construct");
+        for configuration in [0x00, 0x03, 0x0f, 0xa5, 0xff] {
+            let low_nibble = configuration & 0x0f;
+            let encoded = deep.configuration_with(configuration);
+            assert_eq!(
+                encoded & 0x0f,
+                low_nibble,
+                "low configuration nibble must be preserved"
+            );
+            assert_eq!(
+                encoded >> 4,
+                deep.bucket(),
+                "high configuration nibble is the bucket"
+            );
+            // A state carrying this configuration plus the deep-sleep byte
+            // decodes back to the same minutes.
+            assert_eq!(
+                DeepSleepMinutes::from_configuration(encoded, deep.deep_sleep_byte()),
+                Some(deep)
+            );
+        }
+    }
+    // from_configuration derives the bucket from the raw configuration byte.
+    assert_eq!(
+        DeepSleepMinutes::from_configuration(0x13, 0x18),
+        DeepSleepMinutes::from_raw(1, 0x18)
+    );
+}
+
+#[test]
+fn timing_newtypes_serde_round_trip() {
+    let debounce = DebounceMs::new(8).unwrap();
+    let json = serde_json::to_string(&debounce).unwrap();
+    assert_eq!(json, "8");
+    assert_eq!(serde_json::from_str::<DebounceMs>(&json).unwrap(), debounce);
+
+    let timer = SleepTimer::new(3).unwrap();
+    let json = serde_json::to_string(&timer).unwrap();
+    assert_eq!(json, "3");
+    assert_eq!(serde_json::from_str::<SleepTimer>(&json).unwrap(), timer);
+
+    let deep = DeepSleepMinutes::new(17).unwrap();
+    let json = serde_json::to_string(&deep).unwrap();
+    assert_eq!(json, "17");
+    assert_eq!(
+        serde_json::from_str::<DeepSleepMinutes>(&json).unwrap(),
+        deep
     );
 }

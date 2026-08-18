@@ -16,6 +16,13 @@ use crate::error::StateError;
 /// profile image into that slot, so polling rate is per-profile and persistent.
 pub const SCHEMA_VERSION: u32 = 3;
 
+/// Maximum length of a local profile display name, in Unicode scalar values.
+///
+/// Names are per-device presentation metadata only: they never describe the
+/// hardware, so this bound exists purely to keep user input sane and is not
+/// part of any protocol contract.
+pub const MAX_PROFILE_NAME_CHARS: usize = 64;
+
 /// A wall-clock timestamp stored in the state document.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -162,6 +169,14 @@ pub struct DeviceState {
     pub identity: DeviceIdentity,
     pub profile_metadata: ResourceState<ProfileMetadata>,
     pub profiles: BTreeMap<ProfileId, ProfileState>,
+    /// Local presentation names for the device's profile slots.
+    ///
+    /// These are per-device display metadata only. They never claim anything
+    /// about hardware profile labels and have no protocol meaning;
+    /// `profile_metadata` remains the single source of protocol-visible
+    /// metadata.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profile_names: BTreeMap<ProfileId, String>,
 }
 
 impl DeviceState {
@@ -172,6 +187,7 @@ impl DeviceState {
             identity,
             profile_metadata: ResourceState::empty(),
             profiles: BTreeMap::new(),
+            profile_names: BTreeMap::new(),
         }
     }
 }
@@ -258,6 +274,18 @@ impl StateFile {
                 validate_profile_resource(profile_id, &profile.preferences, "preferences")?;
                 validate_profile_resource(profile_id, &profile.buttons, "buttons")?;
             }
+            for (profile_id, name) in &device.profile_names {
+                if name.trim().is_empty() {
+                    return Err(StateError::invalid_state(format!(
+                        "profile name for {profile_id} on device {device_id} is blank"
+                    )));
+                }
+                if name.chars().count() > MAX_PROFILE_NAME_CHARS {
+                    return Err(StateError::invalid_state(format!(
+                        "profile name for {profile_id} on device {device_id} exceeds {MAX_PROFILE_NAME_CHARS} Unicode scalar values"
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -312,12 +340,13 @@ impl ProfileValue for ButtonsState {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplicationVerification, DesiredSource, DesiredState, DeviceState, ObservationSource,
-        ObservedState, PersistenceVerification, ProfileState, ResourceState, SCHEMA_VERSION,
-        StateFile, Timestamp, Verification,
+        ApplicationVerification, DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS,
+        ObservationSource, ObservedState, PersistenceVerification, ProfileState, ResourceState,
+        SCHEMA_VERSION, StateFile, Timestamp, Verification,
     };
     use crate::device::DeviceIdentity;
-    use attack_shark_x3::DpiState;
+    use crate::error::StateError;
+    use attack_shark_x3::{DpiState, ProfileId};
     use std::collections::BTreeMap;
 
     fn timestamp(seconds: i64) -> Timestamp {
@@ -402,6 +431,70 @@ mod tests {
             ApplicationVerification::ReadbackVerified
         );
         assert_eq!(verification.persistence, PersistenceVerification::Unknown);
+    }
+
+    #[test]
+    fn new_device_state_starts_without_profile_names() {
+        let identity = DeviceIdentity::ble("test", None).expect("valid BLE identity");
+        let device = DeviceState::new(identity);
+        assert!(device.profile_names.is_empty());
+    }
+
+    #[test]
+    fn validate_rejects_overlong_or_blank_profile_names() {
+        let identity = DeviceIdentity::ble("test", None).expect("valid BLE identity");
+        let profile = ProfileId::new(1).expect("profile");
+
+        let overlong = {
+            let mut device = DeviceState::new(identity.clone());
+            device
+                .profile_names
+                .insert(profile, "x".repeat(MAX_PROFILE_NAME_CHARS + 1));
+            device
+        };
+        let state = StateFile {
+            schema_version: SCHEMA_VERSION,
+            selected_device: None,
+            devices: BTreeMap::from([(identity.id.clone(), overlong)]),
+        };
+        assert!(matches!(state.validate(), Err(StateError::InvalidState(_))));
+
+        let blank_id = identity.id.clone();
+        let blank = {
+            let mut device = DeviceState::new(identity);
+            device.profile_names.insert(profile, "   ".to_owned());
+            device
+        };
+        let state = StateFile {
+            schema_version: SCHEMA_VERSION,
+            selected_device: None,
+            devices: BTreeMap::from([(blank_id, blank)]),
+        };
+        assert!(matches!(state.validate(), Err(StateError::InvalidState(_))));
+    }
+
+    #[test]
+    fn old_state_documents_without_profile_names_deserialize() {
+        let identity = DeviceIdentity::ble("test", None).expect("valid BLE identity");
+        let device_id = identity.id.clone();
+        let json = serde_json::json!({
+            "schemaVersion": SCHEMA_VERSION,
+            "selectedDevice": device_id,
+            "devices": {
+                "ble:test": {
+                    "identity": identity,
+                    "profileMetadata": {
+                        "desired": null,
+                        "observed": null,
+                    },
+                    "profiles": {},
+                }
+            },
+        });
+        let state: StateFile = serde_json::from_value(json).expect("deserialize old state");
+        assert!(state.validate().is_ok());
+        let device = &state.devices[&device_id];
+        assert!(device.profile_names.is_empty());
     }
 
     #[allow(dead_code)]

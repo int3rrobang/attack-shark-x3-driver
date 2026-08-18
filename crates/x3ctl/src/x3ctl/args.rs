@@ -233,7 +233,7 @@ pub enum Command {
     Export,
     /// Import portable desired configuration without writing hardware.
     Import { file: String },
-    /// Inspect or invalidate manager state through typed manager APIs.
+    /// Inspect, invalidate, or reset manager state through typed manager APIs.
     #[command(subcommand)]
     State(StateCommand),
     /// Build protocol packets offline through manager encoders.
@@ -245,6 +245,8 @@ pub enum Command {
 pub enum ProfileCommand {
     Get,
     Set(ProfileSetArgs),
+    /// Temporarily enable and read all five USB profiles, then restore metadata.
+    RefreshAll,
 }
 
 #[derive(Debug, Args)]
@@ -339,6 +341,9 @@ pub struct BindSetArgs {
 pub enum StateCommand {
     Selected,
     Invalidate,
+    /// Replace an unreadable state file with a fresh empty state, preserving
+    /// the previous file at a sibling backup path.
+    Reset,
 }
 
 #[derive(Debug, Subcommand)]
@@ -426,8 +431,8 @@ fn parse_color(raw: &str) -> Result<[u8; 3], String> {
 mod tests {
     use super::{
         ActionArg, BaselineArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, OutputFormat,
-        RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg, ValidationArg,
-        VerifyMethodArg,
+        ProfileCommand, RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg,
+        ValidationArg, VerifyMethodArg,
     };
     use clap::Parser;
 
@@ -633,6 +638,26 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Debug(DebugCommand::Dpi(_)))
+        ));
+    }
+
+    #[test]
+    fn parses_explicit_all_profile_refresh_dry_run() {
+        let cli =
+            Cli::try_parse_from(["x3ctl", "--dry-run", "profile", "refresh-all"]).expect("parse");
+        assert!(cli.dry_run);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Profile(ProfileCommand::RefreshAll))
+        ));
+    }
+
+    #[test]
+    fn parses_state_reset() {
+        let cli = Cli::try_parse_from(["x3ctl", "state", "reset"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Command::State(StateCommand::Reset))
         ));
     }
 

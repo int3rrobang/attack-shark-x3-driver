@@ -18,6 +18,7 @@ license, and attribution are preserved, but X11 is no longer a production target
 FA61 and FA60 share the same X3/M600 packet dialect. Transport selection controls
 discovery and compact versus padded feature-report lengths.
 
+
 ### Capability truth table
 
 | Capability | USB (`wired`/`receiver`) | BLE (`ble`) |
@@ -158,6 +159,10 @@ cargo run -p x3ctl -- rate get
 # Read current profile
 cargo run -p x3ctl -- profile get
 
+# Rebuild USB observations for all five profile slots, restoring the original
+# current profile and maximum afterward
+cargo run -p x3ctl -- profile refresh-all
+
 # Read battery (USB receiver only)
 cargo run -p x3ctl -- battery
 ```
@@ -165,6 +170,15 @@ cargo run -p x3ctl -- battery
 FA61 profile-targeted reads are not passive: reading DPI, preferences, buttons, or a
 complete profile can load that target's working buffers and change live mouse behavior
 without changing persistent profile metadata.
+
+`profile refresh-all` is an explicit USB-only reconciliation workflow, not a
+passive read. It temporarily raises the enabled maximum to five when necessary,
+activates and captures each profile's DPI, preferences, buttons, and polling
+rate, then restores the exact original current/maximum metadata. Fresh
+observations never replace desired values; differences are reported as drift.
+The workflow clears older persistence claims because it does not include a
+power cycle.
+
 
 ### Typed writes
 

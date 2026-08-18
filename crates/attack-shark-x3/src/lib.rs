@@ -35,7 +35,8 @@ pub use protocol::input::{
 };
 pub use protocol::polling_rate::{DecodedPollingRateReport, PollingRate, PollingRateReport};
 pub use protocol::preferences::{
-    DecodedPreferencesReport, PreferencesFraming, PreferencesReport, PreferencesState,
+    DebounceMs, DecodedPreferencesReport, DeepSleepMinutes, PreferencesFraming, PreferencesReport,
+    PreferencesState, SleepTimer,
 };
 pub use protocol::profile::{
     ProfileControlFraming, ProfileControlReport, ProfileMetadata, ProfileMetadataReport,

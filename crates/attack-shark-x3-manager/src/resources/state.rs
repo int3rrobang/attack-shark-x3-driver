@@ -7,7 +7,8 @@ use crate::device::{DeviceId, DeviceIdentity};
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::state::{
-    DesiredSource, DesiredState, DeviceState, ProfileState, ResourceState, Timestamp, Verification,
+    DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS, ProfileState, ResourceState,
+    StateReset, Timestamp, Verification,
 };
 
 /// A profile's portable configuration values.
@@ -38,6 +39,13 @@ pub struct ProfileConfiguration {
 pub struct ConfigurationExport {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profiles: BTreeMap<ProfileId, ProfileConfiguration>,
+    /// Local display names for profile slots, keyed by profile.
+    ///
+    /// Names are per-device presentation metadata, never hardware claims, and
+    /// travel with the portable configuration so a setup can be restored
+    /// without losing its labels.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profile_names: BTreeMap<ProfileId, String>,
 }
 
 impl DeviceManager {
@@ -70,7 +78,10 @@ impl DeviceManager {
             }
         }
 
-        Ok(ConfigurationExport { profiles })
+        Ok(ConfigurationExport {
+            profiles,
+            profile_names: device_state.profile_names.clone(),
+        })
     }
 
     /// Imports portable desired values for an externally supplied identity.
@@ -117,7 +128,81 @@ impl DeviceManager {
             }
         }
 
+        // Names present in the document are applied verbatim: an empty name
+        // clears the slot, an absent profile is left untouched. Validation
+        // above guarantees every name is within the length bound.
+        for (&profile, name) in &configuration.profile_names {
+            match normalize_profile_name(name)? {
+                Some(name) => {
+                    device_state.profile_names.insert(profile, name);
+                }
+                None => {
+                    device_state.profile_names.remove(&profile);
+                }
+            }
+        }
+
         state.validate()?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Returns the local display names for every profile slot on a device.
+    ///
+    /// Names are per-device presentation metadata only and never imply a
+    /// hardware rename or a protocol claim.
+    pub fn profile_names(
+        &self,
+        device: &DeviceId,
+    ) -> Result<BTreeMap<ProfileId, String>, ManagerError> {
+        let state = self.store().load()?;
+        let device_state = state
+            .devices
+            .get(device)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+        Ok(device_state.profile_names.clone())
+    }
+
+    /// Sets the local display name for one profile slot.
+    ///
+    /// The name is trimmed before storage; a blank result removes the slot's
+    /// name. Names longer than [`MAX_PROFILE_NAME_CHARS`] Unicode scalar
+    /// values are rejected with [`ManagerError::InvalidUpdate`].
+    pub fn set_profile_name(
+        &self,
+        device: &DeviceId,
+        profile: ProfileId,
+        name: &str,
+    ) -> Result<(), ManagerError> {
+        let Some(name) = normalize_profile_name(name)? else {
+            return self.remove_profile_name(device, profile);
+        };
+        let mut transaction = self.store().transaction()?;
+        let device_state = transaction
+            .state_mut()
+            .devices
+            .get_mut(device)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+        device_state.profile_names.insert(profile, name);
+        transaction.state().validate()?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Removes the local display name for one profile slot.
+    pub fn remove_profile_name(
+        &self,
+        device: &DeviceId,
+        profile: ProfileId,
+    ) -> Result<(), ManagerError> {
+        let mut transaction = self.store().transaction()?;
+        let device_state = transaction
+            .state_mut()
+            .devices
+            .get_mut(device)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+        device_state.profile_names.remove(&profile);
+        transaction.state().validate()?;
         transaction.commit()?;
         Ok(())
     }
@@ -136,6 +221,17 @@ impl DeviceManager {
         transaction.commit()?;
         Ok(())
     }
+    /// Replaces an unreadable state file with a fresh empty state, preserving
+    /// the previous file at a sibling backup path.
+    ///
+    /// Use when [`StateStore::load`](crate::state::StateStore::load) fails,
+    /// for example after a schema bump. Refuses when the current file loads
+    /// successfully, so a valid state can never be destroyed by accident.
+    pub fn discard_unreadable_state(&self) -> Result<StateReset, ManagerError> {
+        self.store()
+            .discard_unreadable()
+            .map_err(ManagerError::from)
+    }
 }
 
 fn value_for_export<T: Clone>(resource: &ResourceState<T>) -> Option<T> {
@@ -149,6 +245,24 @@ fn value_for_export<T: Clone>(resource: &ResourceState<T>) -> Option<T> {
                 .as_ref()
                 .map(|observed| observed.value.clone())
         })
+}
+
+/// Normalizes a user-supplied profile display name.
+///
+/// Surrounding whitespace is trimmed; a blank result means "no name". Names
+/// longer than [`MAX_PROFILE_NAME_CHARS`] Unicode scalar values are rejected
+/// with [`ManagerError::InvalidUpdate`].
+fn normalize_profile_name(name: &str) -> Result<Option<String>, ManagerError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_PROFILE_NAME_CHARS {
+        return Err(ManagerError::InvalidUpdate(format!(
+            "profile name exceeds {MAX_PROFILE_NAME_CHARS} Unicode scalar values"
+        )));
+    }
+    Ok(Some(trimmed.to_owned()))
 }
 
 fn set_imported<T>(resource: &mut ResourceState<T>, value: T, now: Timestamp) {
@@ -198,6 +312,9 @@ fn validate_configuration(configuration: &ConfigurationExport) -> Result<(), Man
             return Err(invalid_profile_value("buttons", profile));
         }
     }
+    for name in configuration.profile_names.values() {
+        normalize_profile_name(name)?;
+    }
     Ok(())
 }
 
@@ -210,16 +327,19 @@ fn invalid_profile_value(resource: &'static str, profile: ProfileId) -> ManagerE
 #[cfg(test)]
 mod tests {
     use super::{ConfigurationExport, ProfileConfiguration};
-    use crate::device::DeviceIdentity;
+    use crate::device::{DeviceId, DeviceIdentity};
+    use crate::error::ManagerError;
     use crate::manager::DeviceManager;
     use crate::state::{
-        ApplicationVerification, DesiredSource, DesiredState, ObservationSource, ObservedState,
-        PersistenceVerification, ResourceState, StatePaths, StateStore, Timestamp, Verification,
+        ApplicationVerification, DesiredSource, DesiredState, MAX_PROFILE_NAME_CHARS,
+        ObservationSource, ObservedState, PersistenceVerification, ResourceState, StatePaths,
+        StateStore, Timestamp, Verification,
     };
     use attack_shark_x3::{
         ButtonAssignment, ButtonsState, DpiState, DpiValue, PollingRate, PreferencesState,
         ProfileId, ProfileMetadata, StageIndex, TransportKind,
     };
+    use std::collections::BTreeMap;
 
     fn store(dir: &tempfile::TempDir) -> StateStore {
         StateStore::open(StatePaths {
@@ -272,6 +392,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            profile_names: BTreeMap::new(),
         };
 
         manager
@@ -455,6 +576,249 @@ mod tests {
                 .verification
                 .persistence
                 .is_unknown()
+        );
+    }
+
+    #[test]
+    fn profile_names_support_all_slots_and_normalize_on_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = DeviceManager::new(store(&dir)).expect("manager");
+        let identity = identity();
+        manager.register_device(identity.clone()).expect("register");
+        let profile = ProfileId::new(1).expect("profile");
+
+        // Establish a clean baseline even if setup has already populated names.
+        let existing_profiles = manager
+            .profile_names(&identity.id)
+            .expect("names")
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for existing_profile in existing_profiles {
+            manager
+                .remove_profile_name(&identity.id, existing_profile)
+                .expect("clear existing name");
+        }
+        assert!(
+            manager
+                .profile_names(&identity.id)
+                .expect("names")
+                .is_empty()
+        );
+
+        for slot in 1..=5 {
+            let slot_profile = ProfileId::new(slot).expect("profile");
+            manager
+                .set_profile_name(&identity.id, slot_profile, &format!("  Profile {slot}  "))
+                .expect("set");
+        }
+        let names = manager.profile_names(&identity.id).expect("names");
+        assert_eq!(names.len(), 5);
+        assert_eq!(names[&profile], "Profile 1");
+
+        // Blank input removes the name.
+        manager
+            .set_profile_name(&identity.id, profile, "   ")
+            .expect("set blank");
+        let names = manager.profile_names(&identity.id).expect("names");
+        assert_eq!(names.len(), 4);
+        assert!(!names.contains_key(&profile));
+
+        manager
+            .set_profile_name(&identity.id, profile, "Office")
+            .expect("set");
+        manager
+            .remove_profile_name(&identity.id, profile)
+            .expect("remove");
+        let names = manager.profile_names(&identity.id).expect("names");
+        assert_eq!(names.len(), 4);
+        assert!(!names.contains_key(&profile));
+
+        for slot in 2..=5 {
+            manager
+                .remove_profile_name(&identity.id, ProfileId::new(slot).expect("profile"))
+                .expect("remove");
+        }
+        assert!(
+            manager
+                .profile_names(&identity.id)
+                .expect("names")
+                .is_empty()
+        );
+
+        match manager.set_profile_name(&DeviceId::new("missing").expect("id"), profile, "X") {
+            Err(ManagerError::DeviceNotFound(_)) => {}
+            other => panic!("expected DeviceNotFound, got {other:?}"),
+        }
+        match manager.profile_names(&DeviceId::new("missing").expect("id")) {
+            Err(ManagerError::DeviceNotFound(_)) => {}
+            other => panic!("expected DeviceNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn profile_name_limit_is_enforced_in_unicode_scalar_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = DeviceManager::new(store(&dir)).expect("manager");
+        let identity = identity();
+        manager.register_device(identity.clone()).expect("register");
+        let profile = ProfileId::new(1).expect("profile");
+
+        // 64 ASCII scalars are accepted; 65 are rejected.
+        let max = "x".repeat(MAX_PROFILE_NAME_CHARS);
+        manager
+            .set_profile_name(&identity.id, profile, &max)
+            .expect("max length accepted");
+        match manager.set_profile_name(
+            &identity.id,
+            profile,
+            &"x".repeat(MAX_PROFILE_NAME_CHARS + 1),
+        ) {
+            Err(ManagerError::InvalidUpdate(_)) => {}
+            other => panic!("expected InvalidUpdate, got {other:?}"),
+        }
+        assert_eq!(
+            manager.profile_names(&identity.id).expect("names")[&profile],
+            max
+        );
+
+        // 64 multi-byte emoji (256 UTF-8 bytes) still count as 64 scalar
+        // values, so they are accepted.
+        let emoji = "😀".repeat(MAX_PROFILE_NAME_CHARS);
+        manager
+            .set_profile_name(&identity.id, profile, &emoji)
+            .expect("emoji at scalar limit accepted");
+        assert_eq!(
+            manager.profile_names(&identity.id).expect("names")[&profile],
+            emoji
+        );
+    }
+
+    #[test]
+    fn profile_names_survive_state_invalidation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store(&dir);
+        let manager = DeviceManager::new(store.clone()).expect("manager");
+        let identity = identity();
+        manager.register_device(identity.clone()).expect("register");
+        let profile = ProfileId::new(1).expect("profile");
+        manager
+            .set_profile_name(&identity.id, profile, "Gaming")
+            .expect("set");
+
+        manager.invalidate_state(&identity.id).expect("invalidate");
+
+        assert_eq!(
+            manager.profile_names(&identity.id).expect("names")[&profile],
+            "Gaming"
+        );
+    }
+
+    #[test]
+    fn import_export_round_trips_profile_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = DeviceManager::new(store(&dir)).expect("manager");
+        let identity = identity();
+        let profile = ProfileId::new(1).expect("profile");
+        let configuration = ConfigurationExport {
+            profiles: [(
+                profile,
+                ProfileConfiguration {
+                    dpi: Some(dpi(profile)),
+                    preferences: Some(PreferencesState::new(profile, 1, 2, 3, [4, 5, 6], 7, 8)),
+                    buttons: Some(buttons(profile)),
+                    polling_rate: Some(PollingRate::Hz1000),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            profile_names: BTreeMap::from([
+                (profile, "Gaming".to_owned()),
+                (ProfileId::new(2).expect("profile"), "Office".to_owned()),
+            ]),
+        };
+
+        manager
+            .import_configuration(&identity, configuration.clone())
+            .expect("import");
+        let exported = manager.export_configuration(&identity.id).expect("export");
+        assert_eq!(exported, configuration);
+
+        // A name-only entry round-trips even when its profile carries no
+        // hardware configuration values.
+        let named_profile = ProfileId::new(3).expect("profile");
+        let names_only = ConfigurationExport {
+            profiles: BTreeMap::new(),
+            profile_names: BTreeMap::from([(named_profile, "Stream".to_owned())]),
+        };
+        manager
+            .import_configuration(&identity, names_only)
+            .expect("import names");
+        assert_eq!(
+            manager
+                .export_configuration(&identity.id)
+                .expect("export")
+                .profile_names[&named_profile],
+            "Stream"
+        );
+
+        // Blank names in an imported document clear the slot.
+        let blank = ConfigurationExport {
+            profiles: BTreeMap::new(),
+            profile_names: BTreeMap::from([(named_profile, "  ".to_owned())]),
+        };
+        manager
+            .import_configuration(&identity, blank)
+            .expect("import blank");
+        assert!(
+            !manager
+                .profile_names(&identity.id)
+                .expect("names")
+                .contains_key(&named_profile)
+        );
+    }
+
+    #[test]
+    fn import_rejects_overlong_profile_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = DeviceManager::new(store(&dir)).expect("manager");
+        let identity = identity();
+        let profile = ProfileId::new(1).expect("profile");
+        let overlong = ConfigurationExport {
+            profiles: BTreeMap::new(),
+            profile_names: BTreeMap::from([(profile, "x".repeat(MAX_PROFILE_NAME_CHARS + 1))]),
+        };
+        match manager.import_configuration(&identity, overlong) {
+            Err(ManagerError::InvalidUpdate(_)) => {}
+            other => panic!("expected InvalidUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn old_import_documents_without_profile_names_deserialize() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = DeviceManager::new(store(&dir)).expect("manager");
+        let identity = identity();
+        let profile = ProfileId::new(1).expect("profile");
+        let json = serde_json::json!({
+            "profiles": {
+                profile.get().to_string(): {
+                    "dpi": dpi(profile),
+                },
+            },
+        });
+        let configuration: ConfigurationExport =
+            serde_json::from_value(json).expect("deserialize old import");
+        assert!(configuration.profile_names.is_empty());
+
+        manager
+            .import_configuration(&identity, configuration)
+            .expect("import");
+        assert!(
+            manager
+                .profile_names(&identity.id)
+                .expect("names")
+                .is_empty()
         );
     }
 }

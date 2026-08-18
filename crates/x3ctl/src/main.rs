@@ -10,11 +10,11 @@ use std::process::ExitCode;
 
 use attack_shark_x3_manager::{
     BaselineSource, ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport, DeviceId,
-    DeviceManager, DeviceStatus, DpiDelta, DpiState, DpiValue, LiftOffDistance, PollingRate,
-    PreferencesDelta, PreferencesFraming, PreferencesState, ProfileId, ResourceSnapshot,
-    SafeButtonAction, SafeButtonSlot, SensorOptions, SensorOptionsDelta, StageIndex, StateStore,
-    TransportKind, TransportSelection, UpdatePolicy, VerificationMethod, encode_debug_buttons,
-    encode_debug_dpi, encode_debug_prefs,
+    DeviceManager, DeviceStatus, DpiDelta, DpiState, DpiValue, FullProfileRefreshOutcome,
+    LiftOffDistance, PollingRate, PreferencesDelta, PreferencesFraming, PreferencesState,
+    ProfileId, ProfileResourceKind, ResourceSnapshot, SafeButtonAction, SafeButtonSlot,
+    SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind, TransportSelection,
+    UpdatePolicy, VerificationMethod, encode_debug_buttons, encode_debug_dpi, encode_debug_prefs,
 };
 use clap::Parser;
 use serde::Serialize;
@@ -47,6 +47,7 @@ enum Action {
         profile: ProfileId,
         maximum: Option<ProfileId>,
     },
+    ProfileRefreshAll,
     DpiGet {
         profile: ProfileId,
     },
@@ -92,6 +93,7 @@ enum Action {
     },
     StateSelected,
     StateInvalidate,
+    StateReset,
 }
 
 fn main() -> ExitCode {
@@ -163,6 +165,7 @@ fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
                 profile: parse_profile(profile.unwrap_or(cli.profile))?,
                 maximum: maximum.map(parse_profile).transpose()?,
             }),
+            ProfileCommand::RefreshAll => Ok(Action::ProfileRefreshAll),
         },
         Command::Dpi(command) => match command {
             DpiCommand::Get => Ok(Action::DpiGet {
@@ -216,6 +219,7 @@ fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
         Command::State(command) => match command {
             StateCommand::Selected => Ok(Action::StateSelected),
             StateCommand::Invalidate => Ok(Action::StateInvalidate),
+            StateCommand::Reset => Ok(Action::StateReset),
         },
         Command::Debug(_) => Err("debug commands are handled offline".into()),
     }
@@ -423,6 +427,14 @@ async fn dispatch(
             };
             output.print(format!("Activated profile {profile}"), &metadata)
         }
+        Action::ProfileRefreshAll => {
+            let device = resolve_hardware(manager, cli, selection).await?;
+            let outcome = manager
+                .refresh_all_profiles(&device)
+                .await
+                .map_err(|error| error.to_string())?;
+            output.print(format_refresh_human(&outcome), &outcome)
+        }
         Action::DpiGet { profile } => {
             let device = resolve_hardware(manager, cli, selection).await?;
             let snapshot = manager
@@ -556,7 +568,7 @@ async fn dispatch(
             }
             VerificationAction::PowerCycle => {
                 let device = resolve_hardware(manager, cli, selection).await?;
-                let instruction = "Power off the mouse, wait for it to disappear, power it on, and wait for it to reappear.";
+                let instruction = "Unplug the device from USB, switch the mouse off, and wait for it to disappear. Then switch it on, reconnect, and wait for it to reappear. A USB unplug alone is not a true power cycle: the mouse battery keeps it powered.";
                 output.print(
                     instruction,
                     &serde_json::json!({"instruction": instruction}),
@@ -611,6 +623,22 @@ async fn dispatch(
                 .invalidate_state(&device)
                 .map_err(|error| error.to_string())?;
             output.print(format!("Invalidated state evidence for {device}"), &device)
+        }
+        Action::StateReset => {
+            let reset = manager
+                .discard_unreadable_state()
+                .map_err(|error| error.to_string())?;
+            let backup = reset
+                .backup
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "no previous file existed".to_owned());
+            output.print(
+                format!(
+                    "Replaced the state file with a fresh empty state; previous file preserved at {backup}"
+                ),
+                &reset,
+            )
         }
     }
 }
@@ -929,6 +957,47 @@ fn button_action_name(action: u8) -> &'static str {
     }
 }
 
+fn format_refresh_human(outcome: &FullProfileRefreshOutcome) -> String {
+    let mut text = format!(
+        "Refreshed all {} profiles from USB.\nOriginal/restored metadata: current {}, maximum {}.",
+        outcome.profiles.len(),
+        outcome.restored_metadata.current(),
+        outcome.restored_metadata.maximum()
+    );
+    if outcome.temporarily_expanded {
+        text.push_str("\nProfile slots were temporarily enabled through slot 5.");
+    }
+    if outcome.profile_metadata_drift || !outcome.drift.is_empty() {
+        text.push_str("\nDesired/observed drift:");
+        if outcome.profile_metadata_drift {
+            text.push_str("\n  profile metadata");
+        }
+        for (profile, resources) in &outcome.drift {
+            let names = resources
+                .iter()
+                .map(cli_profile_resource_name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            text.push_str(&format!("\n  profile {profile}: {names}"));
+        }
+    } else {
+        text.push_str("\nAll stored desired values match fresh observations.");
+    }
+    text.push_str(
+        "\nPersistence remains unverified; use `verify` for stronger persistence evidence.",
+    );
+    text
+}
+
+fn cli_profile_resource_name(resource: &ProfileResourceKind) -> &'static str {
+    match resource {
+        ProfileResourceKind::Dpi => "DPI",
+        ProfileResourceKind::Preferences => "preferences",
+        ProfileResourceKind::Buttons => "buttons",
+        ProfileResourceKind::PollingRate => "polling rate",
+    }
+}
+
 fn format_status_human(status: &DeviceStatus) -> String {
     let mut text = format!(
         "Status for {}\n  transport: {}",
@@ -962,6 +1031,9 @@ fn action_name(action: &Action) -> &'static str {
         Action::Status => "read status",
         Action::ProfileGet { .. } => "read profile",
         Action::ProfileSet { .. } => "set profile",
+        Action::ProfileRefreshAll => {
+            "temporarily enable and refresh all five profiles, then restore metadata"
+        }
         Action::DpiGet { .. } => "read DPI",
         Action::DpiSet { .. } => "set DPI",
         Action::RateGet { .. } => "read polling rate",
@@ -980,6 +1052,7 @@ fn action_name(action: &Action) -> &'static str {
         Action::Import { .. } => "import configuration",
         Action::StateSelected => "read selected device",
         Action::StateInvalidate => "invalidate state",
+        Action::StateReset => "reset state file",
     }
 }
 
@@ -1140,6 +1213,31 @@ mod tests {
                 rate,
             }),
             "set polling rate (unverified BLE packet write)"
+        );
+    }
+
+    #[test]
+    fn build_profile_refresh_all_action_is_explicit() {
+        let cli = args::Cli::try_parse_from(["x3ctl", "--dry-run", "profile", "refresh-all"])
+            .expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        let action = build_action(&cli, command).expect("build");
+        assert!(matches!(action, Action::ProfileRefreshAll));
+        assert_eq!(
+            action_name(&action),
+            "temporarily enable and refresh all five profiles, then restore metadata"
+        );
+    }
+
+    #[test]
+    fn refresh_human_output_uses_readable_resource_names() {
+        assert_eq!(
+            cli_profile_resource_name(&ProfileResourceKind::PollingRate),
+            "polling rate"
+        );
+        assert_eq!(
+            cli_profile_resource_name(&ProfileResourceKind::Preferences),
+            "preferences"
         );
     }
 

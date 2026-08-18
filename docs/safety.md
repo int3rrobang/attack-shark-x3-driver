@@ -19,6 +19,23 @@ Prefer offline packet builders, fixtures, and CLI `hex` commands. Hardware acces
 - The `--dry-run` flag validates and prints what would be sent without touching hardware.
 - Durable state separates desired values (what was written) from observed values (what was read back). A USB readback confirms application but not EEPROM persistence. `x3ctl verify --method profile-reload` or `--method power-cycle` tests persistence explicitly. `x3ctl state invalidate` preserves the desired and observed values but clears the persistence evidence tags, so the next operation re-verifies before trusting cached state.
 
+### All-profile state refresh
+
+`x3ctl profile refresh-all` is USB-only and is not a passive read. It may
+temporarily raise the maximum enabled profile to five and activates every slot
+so the live polling rate can be associated with the correct profile. The
+manager captures DPI, preferences, buttons, and rate in one session, then
+restores the exact original current/maximum metadata before committing any
+fresh observations. A failure triggers the same restoration attempt; if
+restoration also fails, the device may remain switched or expanded and the
+error says so explicitly.
+
+The operation preserves desired values, reports fresh desired/observed drift,
+and invalidates older persistence claims. A successful refresh proves current
+USB observations only; use profile-reload or power-cycle verification for
+persistence evidence. Do not run it automatically at startup or behind an
+ordinary refresh control.
+
 ## Polling-rate writes (report `0x06`)
 
 Report `0x06` **skips the profile loader**: byte 2 is a save alias naming the

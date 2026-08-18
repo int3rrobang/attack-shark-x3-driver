@@ -157,12 +157,21 @@ impl DeviceManager {
 
     pub async fn read_status(&self, device: &DeviceId) -> Result<DeviceStatus, ManagerError> {
         let (identity, session) = self.open_session(device).await?;
-        let usb = is_usb_transport(session.transport());
+        let transport = session.transport();
+        let usb = is_usb_transport(transport);
 
-        let battery = match session.read_battery(BATTERY_READ_TIMEOUT).await {
-            Ok(level) => Some(level),
-            Err(ManagerError::UnsupportedOperation { .. }) => None,
-            Err(error) => return Err(error),
+        // Wired devices expose no battery telemetry: skip the read entirely so
+        // status never fails on unsupported hardware. Receiver and BLE keep
+        // reading, with unsupported reads mapped to None.
+        let battery = match transport {
+            TransportKind::Wired => None,
+            TransportKind::Receiver | TransportKind::Ble => {
+                match session.read_battery(BATTERY_READ_TIMEOUT).await {
+                    Ok(level) => Some(level),
+                    Err(ManagerError::UnsupportedOperation { .. }) => None,
+                    Err(error) => return Err(error),
+                }
+            }
         };
 
         let profile_metadata = match session.read_profile_metadata().await {
@@ -654,7 +663,9 @@ mod tests {
         }
 
         let status = manager.read_status(&id).await.unwrap();
-        assert_eq!(status.battery, Some(87));
+        // Wired exposes no battery telemetry: even though the backend scripts a
+        // value, read_status must skip the read and report None.
+        assert_eq!(status.battery, None);
 
         // Polling rate: desired preserved, observed set from readback
         let polling = status.polling_rate.as_ref().unwrap();

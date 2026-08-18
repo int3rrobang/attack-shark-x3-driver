@@ -2,11 +2,11 @@
 
 Status: prototype integration contract for a user-facing UI.
 
-This document describes the current Rust USB driver as a UI-facing capability
+This document describes the current Rust driver and GUI as a UI-facing capability
 surface. It separates behavior that is implemented today from UI policy that an
-adapter should enforce. It targets X3/FA61 wired devices; the Rust implementation
-does not implement BLE or older X11 transports, but Section 10 records the
-transport-specific capabilities a future adapter must honor.
+adapter should enforce. It targets X3/FA61 wired devices and the constrained
+X3/M600 BLE write path; BLE configuration reads and readback are unavailable, and
+the GUI does not offer polling-rate writes over BLE.
 
 Canonical packet layouts remain in [`protocols/`](protocols/README.md). Device and
 transport constraints are in [`devices/x3-fa61.md`](devices/x3-fa61.md) and
@@ -29,8 +29,11 @@ is valid only when exactly one matching configuration collection exists. A UI th
 supports multiple mice must display the discovered device path and pass the exact
 path when opening a device.
 
-BLE, firmware update operations, custom macro editing, battery over wired USB,
-and X11 `0xfa55`/`0xfa60` behavior are outside this contract.
+Constrained BLE non-rate writes are covered below. BLE configuration
+reads/readback, safe polling-rate writes, and the dangerous unverified BLE
+polling-rate override are outside the GUI contract. Firmware update operations,
+custom macro editing, battery over wired USB, and X11 `0xfa55`/`0xfa60` behavior
+remain outside this contract.
 
 ### 1.2 Design principles
 
@@ -184,15 +187,32 @@ The UI may expose decoded views while retaining the raw values in its model:
 |:---------|:------------------|:---------------------|
 | Light mode | known modes or an unknown/raw value | known values include `0x00`, `0x10` … `0x60`; raw `0x00..=0xff` is accepted by the CLI |
 | LED speed | `1..=5` | low nibble of `configurationRaw` is `6 - speed` |
-| Deep sleep | `1..=60` minutes | `deepSleepRaw` plus the high configuration bucket |
+| Deep sleep | `1..=60` whole minutes | `deepSleepRaw` plus the high configuration bucket |
 | Normal sleep | `0.5..=30` minutes in `0.5` steps | `sleepTimerRaw = minutes * 2` |
 | Debounce | even `4..=50` ms | `debounceRaw = ((ms - 4) / 2) + 2` |
 | Host color | raw bytes only on X3 | preserve `[r, g, b]` exactly |
 
-The host-labeled color bytes have no confirmed X3 hardware effect. They should be
-shown as diagnostic/raw data or kept hidden, not presented as confirmed RGB
-control. Unknown light-mode values must be displayed as `Unknown (0xNN)` and
-preserved unless the user explicitly selects a replacement.
+The leaf crate exposes checked, allocation-free helpers for the three timing
+controls — `DebounceMs` (even `4..=50` ms), `SleepTimer` (`0.5..=30` minutes in
+`0.5` steps), and `DeepSleepMinutes` (`1..=60` minutes split across
+`deepSleepRaw` and the high configuration bucket). The UI must convert through
+these helpers rather than embedding the packet formulas: constructors and wire
+decoders return `None` for invalid user values and noncanonical wire bytes, and
+deep-sleep edits must preserve the low configuration nibble via
+`configuration_with`. Exact conversions and canonical-state rules live in
+[`protocols/05-preferences.md`](protocols/05-preferences.md#typed-conversion-helpers-rust).
+
+The preference packet offsets and checksums are live/capture-confirmed, but the
+actual sleep/deep-sleep **effects** are not fully live-characterized on X3.
+Controlled wired FA61 stock-app captures confirm that the configuration bucket
+advances at 16, 32, and 48 minutes while the deep-sleep byte becomes `0x08`;
+all whole-minute values from 1 through 60 are therefore representable. The UI
+must not present host color
+as a confirmed RGB control — it should be shown as diagnostic/raw data or kept
+hidden — and must not claim live-confirmed sleep behavior for fields whose
+effect on this hardware is unverified. Unknown light-mode values must be
+displayed as `Unknown (0xNN)` and preserved unless the user explicitly selects
+a replacement.
 
 Known CLI light-mode labels are `off`, `static`, `breathing`, `neon`,
 `color-breathing`, `static-dpi`, and `breathing-dpi`. The X3 BLE warning about
@@ -435,25 +455,47 @@ writePollingRateUnverifiedBle(profile: ProfileId, rate: PollingRate): Promise<Im
 
 It performs the direct packet write and returns **ACK-only evidence**
 (`verification: "transport-accepted"`, `persistence: "unknown"`); `Readback`
-is rejected up front. The UI must expose it only as an explicit advanced
-action gated by a visible warning, never as a hidden fallback of the normal
-Apply flow, and must show its result as `acknowledged (ACK only)` with
-`persistence-unknown`.
+is rejected up front.
+Lower-level adapters that choose to expose it must gate it behind a visible
+warning, never as a hidden fallback of the normal Apply flow, and must show its
+result as `acknowledged (ACK only)` with `persistence-unknown`; the current GUI
+does not expose this override.
 
 **Current GUI contract.** `x3-gui` now uses `DeviceManager` on a dedicated
-serialized worker and exposes the safe USB path:
+serialized worker and exposes the safe USB path plus a constrained BLE non-rate
+configuration path:
 
-- startup discovers one exact wired or receiver device, reads status and the
-  current complete profile, and shows errors instead of preview values;
-- rate choices remain disabled until manager state contains complete desired
-  DPI, preferences, and buttons for the current target; a missing baseline is
-  surfaced before any draft section is written;
-- Save calls the manager's safe polling-rate operation, never a bare `0x06`
+- startup discovers one exact wired, receiver, or already-connected BLE device,
+  reads status where the transport supports it, and shows errors instead of
+  preview values;
+- BLE DPI, preferences, button, and other non-rate edits are offered only when
+  their complete baseline comes from stored/imported state or explicitly
+  captured defaults authorized for that operation; the GUI never invents
+  missing fields;
+- BLE non-rate writes use transport/ACK evidence only
+  (`acknowledged (ACK only)`); BLE has no configuration readback, so the GUI
+  makes no readback or persistence claim for these writes;
+- for USB, rate choices remain disabled until manager state contains complete
+  desired DPI, preferences, and buttons for the current target; a missing
+  baseline is surfaced before any draft section is written;
+- USB Save calls the manager's safe polling-rate operation, never a bare `0x06`
   writer, and reports transport/readback evidence with persistence unknown;
-- BLE configuration and the dangerous BLE override are not exposed by the
-  current GUI. They are never a hidden fallback of the ordinary Save path;
-- profile-reload and power-cycle persistence diagnostics remain visibly marked
-  not implemented in the GUI rather than producing synthetic evidence.
+- BLE safe polling-rate writes and the dangerous unverified polling-rate
+  override are unavailable in the GUI and are never hidden fallbacks of an
+  ordinary Save path;
+- the shipped GUI exposes explicit USB-only `DeviceManager` actions for
+  profile-reload and power-cycle verification. Profile reload performs the
+  manager's deliberate profile switch-away/switch-back check; power-cycle
+  verification closes the session and waits for the exact USB device to
+  disappear and return before reopening it and comparing the complete profile
+  readback;
+- before starting power-cycle verification, instruct the user to unplug the
+  mouse, power the mouse off, wait for the exact device to disappear, then power
+  it on and reconnect it. Only a complete matching readback from one of these
+  explicit actions may mark persistence verified; transport submission,
+  immediate readback, and other acknowledgements remain persistence-unknown.
+  These workflows are not available over BLE, and the GUI must not claim BLE
+  readback or persistence evidence.
 
 ## 5. Transaction and readback rules
 
@@ -668,6 +710,27 @@ observed state to the user.
 5. Refresh metadata and rebuild the profile selector.
 6. Do not delete cached higher-profile data solely because it is currently hidden.
 
+### 8.4.1 Refreshing all profile observations
+
+Use the manager-owned `refreshAllProfiles` workflow only from an explicit
+advanced action. It is USB-only and writes profile metadata while temporarily
+enabling all five slots and activating each one so its live polling rate can be
+read honestly. The manager captures DPI, preferences, buttons, and rate in one
+session, restores the exact original current/maximum metadata, and only then
+commits all observations together.
+
+Frontends must not reproduce this loop themselves or attach it to ordinary
+startup/Refresh behavior. Preserve desired values, display the manager's drift
+result, and state that persistence remains unverified.
+
+The GUI may show a non-modal first-run recommendation when any of the five
+profile slots lacks a complete observed DPI/preferences/buttons/rate image. It
+must require an explicit confirmation before starting, keep “not now”
+session-local, block the action while a draft is dirty, and keep the permanent
+advanced action available. BLE views should explain that configuration
+readback is unavailable rather than offering this workflow.
+
+
 ### 8.5 Reconnect/persistence verification
 
 This is the explicit diagnostic workflow (`verify --method profile-reload` or
@@ -693,13 +756,13 @@ Apply flow.
    `persistence-unknown`.
 6. Persistence is only ever claimed after the explicit reconnect/power-cycle
    diagnostics of Section 8.5.
-7. On BLE the same save fails with `ExplicitAuthorizationRequired`; the only
-   path is the explicit advanced override of [Section 4.6](#46-polling-rate-writes-safe-preflight-and-ble-advanced-override), shown as ACK-only with unknown persistence.
+7. The GUI does not offer BLE polling-rate writes: both the safe preflight and
+   the dangerous unverified override remain unavailable, rather than becoming a
+   hidden fallback of the ordinary Save flow.
 
 ## 9. Capability matrix
-
-| Capability | Current Rust USB driver | UI exposure recommendation |
-|:-----------|:-------------------------|:----------------------------|
+| Capability | Current Rust implementation | UI exposure recommendation |
+|:-----------|:----------------------------|:----------------------------|
 | Discover FA61 collections | supported | required |
 | Profile metadata read | supported | required |
 | Profile activation | supported | required |
@@ -709,28 +772,29 @@ Apply flow.
 | Button table read | supported per profile | required for display/backup |
 | Recognized button assignment write | supported by CLI | expose recognized physical controls |
 | Arbitrary raw button editing | library-level only | diagnostics only, preferably hidden |
-| Polling-rate read/write | supported per profile; readback USB-only | required inside the profile editor |
+| Polling-rate read/write | supported per profile; readback USB-only | required inside the USB profile editor; unavailable over BLE |
 | Battery telemetry on FA61 wired USB | unavailable; the wired path is silent | show `Unavailable on wired USB`; never poll and never display `0%` |
 | Custom macros | not exposed | disabled |
-| BLE transport | not production-supported here | disabled |
+| BLE non-rate configuration | constrained writes supported from complete stored/imported baselines or explicitly captured defaults; ACK only, no configuration readback | expose only this limited path; make no readback or persistence claim |
+| BLE polling-rate writes | safe preflight unavailable; the dangerous unverified override is a lower-level operation | not exposed in the GUI; keep both safe and dangerous paths unavailable |
 | Factory reset | not exposed as a standalone UI operation | disabled |
 | Firmware update | unsupported and unsafe | never expose |
 
 ## 10. Cross-transport capability matrix
 
-The current Rust UI contract is USB-only. A future BLE adapter must expose a
-different capability set instead of reusing USB readback and persistence claims.
-The canonical BLE and battery details are in
-[`transports/ble-gatt.md`](transports/ble-gatt.md) and
+The current Rust UI contract includes full USB operations and a constrained BLE
+non-rate write path. The BLE path must expose a different capability set instead
+of reusing USB readback and persistence claims. The canonical BLE and battery
+details are in [`transports/ble-gatt.md`](transports/ble-gatt.md) and
 [`protocols/battery.md`](protocols/battery.md).
 
 | Capability | FA61 wired USB | X3/M600 BLE GATT | UI contract |
 |:-----------|:---------------|:-----------------|:------------|
-| Configuration writes | `SET_REPORT`; no transport ACK | FEE3 write plus FEE4 ACK notification | USB success means transport submission (default) or validated readback, per the validation choice; BLE success means ACK acceptance only |
+| Configuration writes | `SET_REPORT`; no transport ACK | FEE3 write plus FEE4 ACK notification | USB success means transport submission (default) or validated readback, per the validation choice; BLE non-rate writes are offered only with a stored/imported baseline or explicitly captured defaults and succeed only on ACK acceptance |
 | Configuration readback | Validated `0xa0` selector plus report read | Not available; FEE1 is opaque and is not configuration state | Never offer BLE `readDpi`, `readPreferences`, `readButtons`, or `readProfile` as if they were implemented |
-| DPI/preferences/buttons writes | Read-modify-write with the chosen validation (transport submission by default, fresh readback on request) | Reports may receive ACK `status=0x00`, but there is no configuration readback | BLE UI must show `Accepted by device; application/persistence unverified`; readback is unavailable |
-| Profile metadata (`0x0c`) | Bounded read/write with immediate metadata verification | ACK `status=0x00` is parser acceptance; profile-save persistence is unconfirmed | Do not label BLE profile saves as persisted without a reconnect test |
-| Polling rate (`0x06`) | Read/write supported per profile; safe preflight per [4.6](#46-polling-rate-writes-safe-preflight-and-ble-advanced-override) | Exact nine-byte packet accepted in the same-hardware probe and changed the rate observed after USB reconnect; stock app skips BLE; no safe path (no fresh complete-profile read) | Expose only behind an explicit advanced override with a visible warning; evidence is ACK-only (`acknowledged (ACK only)`) with unknown persistence; a USB reconnect readback is the only confirmation the UI may show as stronger evidence |
+| DPI/preferences/buttons writes | Read-modify-write with the chosen validation (transport submission by default, fresh readback on request) | Reports may receive ACK `status=0x00`, but there is no configuration readback | BLE UI may offer these non-rate writes only from stored/imported or explicitly captured complete baselines; show `Accepted by device; application/persistence unverified` and never claim readback or persistence |
+| Profile metadata (`0x0c`) | Bounded read/write with immediate metadata verification | ACK `status=0x00` is parser acceptance; profile-save persistence is unconfirmed | Do not label BLE profile saves as persisted without a reconnect test; the GUI does not offer that verification |
+| Polling rate (`0x06`) | Read/write supported per profile; safe preflight per [4.6](#46-polling-rate-writes-safe-preflight-and-ble-advanced-override) | Exact nine-byte packet accepted in the same-hardware probe and changed the rate observed after USB reconnect; stock app skips BLE; no safe path (no fresh complete-profile read) | The GUI exposes neither the safe BLE write nor the dangerous unverified override; no BLE polling-rate write or persistence evidence is offered |
 | Battery | Unavailable while wired; no battery polling stream | Standard Battery Service `0x180f` / `0x2a19`, read and notify | Show battery only when the active transport advertises battery capability |
 | Light mode `0x00` | Not subject to the BLE crash finding | Accepted in a corrected same-hardware probe; historical crash report remains unresolved | Keep the conservative explicit BLE block until the packet/test contract is independently resolved |
 | Custom macros (`0x09`) | Not exposed by the Rust UI contract | One packet has been ACKed; full multi-page behavior is untested | Keep disabled unless a separate capability explicitly enables it |

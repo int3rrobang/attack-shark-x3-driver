@@ -49,6 +49,15 @@ impl StatePaths {
         })
     }
 }
+/// Outcome of discarding an unreadable state file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateReset {
+    /// Where the unreadable file was preserved, when a file existed.
+    pub backup: Option<PathBuf>,
+    /// The schema version the discarded file declared, when its header parsed.
+    pub discarded_schema: Option<u32>,
+}
 
 fn resolve_state_file() -> Result<PathBuf, StateError> {
     if let Some(value) = non_empty_var(STATE_PATH_ENV) {
@@ -184,6 +193,54 @@ impl StateStore {
             }
         }
     }
+    /// Replace an unreadable state file with a fresh, empty, current-schema
+    /// state, preserving the old bytes at a sibling backup path.
+    ///
+    /// Use when [`Self::load`] fails on a disk-backed store. The method
+    /// refuses to discard a file that loads successfully, so a valid state can
+    /// never be destroyed by accident. Memory stores hold no file and reject
+    /// this operation.
+    pub fn discard_unreadable(&self) -> Result<StateReset, StateError> {
+        match self.backend.as_ref() {
+            StoreBackend::Memory(_) => Err(StateError::invalid_state(
+                "memory stores hold no state file to discard",
+            )),
+            StoreBackend::Disk => self.discard_disk_unreadable(),
+        }
+    }
+
+    fn discard_disk_unreadable(&self) -> Result<StateReset, StateError> {
+        let target = &self.paths.state_file;
+        let _lock = LockGuard::acquire(&self.paths.lock_file)?;
+        let bytes = match fs::read(target) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                // Nothing to preserve; materialize a fresh default state.
+                write_atomic(target, &StateFile::default())?;
+                return Ok(StateReset {
+                    backup: None,
+                    discarded_schema: None,
+                });
+            }
+            Err(err) => return Err(StateError::io(target.to_path_buf(), err)),
+        };
+        if load_state(target).is_ok() {
+            return Err(StateError::invalid_state(format!(
+                "state file {} is readable with the current schema; refusing to discard it",
+                target.display()
+            )));
+        }
+        let discarded_schema = serde_json::from_slice::<SchemaHeader>(&bytes)
+            .ok()
+            .map(|header| header.schema_version);
+        let backup = unique_backup_path(target, discarded_schema);
+        fs::write(&backup, &bytes).map_err(|err| StateError::io(backup.clone(), err))?;
+        write_atomic(target, &StateFile::default())?;
+        Ok(StateReset {
+            backup: Some(backup),
+            discarded_schema,
+        })
+    }
 
     fn write_atomic(&self, state: &StateFile) -> Result<(), StateError> {
         write_atomic(&self.paths.state_file, state)
@@ -195,6 +252,28 @@ fn lock_memory<'a>(state: &'a Mutex<StateFile>) -> MutexGuard<'a, StateFile> {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
+}
+
+fn unique_backup_path(target: &Path, schema: Option<u32>) -> PathBuf {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(STATE_FILE_NAME);
+    let stem = match schema {
+        Some(found) => format!("{file_name}.unsupported-v{found}"),
+        None => format!("{file_name}.unreadable"),
+    };
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut candidate = parent.join(format!("{stem}.bak"));
+    let mut counter = 2u32;
+    while candidate.exists() {
+        candidate = parent.join(format!("{stem}-{counter}.bak"));
+        counter += 1;
+    }
+    candidate
 }
 
 fn load_state(path: &Path) -> Result<StateFile, StateError> {
@@ -417,6 +496,7 @@ mod tests {
     use crate::device::DeviceIdentity;
     use crate::error::StateError;
     use crate::state::model::{DeviceState, SCHEMA_VERSION, StateFile};
+    use attack_shark_x3::ProfileId;
     use std::fs;
     use std::path::Path;
 
@@ -562,5 +642,164 @@ mod tests {
         drop(first);
 
         assert!(store.transaction().is_ok());
+    }
+
+    #[test]
+    fn discard_unreadable_replaces_foreign_schema_with_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let store = StateStore::open(paths.clone());
+
+        let mut value = serde_json::to_value(StateFile::default()).unwrap();
+        value["schemaVersion"] = serde_json::json!(7);
+        let original = serde_json::to_vec(&value).unwrap();
+        fs::write(&paths.state_file, &original).unwrap();
+
+        let reset = store.discard_unreadable().unwrap();
+        assert_eq!(reset.discarded_schema, Some(7));
+        let backup = reset.backup.expect("old file must be preserved");
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert_eq!(store.load().unwrap(), StateFile::default());
+
+        // The replacement now loads, so a second discard must refuse.
+        match store.discard_unreadable() {
+            Err(StateError::InvalidState(_)) => {}
+            other => panic!("expected InvalidState refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discard_unreadable_replaces_unparseable_state_with_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let store = StateStore::open(paths.clone());
+
+        let original = b"{ this is not a state document".to_vec();
+        fs::write(&paths.state_file, &original).unwrap();
+
+        let reset = store.discard_unreadable().unwrap();
+        assert_eq!(reset.discarded_schema, None);
+        let backup = reset.backup.expect("old file must be preserved");
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert_eq!(store.load().unwrap(), StateFile::default());
+    }
+
+    #[test]
+    fn discard_unreadable_refuses_readable_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let store = StateStore::open(paths.clone());
+        let committed = store.transaction().unwrap().state().clone();
+        store.transaction().unwrap().commit().unwrap();
+
+        match store.discard_unreadable() {
+            Err(StateError::InvalidState(_)) => {}
+            other => panic!("expected InvalidState refusal, got {other:?}"),
+        }
+        assert_eq!(store.load().unwrap(), committed);
+    }
+
+    #[test]
+    fn discard_unreadable_without_file_writes_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let store = StateStore::open(paths);
+
+        let reset = store.discard_unreadable().unwrap();
+        assert_eq!(reset.backup, None);
+        assert_eq!(reset.discarded_schema, None);
+        assert!(store.paths().state_file.exists());
+        assert_eq!(store.load().unwrap(), StateFile::default());
+    }
+
+    #[test]
+    fn discard_unreadable_rejects_memory_store() {
+        let store = StateStore::memory();
+        match store.discard_unreadable() {
+            Err(StateError::InvalidState(_)) => {}
+            other => panic!("expected InvalidState refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn profile_names_round_trip_through_disk_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let store = StateStore::open(paths.clone());
+        let identity = DeviceIdentity::ble("named-test", None).expect("valid test identity");
+        let id = identity.id.clone();
+        let profile = ProfileId::new(2).expect("profile");
+
+        let mut txn = store.transaction().unwrap();
+        txn.state_mut()
+            .devices
+            .entry(id.clone())
+            .or_insert_with(|| DeviceState::new(identity))
+            .profile_names
+            .insert(profile, "Office".to_owned());
+        txn.commit().unwrap();
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.devices[&id].profile_names[&profile], "Office");
+        // The additive field is persisted in the document, not memory-only.
+        let text = fs::read_to_string(&paths.state_file).unwrap();
+        assert!(text.contains("profileNames"));
+    }
+
+    #[test]
+    fn state_without_profile_names_loads_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let store = StateStore::open(paths.clone());
+        let identity = DeviceIdentity::ble("old-test", None).expect("valid test identity");
+        let id = identity.id.clone();
+        let id_string = id.to_string();
+        let value = serde_json::json!({
+            "schemaVersion": SCHEMA_VERSION,
+            "selectedDevice": id_string.clone(),
+            "devices": {
+                (id_string): {
+                    "identity": identity,
+                    "profileMetadata": { "desired": null, "observed": null },
+                    "profiles": {},
+                }
+            },
+        });
+        fs::write(&paths.state_file, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert!(loaded.devices[&id].profile_names.is_empty());
+    }
+
+    #[test]
+    fn discard_unreadable_handles_names_without_changing_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let store = StateStore::open(paths.clone());
+
+        // A document from a newer schema is unreadable, even though its
+        // profileNames bytes remain well-formed and must be preserved.
+        let identity = DeviceIdentity::ble("bad-device", None).expect("valid test identity");
+        let id = identity.id.clone();
+        let id_string = id.to_string();
+        let mut value = serde_json::to_value(StateFile::default()).unwrap();
+        value["schemaVersion"] = serde_json::json!(7);
+        value["selectedDevice"] = serde_json::json!(id_string.clone());
+        value["devices"] = serde_json::json!({
+            (id_string): {
+                "identity": identity,
+                "profileMetadata": { "desired": null, "observed": null },
+                "profiles": {},
+                "profileNames": { "2": "Office" },
+            },
+        });
+        let original = serde_json::to_vec(&value).unwrap();
+        fs::write(&paths.state_file, &original).unwrap();
+
+        let reset = store.discard_unreadable().unwrap();
+        assert_eq!(reset.discarded_schema, Some(7));
+        let backup = reset.backup.expect("old file must be preserved");
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert_eq!(store.load().unwrap(), StateFile::default());
     }
 }

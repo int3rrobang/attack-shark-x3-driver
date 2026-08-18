@@ -11,6 +11,8 @@ pub mod manager;
 pub mod offline_debug;
 pub mod operation;
 #[cfg(any(feature = "usb", feature = "ble"))]
+pub(crate) mod refresh;
+#[cfg(any(feature = "usb", feature = "ble"))]
 pub(crate) mod resources;
 pub mod state;
 #[cfg(any(feature = "usb", feature = "ble"))]
@@ -41,7 +43,8 @@ pub use resources::settings::PreferencesDelta;
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use resources::state::{ConfigurationExport, ProfileConfiguration};
 pub use state::{
-    ApplicationVerification, DesiredSource, DesiredState, DeviceState, ObservationSource,
-    ObservedState, PersistenceVerification, ProfileState, ResourceState, SCHEMA_VERSION, StateFile,
-    StatePaths, StateStore, StateTransaction, Timestamp, Verification,
+    ApplicationVerification, DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS,
+    ObservationSource, ObservedState, PersistenceVerification, ProfileState, ResourceState,
+    SCHEMA_VERSION, StateFile, StatePaths, StateReset, StateStore, StateTransaction, Timestamp,
+    Verification,
 };

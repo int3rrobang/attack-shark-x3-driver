@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use attack_shark_x3::{
     BatteryEvent, ButtonsState, ConnectionChangedEvent, DpiButtonEvent, DpiIndexChangedEvent,
     DpiState, InputEvent, LedModeChangedEvent, PollingRate, PreferencesState, ProfileChangedEvent,
@@ -68,6 +70,37 @@ pub struct WriteOutcome<T> {
     pub desired: T,
     pub observed: Option<T>,
     pub verification: Verification,
+}
+/// One complete profile image observed during an all-profile refresh.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshedProfile {
+    pub dpi: DpiState,
+    pub preferences: PreferencesState,
+    pub buttons: ButtonsState,
+    pub polling_rate: PollingRate,
+}
+
+/// Profile resource whose fresh observation differs from durable desired state.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProfileResourceKind {
+    Dpi,
+    Preferences,
+    Buttons,
+    PollingRate,
+}
+
+/// Fresh USB observations captured across all five hardware profile slots.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FullProfileRefreshOutcome {
+    pub original_metadata: ProfileMetadata,
+    pub restored_metadata: ProfileMetadata,
+    pub temporarily_expanded: bool,
+    pub profiles: BTreeMap<ProfileId, RefreshedProfile>,
+    pub drift: BTreeMap<ProfileId, Vec<ProfileResourceKind>>,
+    pub profile_metadata_drift: bool,
 }
 
 /// A discovered exact device and whether it is currently connected.

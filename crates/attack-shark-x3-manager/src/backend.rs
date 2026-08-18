@@ -572,6 +572,7 @@ pub(crate) struct ScriptedFakeSession {
     polling_rate: Arc<Mutex<Option<PollingRate>>>,
     battery: Arc<Mutex<Option<u8>>>,
     writes: Arc<Mutex<Vec<ScriptedWrite>>>,
+    metadata_write_failure: Arc<Mutex<Option<ProfileMetadata>>>,
     input_events: broadcast::Sender<InputEvent>,
 }
 
@@ -594,6 +595,7 @@ impl ScriptedFakeSession {
             polling_rate: Arc::new(Mutex::new(None)),
             battery: Arc::new(Mutex::new(None)),
             writes: Arc::new(Mutex::new(Vec::new())),
+            metadata_write_failure: Arc::new(Mutex::new(None)),
             input_events,
         }
     }
@@ -625,6 +627,11 @@ impl ScriptedFakeSession {
                 last_profiles.remove(&profile);
             }
         }
+        self
+    }
+
+    pub(crate) fn fail_metadata_write_for(self, metadata: ProfileMetadata) -> Self {
+        *lock_scripted(&self.metadata_write_failure) = Some(metadata);
         self
     }
 
@@ -836,6 +843,11 @@ impl DeviceSession for ScriptedFakeSession {
         &self,
         metadata: ProfileMetadata,
     ) -> Result<SessionWrite<ProfileMetadata>, ManagerError> {
+        if lock_scripted(&self.metadata_write_failure).as_ref() == Some(&metadata) {
+            return Err(ManagerError::InvalidUpdate(
+                "scripted profile metadata write failure".to_owned(),
+            ));
+        }
         lock_scripted(&self.writes).push(ScriptedWrite::ProfileMetadata(metadata));
         *lock_scripted(&self.metadata) = Some(metadata);
         Ok(self.write_outcome(metadata, self.verification))

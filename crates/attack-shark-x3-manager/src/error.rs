@@ -155,6 +155,18 @@ pub enum ManagerError {
         resource: &'static str,
         profile: Option<ProfileId>,
     },
+    /// Profile capture completed, but the original metadata could not be
+    /// restored, so the device may remain expanded or switched.
+    #[error(
+        "all-profile refresh captured data, but restoring the original profile metadata failed ({restore}); the device may remain on a different profile or with additional profiles enabled"
+    )]
+    RefreshRestorationFailed { restore: String },
+    /// Profile capture and metadata restoration both failed, so the device
+    /// may remain expanded or switched.
+    #[error(
+        "all-profile refresh failed ({refresh}); restoring the original profile metadata also failed ({restore}); the device may remain on a different profile or with additional profiles enabled"
+    )]
+    RefreshRestoreFailed { refresh: String, restore: String },
 
     /// The requested update is invalid before reaching a transport.
     #[error("invalid update: {0}")]
