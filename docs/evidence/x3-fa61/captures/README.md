@@ -42,6 +42,20 @@ Volume + across the boundary. Wheel-slot remaps and macro bindings were
 excluded. The parsed mapping lives in the paired JSON and in
 `../../protocols/08-button-mapping.md`.
 
+## Deep-sleep boundary session — 2026-08-15
+
+- [`2026-08-15-deep-sleep-boundaries/`](2026-08-15-deep-sleep-boundaries/) —
+  clean single-write USBPcap intervals for stock-app selections at 15, 16, 17,
+  32, 33, and 48 minutes on wired X3/FA61
+- [`2026-08-15-deep-sleep-boundaries.json`](2026-08-15-deep-sleep-boundaries.json)
+  — parsed report `0x05` packets and their configuration/deep-sleep fields
+
+Only intervals containing one unambiguous stock-app write were retained.
+Together they capture both sides of the 16-minute boundary and the exact 32-
+and 48-minute boundaries. They confirm that exact multiples of 16 advance the
+configuration high-nibble bucket and encode a zero minute-within-bucket nibble
+in byte 5 (`0x08`). \[capture-confirmed]
+
 ## Guided order
 
 Both presets use this order:

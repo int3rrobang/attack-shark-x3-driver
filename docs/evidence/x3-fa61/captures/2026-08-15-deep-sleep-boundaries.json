@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "session": "2026-08-15 deep-sleep boundary capture, wired FA61 (PID 0xfa61)",
+  "profile": 1,
+  "method": "stock app deep-sleep slider, guided USBPcap via tshark_mouse; only clean single-write steps retained",
+  "evidence": "capture-confirmed",
+  "writes": [
+    {
+      "minutes": 15,
+      "stepPcap": "2026-08-15-deep-sleep-boundaries/Stock_app__set_deep_sleep_to_15_minutes_and_Apply_once.pcapng",
+      "configuration": "03",
+      "deepSleep": "f8",
+      "packetHex": "050f010003f80000ff06040204"
+    },
+    {
+      "minutes": 16,
+      "stepPcap": "2026-08-15-deep-sleep-boundaries/Stock_app__set_deep_sleep_to_16_minutes_and_Apply_once.pcapng",
+      "configuration": "13",
+      "deepSleep": "08",
+      "packetHex": "050f010013080000ff06040124"
+    },
+    {
+      "minutes": 17,
+      "stepPcap": "2026-08-15-deep-sleep-boundaries/Stock_app__set_deep_sleep_to_17_minutes_and_Apply_once.pcapng",
+      "configuration": "13",
+      "deepSleep": "18",
+      "packetHex": "050f010013180000ff06040134"
+    },
+    {
+      "minutes": 32,
+      "stepPcap": "2026-08-15-deep-sleep-boundaries/Stock_app__set_deep_sleep_to_32_minutes_and_Apply_once.pcapng",
+      "configuration": "23",
+      "deepSleep": "08",
+      "packetHex": "050f010023080000ff06040134"
+    },
+    {
+      "minutes": 33,
+      "stepPcap": "2026-08-15-deep-sleep-boundaries/Stock_app__set_deep_sleep_to_33_minutes_and_Apply_once.pcapng",
+      "configuration": "23",
+      "deepSleep": "18",
+      "packetHex": "050f010023180000ff06040144"
+    },
+    {
+      "minutes": 48,
+      "stepPcap": "2026-08-15-deep-sleep-boundaries/Stock_app__set_deep_sleep_to_48_minutes_and_Apply_once.pcapng",
+      "configuration": "33",
+      "deepSleep": "08",
+      "packetHex": "050f010033080000ff06040144"
+    }
+  ]
+}
