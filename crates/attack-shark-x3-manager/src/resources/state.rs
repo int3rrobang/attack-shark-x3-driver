@@ -386,7 +386,7 @@ mod tests {
     }
 
     fn identity() -> DeviceIdentity {
-        DeviceIdentity::usb(
+        DeviceIdentity::test_usb(
             TransportKind::Wired,
             0x1d57,
             0xfa61,

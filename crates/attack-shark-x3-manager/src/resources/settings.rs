@@ -80,7 +80,7 @@ impl DeviceManager {
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<ResourceSnapshot<PreferencesState>, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "read_preferences").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(unsupported("read_preferences", transport));
@@ -127,7 +127,7 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "update_preferences").await?;
         let transport = session.transport();
 
         if transport == TransportKind::Ble && !policy.allow_explicit_defaults {
@@ -191,7 +191,8 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) =
+            self.open_locked(device, "update_preferences_delta").await?;
         let baseline = match session.transport() {
             TransportKind::Ble => {
                 self.load_stored_preferences_baseline(
@@ -293,7 +294,7 @@ impl DeviceManager {
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<ResourceSnapshot<PollingRate>, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "read_polling_rate").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(unsupported("read_live_polling_rate", transport));
@@ -352,7 +353,7 @@ impl DeviceManager {
         desired: PollingRate,
         policy: UpdatePolicy,
     ) -> Result<WriteOutcome<PollingRate>, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "update_polling_rate").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(ManagerError::ExplicitAuthorizationRequired {
@@ -426,7 +427,9 @@ impl DeviceManager {
         desired: PollingRate,
         policy: UpdatePolicy,
     ) -> Result<WriteOutcome<PollingRate>, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self
+            .open_locked(device, "update_polling_rate_unverified_ble")
+            .await?;
         let transport = session.transport();
         if transport != TransportKind::Ble {
             return Err(ManagerError::UnsupportedOperation {
@@ -720,7 +723,7 @@ mod tests {
     }
 
     fn usb_identity() -> DeviceIdentity {
-        DeviceIdentity::usb(
+        DeviceIdentity::test_usb(
             TransportKind::Wired,
             0x1d57,
             0xfa61,
@@ -732,7 +735,7 @@ mod tests {
     }
 
     fn ble_identity() -> DeviceIdentity {
-        DeviceIdentity::ble("settings-ble-test", Some("Settings BLE test"))
+        DeviceIdentity::test_ble("settings-ble-test", Some("Settings BLE test"))
             .expect("valid BLE identity")
     }
 

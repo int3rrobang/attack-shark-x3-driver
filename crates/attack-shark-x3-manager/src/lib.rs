@@ -38,7 +38,7 @@ pub use events::EventSubscriptions;
 pub use manager::DeviceManager;
 pub use offline_debug::{
     OfflinePacket, OfflinePacketFraming, OfflinePacketKind, debug_buttons, debug_dpi, debug_prefs,
-    encode_debug_buttons, encode_debug_dpi, encode_debug_preferences, encode_debug_prefs,
+    encode_debug_buttons, encode_debug_dpi, encode_debug_prefs,
 };
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use operation::ProfileUpdate;

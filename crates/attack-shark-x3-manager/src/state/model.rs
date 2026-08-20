@@ -468,34 +468,18 @@ impl StateFile {
         Self::default()
     }
 
-    /// Allocates a fresh logical device id `mouse-N` collision-free under this file.
-    ///
-    /// Allocation is monotonic via `next_device_number`. If the candidate collides
-    /// with an existing key (should not happen under correct validation), we scan
-    /// forward until free.
+    /// Allocates the next unused logical `mouse-N` identifier.
     pub fn allocate_device_id(&mut self) -> Result<DeviceId, StateError> {
-        if self.next_device_number == 0 {
-            return Err(StateError::invalid_state("nextDeviceNumber must be >= 1"));
-        }
-        let mut candidate_number = self.next_device_number;
-        // Prevent infinite loop / overflow.
-        for _ in 0..1_000_000 {
-            let candidate = DeviceId::from_number(candidate_number)?;
+        loop {
+            let candidate = DeviceId::from_number(self.next_device_number)?;
+            self.next_device_number = self
+                .next_device_number
+                .checked_add(1)
+                .ok_or_else(|| StateError::invalid_state("nextDeviceNumber overflow"))?;
             if !self.devices.contains_key(&candidate) {
-                self.next_device_number = candidate_number + 1;
-                // Ensure we didn't wrap to 0.
-                if self.next_device_number == 0 {
-                    return Err(StateError::invalid_state("nextDeviceNumber overflow"));
-                }
                 return Ok(candidate);
             }
-            candidate_number = candidate_number.checked_add(1).ok_or_else(|| {
-                StateError::invalid_state("nextDeviceNumber overflow while allocating")
-            })?;
         }
-        Err(StateError::invalid_state(
-            "unable to allocate device id: too many collisions",
-        ))
     }
 
     /// Rejects documents from another schema generation or with mismatched
@@ -509,21 +493,12 @@ impl StateFile {
             return Err(StateError::invalid_state("nextDeviceNumber must be >= 1"));
         }
 
-        // Validate next_device_number monotonicity: must be greater than every existing mouse-N.
-        let mut max_number: u64 = 0;
-        for device_id in self.devices.keys() {
-            let number = device_id.number().ok_or_else(|| {
-                StateError::invalid_state(format!("device key {device_id} is not mouse-N"))
-            })?;
-            if number == 0 {
-                return Err(StateError::invalid_state(format!(
-                    "device key {device_id} has number 0"
-                )));
-            }
-            if number > max_number {
-                max_number = number;
-            }
-        }
+        let max_number = self
+            .devices
+            .keys()
+            .filter_map(DeviceId::number)
+            .max()
+            .unwrap_or(0);
         if max_number >= self.next_device_number {
             return Err(StateError::invalid_state(format!(
                 "nextDeviceNumber {} must be greater than max device number {max_number}",
@@ -609,7 +584,6 @@ fn validate_resource_state<T: PartialEq>(
     ctx: &str,
 ) -> Result<(), StateError> {
     let Some(desired) = resource.desired.as_ref() else {
-        // No desired: observed may be anything (historical), no verification to check.
         return Ok(());
     };
 
@@ -620,8 +594,6 @@ fn validate_resource_state<T: PartialEq>(
                     "{ctx}: persistence claim requires ReadbackVerified application evidence"
                 )));
             }
-            // Historical observed may coexist with Acknowledged/NotSent regardless of equality or staleness.
-            // No further checks.
         }
         ApplicationVerification::ReadbackVerified => {
             let observed = resource.observed.as_ref().ok_or_else(|| {
@@ -639,10 +611,6 @@ fn validate_resource_state<T: PartialEq>(
                     "{ctx}: ReadbackVerified observation is older than desired (stale)"
                 )));
             }
-            if !desired.verification.persistence.is_unknown() {
-                // persistence already requires readback match; no extra check beyond the equality/staleness above.
-                // Optionally ensure observed not stale already checked.
-            }
         }
         ApplicationVerification::Mismatch => {
             let observed = resource.observed.as_ref().ok_or_else(|| {
@@ -658,23 +626,8 @@ fn validate_resource_state<T: PartialEq>(
                     "{ctx}: Mismatch cannot carry persistence claims"
                 )));
             }
-            // Timestamp staleness for mismatch is not strictly required, but we allow any timestamp
-            // because historical observed may remain after new desired with Mismatch? For safety, allow stale.
         }
     }
-
-    // Generic persistence invariant: any persistence claim requires ReadbackVerified with current matching readback.
-    if !desired.verification.persistence.is_unknown()
-        && desired.verification.application != ApplicationVerification::ReadbackVerified
-    {
-        return Err(StateError::invalid_state(format!(
-            "{ctx}: persistence claim requires ReadbackVerified"
-        )));
-    }
-
-    // If persistence present, we already validated observed present, equal, not stale via ReadbackVerified branch.
-    // Additionally, persistence claims should have observed present and matching; already covered.
-
     Ok(())
 }
 
@@ -697,40 +650,6 @@ impl ProfileValue for PreferencesState {
 impl ProfileValue for ButtonsState {
     fn profile_id(&self) -> ProfileId {
         self.profile
-    }
-}
-
-impl ProfileValue for PollingRate {
-    fn profile_id(&self) -> ProfileId {
-        // PollingRate is stored per-profile but its own struct may not carry profile.
-        // We treat PollingRate as having no profile id mismatch check; but we still implement
-        // trait to allow generic validation. Check the actual PollingRate structure.
-        // From attack-shark-x3, PollingRate doesn't carry ProfileId; we fake identity check by
-        // returning the queried profile id. So profile_id coherence is vacuously true for polling.
-        // However our generic validate_profile_resource will compare desired.value.profile_id() to the map key.
-        // For polling, that would be meaningless. We need to handle polling specially: always return the map key.
-        // Instead, we will not use the trait comparison for polling by returning the expected id via a thread-local?
-        // Simpler: implement PollingRate profile_id to return a dummy that we ignore; we override validate for polling.
-        // But we already call validate_profile_resource for polling which checks trait. To avoid false failures,
-        // we make this return a sentinel that will never mismatch unless we change approach.
-        // Alternative: specialize validation for PollingRate to skip profile_id check.
-        // For now we return ProfileId 1; the mismatch check will then spuriously fail if profile is not 1.
-        // So we need a different approach: we detect PollingRate specially.
-        // To keep generic, we will have polling validation skip id check.
-        // Easiest: return the map key via a hack: we can't know map key here, so we need to bypass.
-        // We choose to make PollingRate impl return a fixed value and then override caller to not check PollingRate id.
-        // Instead we handle PollingRate outside: see validate_profile_resource specialization below.
-        // But trait requires impl; we provide a best-effort impl that never mismatches by returning a value that caller will treat as matching.
-        // We'll implement a separate function validate_polling that doesn't check id.
-        // To satisfy compiler, we return ProfileId(1) and caller will bypass check for polling.
-        ProfileId::new(1).unwrap()
-    }
-}
-
-impl ProfileValue for ProfileMetadata {
-    fn profile_id(&self) -> ProfileId {
-        // ProfileMetadata doesn't have a single profile; treat as not profile-scoped.
-        ProfileId::new(1).unwrap()
     }
 }
 

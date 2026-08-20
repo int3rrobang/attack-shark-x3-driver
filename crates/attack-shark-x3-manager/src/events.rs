@@ -31,6 +31,7 @@ use crate::operation::DeviceEvent;
 pub struct EventSubscriptions {
     pub events: Option<broadcast::Receiver<DeviceEvent>>,
     _session: Box<dyn DeviceSession>,
+    _guard: crate::state::DeviceOperationGuard,
 }
 
 impl DeviceManager {
@@ -44,7 +45,7 @@ impl DeviceManager {
         &self,
         device: &DeviceId,
     ) -> Result<EventSubscriptions, ManagerError> {
-        let (_, session) = self.open_session(device).await?;
+        let (_identity, session, guard) = self.open_locked(device, "subscribe_events").await?;
         let events = session.subscribe_events();
         let mapped = events.input.map(|mut input| {
             let (sender, receiver) = broadcast::channel(16);
@@ -70,6 +71,7 @@ impl DeviceManager {
         Ok(EventSubscriptions {
             events: mapped,
             _session: session,
+            _guard: guard,
         })
     }
 }

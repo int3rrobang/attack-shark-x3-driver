@@ -52,27 +52,6 @@ impl StatePaths {
         }
     }
 
-    /// Validate that a pair of paths obeys the derived-lock invariant.
-    ///
-    /// Ergonomic test constructors can call `StatePaths::new(dir.join("state.json"))`;
-    /// this helper preserves that ergonomics while explicitly rejecting
-    /// mismatched pairs that would otherwise protect the same state differently.
-    pub fn try_new(state_file: PathBuf, lock_file: PathBuf) -> Result<Self, StateError> {
-        let expected = state_file.with_file_name(LOCK_FILE_NAME);
-        if lock_file != expected {
-            return Err(StateError::invalid_state(format!(
-                "lock file {} does not match derived lock {} for state file {}",
-                lock_file.display(),
-                expected.display(),
-                state_file.display()
-            )));
-        }
-        Ok(Self {
-            state_file,
-            lock_file,
-        })
-    }
-
     /// Resolve state and lock paths using the documented platform priority.
     pub fn resolve() -> Result<Self, StateError> {
         let state_file = resolve_state_file()?;
@@ -174,15 +153,6 @@ impl StateStore {
         }
     }
 
-    /// Validate and create a disk store, rejecting mismatched lock paths.
-    ///
-    /// This is the fallible variant of `open` for callers that construct
-    /// paths from two independent inputs.
-    pub fn try_open(state_file: PathBuf, lock_file: PathBuf) -> Result<Self, StateError> {
-        let paths = StatePaths::try_new(state_file, lock_file)?;
-        Ok(Self::open(paths))
-    }
-
     /// Create a store using the default platform-resolved paths.
     pub fn with_default_paths() -> Result<Self, StateError> {
         let paths = StatePaths::resolve()?;
@@ -258,15 +228,6 @@ impl StateStore {
         }
     }
 
-    /// Transaction helper that validates only at commit.
-    ///
-    /// Callers mutate the state via `state_mut()` and then `commit()`; no
-    /// pre-commit `validate()` call is required. Validation is performed
-    /// once at the authoritative commit boundary.
-    pub fn transaction_validated(&self) -> Result<StateTransaction<'_>, StateError> {
-        self.transaction()
-    }
-
     /// Replace an unreadable state file with a fresh, empty, current-schema
     /// state, preserving the old bytes at a sibling backup path.
     ///
@@ -319,34 +280,13 @@ impl StateStore {
         write_atomic(self.paths.state_file(), state)
     }
 
-    // ------------------------------------------------------------------------
-    // Per-device operation locks (distinct from the state-file lock)
-    // ------------------------------------------------------------------------
-
-    fn encode_device_id(device: &DeviceId) -> String {
-        let raw = device.as_str();
-        let mut out = String::with_capacity(raw.len());
-        for ch in raw.chars() {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                out.push(ch);
-            } else {
-                out.push('_');
-            }
-        }
-        if out.is_empty() {
-            out.push_str("device");
-        }
-        out
-    }
-
-    /// Path for the per-device operation lock file beside the state file.
-    pub fn device_lock_path(&self, device: &DeviceId) -> PathBuf {
+    fn device_lock_path(&self, device: &DeviceId) -> PathBuf {
         let state_path = self.paths.state_file();
         let parent = state_path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        parent.join(format!("device-{}.lock", Self::encode_device_id(device)))
+        parent.join(format!("device-{device}.lock"))
     }
 
     /// Acquire a per-device operation lock with a finite timeout.
@@ -411,7 +351,7 @@ impl StateStore {
         timeout: Duration,
         operation: &'static str,
     ) -> Result<DeviceOperationGuard, ManagerError> {
-        let key = Self::encode_device_id(device);
+        let key = device.as_str().to_owned();
         let path = self.device_lock_path(device);
         let deadline = std::time::Instant::now() + timeout;
         let backend = Arc::clone(&self.backend);
@@ -484,7 +424,7 @@ impl StateStore {
     }
 
     #[cfg(any(feature = "usb", feature = "ble"))]
-    /// Alias for `mutate_async` that accepts a `Result`-returning closure.
+    /// Runs a fallible mutation and commits only when the closure succeeds.
     pub async fn try_mutate_async<F, R>(&self, f: F) -> Result<R, StateError>
     where
         F: FnOnce(&mut StateFile) -> Result<R, StateError> + Send + 'static,
@@ -886,7 +826,7 @@ mod tests {
 
         // Use a changed transaction so the atomic write is exercised.
         let mut txn = store.transaction().unwrap();
-        let identity = DeviceIdentity::ble("round-trip-test", None).unwrap();
+        let identity = DeviceIdentity::test_ble("round-trip-test", None).unwrap();
         let id = identity.id.clone();
         txn.state_mut()
             .devices
@@ -959,7 +899,7 @@ mod tests {
 
         let mut txn = store.transaction().unwrap();
         let identity =
-            DeviceIdentity::ble("test-device", None).expect("valid test device identity");
+            DeviceIdentity::test_ble("test-device", None).expect("valid test device identity");
         let id = identity.id.clone();
         txn.state_mut()
             .devices
@@ -981,7 +921,7 @@ mod tests {
         let clone = store.clone();
         let separate = StateStore::memory();
         let identity =
-            DeviceIdentity::ble("memory-test-device", None).expect("valid test identity");
+            DeviceIdentity::test_ble("memory-test-device", None).expect("valid test identity");
         let id = identity.id.clone();
 
         let mut transaction = store.transaction().unwrap();
@@ -1073,7 +1013,7 @@ mod tests {
         // Ensure a readable file exists.
         {
             let mut txn = store.transaction().unwrap();
-            let identity = DeviceIdentity::ble("readable-test", None).unwrap();
+            let identity = DeviceIdentity::test_ble("readable-test", None).unwrap();
             let id = identity.id.clone();
             txn.state_mut()
                 .devices
@@ -1120,7 +1060,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths_in(dir.path());
         let store = StateStore::open(paths.clone());
-        let identity = DeviceIdentity::ble("named-test", None).expect("valid test identity");
+        let identity = DeviceIdentity::test_ble("named-test", None).expect("valid test identity");
         let id = identity.id.clone();
         let profile = ProfileId::new(2).expect("profile");
 
@@ -1147,7 +1087,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths_in(dir.path());
         let store = StateStore::open(paths.clone());
-        let identity = DeviceIdentity::ble("old-test", None).expect("valid test identity");
+        let identity = DeviceIdentity::test_ble("old-test", None).expect("valid test identity");
         let id = identity.id.clone();
         let id_string = id.to_string();
         let value = serde_json::json!({
@@ -1174,7 +1114,7 @@ mod tests {
         let paths = paths_in(dir.path());
         let store = StateStore::open(paths.clone());
 
-        let identity = DeviceIdentity::ble("bad-device", None).expect("valid test identity");
+        let identity = DeviceIdentity::test_ble("bad-device", None).expect("valid test identity");
         let id = identity.id.clone();
         let id_string = id.to_string();
         let mut value = serde_json::to_value(StateFile::default()).unwrap();
@@ -1199,19 +1139,11 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_lock_is_prevented() {
+    fn lock_path_is_derived_from_state_path() {
         let dir = tempfile::tempdir().unwrap();
         let state_file = dir.path().join("state.json");
-        let bad_lock = dir.path().join("other.lock");
-        let err = StatePaths::try_new(state_file.clone(), bad_lock).unwrap_err();
-        match err {
-            StateError::InvalidState(msg) => assert!(msg.contains("lock file")),
-            other => panic!("expected InvalidState for mismatched lock, got {other:?}"),
-        }
         let paths = StatePaths::new(state_file.clone());
         assert_eq!(paths.lock_file(), state_file.with_file_name("state.lock"));
-        let good_lock = state_file.with_file_name("state.lock");
-        assert!(StatePaths::try_new(state_file, good_lock).is_ok());
     }
 
     #[test]
@@ -1220,7 +1152,7 @@ mod tests {
         let store = StateStore::open(paths_in(dir.path()));
         {
             let mut txn = store.transaction().unwrap();
-            let identity = DeviceIdentity::ble("unchanged-device", None).unwrap();
+            let identity = DeviceIdentity::test_ble("unchanged-device", None).unwrap();
             let id = identity.id.clone();
             txn.state_mut()
                 .devices
@@ -1313,7 +1245,7 @@ mod tests {
     async fn async_mutation_runs_blocking_transaction() {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::open(paths_in(dir.path()));
-        let identity = DeviceIdentity::ble("async-device", None).unwrap();
+        let identity = DeviceIdentity::test_ble("async-device", None).unwrap();
         let id = identity.id.clone();
 
         store
@@ -1329,7 +1261,8 @@ mod tests {
         let store2 = store.clone();
         store2
             .mutate_async(|state| {
-                state.selected_device = Some(DeviceIdentity::ble("async-device", None).unwrap().id);
+                state.selected_device =
+                    Some(DeviceIdentity::test_ble("async-device", None).unwrap().id);
             })
             .await
             .unwrap();
@@ -1338,7 +1271,7 @@ mod tests {
         assert!(
             loaded
                 .devices
-                .contains_key(&DeviceIdentity::ble("async-device", None).unwrap().id)
+                .contains_key(&DeviceIdentity::test_ble("async-device", None).unwrap().id)
         );
 
         let res: Result<(), StateError> = store
@@ -1356,7 +1289,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::open(paths_in(dir.path()));
         assert_eq!(store.load_async().await.unwrap(), StateFile::default());
-        let identity = DeviceIdentity::ble("async-load-disk", None).unwrap();
+        let identity = DeviceIdentity::test_ble("async-load-disk", None).unwrap();
         let id = identity.id.clone();
         store
             .mutate_async(move |state| {
@@ -1369,15 +1302,17 @@ mod tests {
             .unwrap();
         let loaded = store.load_async().await.unwrap();
         assert!(
-            loaded
-                .devices
-                .contains_key(&DeviceIdentity::ble("async-load-disk", None).unwrap().id)
+            loaded.devices.contains_key(
+                &DeviceIdentity::test_ble("async-load-disk", None)
+                    .unwrap()
+                    .id
+            )
         );
         // In-memory clone shares state via load_async as well.
         let mem = StateStore::memory();
         assert_eq!(mem.load_async().await.unwrap(), StateFile::default());
         let mem_clone = mem.clone();
-        let identity2 = DeviceIdentity::ble("async-load-mem", None).unwrap();
+        let identity2 = DeviceIdentity::test_ble("async-load-mem", None).unwrap();
         let id2 = identity2.id.clone();
         mem.mutate_async(move |state| {
             if state.next_device_number <= 999 {
@@ -1393,7 +1328,7 @@ mod tests {
         assert!(
             mem_loaded
                 .devices
-                .contains_key(&DeviceIdentity::ble("async-load-mem", None).unwrap().id)
+                .contains_key(&DeviceIdentity::test_ble("async-load-mem", None).unwrap().id)
         );
     }
 
@@ -1462,7 +1397,7 @@ mod tests {
     #[test]
     fn operation_lock_contention_timeout() {
         let store = StateStore::memory();
-        let device = DeviceIdentity::ble("lock-device", None).unwrap().id;
+        let device = DeviceIdentity::test_ble("lock-device", None).unwrap().id;
         let guard = store
             .acquire_operation_lock(&device, Duration::from_millis(100), "test-op")
             .expect("first lock should succeed");

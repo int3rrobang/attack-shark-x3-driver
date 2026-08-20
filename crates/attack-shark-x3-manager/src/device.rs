@@ -217,21 +217,10 @@ impl DeviceIdentity {
         self.endpoints.insert(endpoint.transport, endpoint);
     }
 
-    /// Inserts or replaces endpoint returning previous value.
-    pub fn insert_endpoint(&mut self, endpoint: DeviceEndpoint) -> Option<DeviceEndpoint> {
-        self.endpoints.insert(endpoint.transport, endpoint)
-    }
-
     /// Returns the endpoint for the given transport, if present.
     #[must_use]
     pub fn endpoint(&self, transport: TransportKind) -> Option<&DeviceEndpoint> {
         self.endpoints.get(&transport)
-    }
-
-    /// Returns mutable endpoint for the given transport.
-    #[must_use]
-    pub fn endpoint_mut(&mut self, transport: TransportKind) -> Option<&mut DeviceEndpoint> {
-        self.endpoints.get_mut(&transport)
     }
 
     /// Returns true when an endpoint for the transport exists.
@@ -240,15 +229,15 @@ impl DeviceIdentity {
         self.endpoints.contains_key(&transport)
     }
 
-    /// Convenience builder that returns a new identity with one endpoint.
+    #[cfg(test)]
     #[must_use]
-    pub fn with_endpoint(mut self, endpoint: DeviceEndpoint) -> Self {
+    pub(crate) fn with_endpoint(mut self, endpoint: DeviceEndpoint) -> Self {
         self.upsert_endpoint(endpoint);
         self
     }
-    /// Legacy helper: build a single-endpoint logical identity for tests.
-    /// Prefer constructing [`DeviceEndpoint`] directly and inserting it.
-    pub fn usb(
+
+    #[cfg(all(test, any(feature = "usb", feature = "ble")))]
+    pub(crate) fn test_usb(
         transport: TransportKind,
         vendor_id: u16,
         product_id: u16,
@@ -256,45 +245,28 @@ impl DeviceIdentity {
         current_path: &str,
         display_name: Option<&str>,
     ) -> Result<Self, StateError> {
-        // Allocate a temporary id? For backwards compat in tests that expect an identity,
-        // we create a placeholder id mouse-1. Callers that go through StateFile should allocate properly.
-        let endpoint = DeviceEndpoint::usb(
+        Self::test_identity(DeviceEndpoint::usb(
             transport,
             vendor_id,
             product_id,
             serial_number,
             current_path,
             display_name,
-        )?;
-        // Use a placeholder logical id; the caller is expected to replace it when persisting via StateFile allocation.
-        // To keep tests simple we use mouse-999 which is obviously placeholder but valid.
-        let id = DeviceId::from_number(999)?;
-        Ok(Self {
-            id,
-            display_name: endpoint.display_name.clone(),
-            endpoints: BTreeMap::from([(transport, endpoint)]),
-            preferred_transport: None,
-        })
+        )?)
     }
 
-    /// Legacy helper for BLE single-endpoint identity.
-    pub fn ble(platform_id: &str, display_name: Option<&str>) -> Result<Self, StateError> {
-        let endpoint = DeviceEndpoint::ble(platform_id, display_name)?;
-        let id = DeviceId::from_number(999)?;
-        Ok(Self {
-            id,
-            display_name: endpoint.display_name.clone(),
-            endpoints: BTreeMap::from([(TransportKind::Ble, endpoint)]),
-            preferred_transport: None,
-        })
+    #[cfg(test)]
+    pub(crate) fn test_ble(
+        platform_id: &str,
+        display_name: Option<&str>,
+    ) -> Result<Self, StateError> {
+        Self::test_identity(DeviceEndpoint::ble(platform_id, display_name)?)
     }
 
-    /// Returns the endpoint locator for opening sessions, preferring the given transport.
-    #[must_use]
-    pub fn locator_for(&self, transport: TransportKind) -> Option<&DeviceLocator> {
-        self.endpoints
-            .get(&transport)
-            .map(|endpoint| &endpoint.locator)
+    #[cfg(test)]
+    fn test_identity(endpoint: DeviceEndpoint) -> Result<Self, StateError> {
+        let display_name = endpoint.display_name.clone();
+        Ok(Self::new(DeviceId::from_number(999)?, display_name).with_endpoint(endpoint))
     }
 
     /// Selects the endpoint that should be opened for a hardware operation.
@@ -367,13 +339,6 @@ impl DeviceIdentity {
                     "serial for device {} transport {kind:?} is blank",
                     self.id
                 )));
-            }
-        }
-        if let Some(pref) = self.preferred_transport {
-            // Preferred transport must be a valid transport, but not required to have endpoint yet;
-            // if it exists, coherence already validated.
-            match pref {
-                TransportKind::Wired | TransportKind::Receiver | TransportKind::Ble => {}
             }
         }
         Ok(())

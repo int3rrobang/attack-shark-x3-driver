@@ -24,7 +24,7 @@ impl DeviceManager {
         &self,
         device: &DeviceId,
     ) -> Result<FullProfileRefreshOutcome, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "refresh_all_profiles").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(ManagerError::UnsupportedOperation {
@@ -88,21 +88,20 @@ impl DeviceManager {
         profiles: BTreeMap<ProfileId, RefreshedProfile>,
     ) -> Result<FullProfileRefreshOutcome, ManagerError> {
         let now = self.now();
-        let device_owned = device.clone();
-        let restored_owned = restored_metadata;
-        let original_owned = original_metadata;
-        let tmp_owned = temporarily_expanded;
-        let profiles_owned = profiles;
+        let device = device.clone();
         self.store()
             .mutate_async(move |state| {
-                let device_state = match state.devices.get_mut(&device_owned) {
-                    Some(ds) => ds,
-                    None => return Err(ManagerError::DeviceNotFound(device_owned.clone())),
-                };
-                let profile_metadata_drift =
-                    reconcile_observation(&mut device_state.profile_metadata, restored_owned, now);
+                let device_state = state
+                    .devices
+                    .get_mut(&device)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+                let profile_metadata_drift = reconcile_observation(
+                    &mut device_state.profile_metadata,
+                    restored_metadata,
+                    now,
+                );
                 let mut drift = BTreeMap::new();
-                for (&profile, refreshed) in &profiles_owned {
+                for (&profile, refreshed) in &profiles {
                     let st = device_state.profiles.entry(profile).or_default();
                     let mut mismatches = Vec::new();
                     if reconcile_observation(&mut st.dpi, refreshed.dpi.clone(), now) {
@@ -122,10 +121,10 @@ impl DeviceManager {
                     }
                 }
                 Ok(FullProfileRefreshOutcome {
-                    original_metadata: original_owned,
-                    restored_metadata: restored_owned,
-                    temporarily_expanded: tmp_owned,
-                    profiles: profiles_owned,
+                    original_metadata,
+                    restored_metadata,
+                    temporarily_expanded,
+                    profiles,
                     drift,
                     profile_metadata_drift,
                 })
@@ -268,7 +267,7 @@ mod tests {
     }
 
     fn identity() -> DeviceIdentity {
-        DeviceIdentity::usb(
+        DeviceIdentity::test_usb(
             TransportKind::Wired,
             0x1d57,
             0xfa61,

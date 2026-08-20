@@ -67,7 +67,7 @@ impl DeviceManager {
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<ResourceSnapshot<DpiState>, ManagerError> {
-        let (_identity, _endpoint, session, _guard) = self.open_locked(device, "read_dpi").await?;
+        let (_identity, session, _guard) = self.open_locked(device, "read_dpi").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(unsupported("read_dpi", transport));
@@ -109,8 +109,7 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, _endpoint, session, _guard) =
-            self.open_locked(device, "update_dpi").await?;
+        let (_identity, session, _guard) = self.open_locked(device, "update_dpi").await?;
         let transport = session.transport();
 
         if transport == TransportKind::Ble && !policy.allow_explicit_defaults {
@@ -153,8 +152,7 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, _endpoint, session, _guard) =
-            self.open_locked(device, "update_dpi_delta").await?;
+        let (_identity, session, _guard) = self.open_locked(device, "update_dpi_delta").await?;
         let baseline = match session.transport() {
             TransportKind::Ble => {
                 self.load_stored_dpi_baseline(device, profile, policy.allow_explicit_defaults)
@@ -425,7 +423,7 @@ mod tests {
         StateStore::open(StatePaths::new(dir.path().join("state.json")))
     }
     fn usb_identity() -> DeviceIdentity {
-        DeviceIdentity::usb(
+        DeviceIdentity::test_usb(
             TransportKind::Wired,
             0x1d57,
             0xfa61,
@@ -437,7 +435,7 @@ mod tests {
     }
 
     fn ble_identity() -> DeviceIdentity {
-        DeviceIdentity::ble("dpi-ble-test", Some("DPI BLE test")).expect("valid BLE identity")
+        DeviceIdentity::test_ble("dpi-ble-test", Some("DPI BLE test")).expect("valid BLE identity")
     }
 
     fn dpi(profile: ProfileId, value: u16) -> DpiState {

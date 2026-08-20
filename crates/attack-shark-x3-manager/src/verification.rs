@@ -5,13 +5,11 @@ use attack_shark_x3::{PollingRate, ProfileId, ProfileMetadata, TransportKind};
 use tokio::time::{Instant, sleep};
 
 use crate::backend::SessionWrite;
-use crate::device::{DeviceEndpoint, DeviceId, DeviceIdentity, TransportSelection};
+use crate::device::{DeviceEndpoint, DeviceId, TransportSelection};
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::operation::{PowerCycleVerificationOutcome, ProfileVerificationOutcome, WriteOutcome};
-use crate::state::{
-    ApplicationVerification, PersistenceVerification, ProfileState, ResourceState, Verification,
-};
+use crate::state::{ApplicationVerification, PersistenceVerification, ProfileState, Verification};
 #[cfg(not(test))]
 const POWER_CYCLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 #[cfg(test)]
@@ -40,7 +38,8 @@ impl DeviceManager {
         device: &DeviceId,
         target: ProfileId,
     ) -> Result<ProfileVerificationOutcome, ManagerError> {
-        let (_, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) =
+            self.open_locked(device, "verify_profile_reload").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(ManagerError::UnsupportedOperation {
@@ -173,7 +172,7 @@ impl DeviceManager {
         device: &DeviceId,
         target: ProfileId,
     ) -> Result<PowerCycleVerificationOutcome, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, guard) = self.open_locked(device, "verify_power_cycle").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(ManagerError::UnsupportedOperation {
@@ -187,6 +186,7 @@ impl DeviceManager {
         let (initial_snapshot, initial_rate) =
             read_complete_profile(session.as_ref(), target).await?;
         drop(session);
+        drop(guard);
 
         let state = self
             .store()
@@ -204,70 +204,12 @@ impl DeviceManager {
 
         self.wait_for_disappearance(device, transport, &old_endpoint)
             .await?;
-        let reappeared_endpoint = self
-            .wait_for_reappearance_with_rebind(device, transport, &old_endpoint)
+        self.wait_for_reappearance_with_rebind(device, transport, &old_endpoint)
             .await?;
 
-        // Ensure reappeared endpoint is now the stored locator before reopening.
-        // wait_for_reappearance_with_rebind already performed the unique
-        // VID/PID rebind when needed; for the same-path case no change is needed.
-        let state_after = self
-            .store()
-            .load_async()
-            .await
-            .map_err(ManagerError::State)?;
-        let stored_locator = state_after
-            .devices
-            .get(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
-            .identity
-            .endpoint(transport)
-            .map(|endpoint| &endpoint.locator)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        if stored_locator != &reappeared_endpoint.locator {
-            // Defensive async rebind when unique (ignore errors as original did).
-            let device_clone = device.clone();
-            let reappeared_clone = reappeared_endpoint.clone();
-            let _ = self
-                .store()
-                .mutate_async(move |state| {
-                    let device_state = match state.devices.get_mut(&device_clone) {
-                        Some(ds) => ds,
-                        None => return Err(ManagerError::DeviceNotFound(device_clone.clone())),
-                    };
-                    let stored = match device_state.identity.endpoint(transport) {
-                        Some(ep) => ep.clone(),
-                        None => {
-                            return Err(ManagerError::InvalidUpdate(format!(
-                                "no stored endpoint for {transport:?}"
-                            )));
-                        }
-                    };
-                    if reappeared_clone.locator == stored.locator {
-                        return Ok(());
-                    }
-                    if reappeared_clone.transport != transport {
-                        return Err(ManagerError::InvalidUpdate(format!(
-                            "no candidate for rebind of {device_clone} transport {transport:?}"
-                        )));
-                    }
-                    let is_usb =
-                        matches!(transport, TransportKind::Wired | TransportKind::Receiver);
-                    if is_usb
-                        && (reappeared_clone.vendor_id != stored.vendor_id
-                            || reappeared_clone.product_id != stored.product_id)
-                    {
-                        return Err(ManagerError::InvalidUpdate(format!(
-                            "no candidate for rebind of {device_clone} transport {transport:?}"
-                        )));
-                    }
-                    device_state.identity.upsert_endpoint(reappeared_clone);
-                    Ok(())
-                })
-                .await;
-        }
-
-        let (reopened_identity, reopened_session) = self.open_session(device).await?;
+        let (reopened_identity, reopened_session, _guard) = self
+            .open_locked(device, "verify_power_cycle_reopen")
+            .await?;
         if reopened_identity.id != *device || reopened_session.transport() != transport {
             return Err(ManagerError::VerificationMismatch {
                 resource: "device identity",
@@ -478,36 +420,23 @@ impl DeviceManager {
                 })
                 .map(|candidate| candidate.endpoint)
                 .collect();
-            candidates.sort_by(|a, b| format!("{:?}", a.locator).cmp(&format!("{:?}", b.locator)));
+            candidates.sort_by(|a, b| a.locator.cmp(&b.locator));
             candidates.dedup_by(|a, b| a.locator == b.locator);
             match candidates.len() {
                 0 => {}
                 1 => {
-                    let new_endpoint = candidates.into_iter().next().unwrap();
-                    let device_clone = device.clone();
-                    let new_endpoint_clone = new_endpoint.clone();
+                    let new_endpoint = candidates.pop().expect("length checked above");
+                    let device = device.clone();
+                    let endpoint = new_endpoint.clone();
                     self.store()
                         .mutate_async(move |state| {
-                            let device_state = match state.devices.get_mut(&device_clone) {
-                                Some(ds) => ds,
-                                None => {
-                                    return Err(ManagerError::DeviceNotFound(device_clone.clone()));
-                                }
-                            };
-                            let stored = match device_state.identity.endpoint(transport) {
-                                Some(ep) => ep.clone(),
-                                None => {
-                                    return Err(ManagerError::InvalidUpdate(format!(
-                                        "no stored endpoint for {transport:?}"
-                                    )));
-                                }
-                            };
-                            if new_endpoint_clone.locator == stored.locator {
-                                return Ok(());
-                            }
-                            // Already filtered to unique VID/PID candidate, so directly upsert.
-                            device_state.identity.upsert_endpoint(new_endpoint_clone);
-                            Ok(())
+                            state
+                                .devices
+                                .get_mut(&device)
+                                .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+                                .identity
+                                .upsert_endpoint(endpoint);
+                            Ok::<_, ManagerError>(())
                         })
                         .await
                         .map_err(ManagerError::State)??;
@@ -526,41 +455,6 @@ impl DeviceManager {
             }
             sleep(POWER_CYCLE_POLL_INTERVAL).await;
         }
-    }
-
-    #[allow(dead_code)]
-    fn refresh_device_identity(
-        &self,
-        device: &DeviceId,
-        identity: DeviceIdentity,
-    ) -> Result<(), ManagerError> {
-        if identity.id != *device {
-            return Err(ManagerError::DeviceNotFound(device.clone()));
-        }
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        let mut has_transport = false;
-        for t in identity.endpoints.keys() {
-            if device_state.identity.has_endpoint(*t) || identity.has_endpoint(*t) {
-                has_transport = true;
-                break;
-            }
-        }
-        if !has_transport {
-            return Err(ManagerError::VerificationMismatch {
-                resource: "device identity",
-                profile: None,
-            });
-        }
-        for endpoint in identity.endpoints.into_values() {
-            device_state.identity.upsert_endpoint(endpoint);
-        }
-        transaction.commit()?;
-        Ok(())
     }
 }
 
@@ -627,40 +521,6 @@ fn first_mismatch(
     }
     None
 }
-#[allow(dead_code)]
-fn set_observed<T>(
-    resource: &mut ResourceState<T>,
-    value: T,
-    observed_at: crate::state::Timestamp,
-) {
-    resource.observed = Some(crate::state::ObservedState {
-        value,
-        source: crate::state::ObservationSource::UsbReadback,
-        observed_at,
-    });
-}
-
-#[allow(dead_code)]
-fn mark_persistence<T: Eq>(
-    resource: &mut ResourceState<T>,
-    readback: &T,
-    persistence: &PersistenceVerification,
-) {
-    if let Some(desired) = resource.desired.as_mut() {
-        if desired.value == *readback {
-            desired.verification.persistence = persistence.clone();
-        } else {
-            desired.verification.invalidate_persistence();
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn invalidate_persistence<T>(resource: &mut ResourceState<T>) {
-    if let Some(desired) = resource.desired.as_mut() {
-        desired.verification.invalidate_persistence();
-    }
-}
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -687,7 +547,7 @@ mod tests {
     }
 
     fn identity(path: &str) -> DeviceIdentity {
-        DeviceIdentity::usb(
+        DeviceIdentity::test_usb(
             TransportKind::Wired,
             0x1d57,
             0xfa61,
@@ -918,8 +778,8 @@ mod tests {
 
     #[tokio::test]
     async fn power_cycle_rejects_ble_without_discovery() {
-        let ble_identity =
-            DeviceIdentity::ble("power-cycle-ble-test", Some("BLE test mouse")).expect("BLE ID");
+        let ble_identity = DeviceIdentity::test_ble("power-cycle-ble-test", Some("BLE test mouse"))
+            .expect("BLE ID");
         let (manager, factory) = manager_for(&ble_identity, ScriptedFakeSession::ble(), Vec::new());
 
         let error = manager

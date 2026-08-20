@@ -988,7 +988,7 @@ impl ScriptedFakeFactory {
         self
     }
 
-    /// Legacy helper: accepts a DeviceIdentity and converts its first endpoint.
+    /// Adds the first endpoint from a test identity.
     pub(crate) fn with_identity(
         self,
         identity: crate::device::DeviceIdentity,

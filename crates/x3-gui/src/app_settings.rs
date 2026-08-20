@@ -29,6 +29,12 @@ const MAX_CUSTOM_NAME_CHARS: usize = 64;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaHeader {
+    schema_version: u32,
+}
+
 fn default_schema_version() -> u32 {
     GUI_PREFERENCES_SCHEMA_VERSION
 }
@@ -175,81 +181,72 @@ pub fn load_gui_preferences() -> (GuiPreferences, Option<String>) {
 }
 
 /// Load from an explicit path. Used by tests with temp dirs.
-///
-/// On malformed JSON or unknown schema version the raw bytes are preserved to
-/// an exclusive backup (`*.unreadable.bak` or `*.unsupported-vN.bak`) and
-/// defaults are returned with a restrained warning.
 pub fn load_gui_preferences_from_path(path: &Path) -> (GuiPreferences, Option<String>) {
-    match fs::read(path) {
-        Ok(bytes) => {
-            if bytes.is_empty() {
-                let _ = create_gui_backup_exclusive(path, &bytes, None);
-                return (
-                    GuiPreferences::default(),
-                    Some(
-                        "GUI preferences were empty and have been reset to defaults — backup saved"
-                            .to_owned(),
-                    ),
-                );
-            }
-            // Try to detect schema version first.
-            match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                Ok(val) => {
-                    if let Some(v) = val.get("schemaVersion").and_then(|x| x.as_u64()) {
-                        if v != u64::from(GUI_PREFERENCES_SCHEMA_VERSION) {
-                            let _ = create_gui_backup_exclusive(path, &bytes, Some(v as u32));
-                            return (
-                                GuiPreferences::default(),
-                                Some(format!(
-                                    "GUI preferences schema v{v} is not supported — reset to defaults — backup saved"
-                                )),
-                            );
-                        }
-                    } else {
-                        // Missing schemaVersion -> treat as malformed.
-                        let _ = create_gui_backup_exclusive(path, &bytes, None);
-                        return (
-                            GuiPreferences::default(),
-                            Some(
-                                "GUI preferences were unreadable and have been reset to defaults — backup saved"
-                                    .to_owned(),
-                            ),
-                        );
-                    }
-                    match serde_json::from_slice::<GuiPreferences>(&bytes) {
-                        Ok(prefs) => (prefs.normalized(), None),
-                        Err(_) => {
-                            let _ = create_gui_backup_exclusive(path, &bytes, None);
-                            (
-                                GuiPreferences::default(),
-                                Some(
-                                    "GUI preferences were unreadable and have been reset to defaults — backup saved"
-                                        .to_owned(),
-                                ),
-                            )
-                        }
-                    }
-                }
-                Err(_) => {
-                    let _ = create_gui_backup_exclusive(path, &bytes, None);
-                    (
-                        GuiPreferences::default(),
-                        Some(
-                            "GUI preferences were unreadable and have been reset to defaults — backup saved"
-                                .to_owned(),
-                        ),
-                    )
-                }
-            }
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return (GuiPreferences::default(), None);
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => (GuiPreferences::default(), None),
-        Err(err) => (
-            GuiPreferences::default(),
-            Some(format!(
-                "unable to read GUI preferences — using defaults ({err})"
-            )),
+        Err(err) => {
+            return (
+                GuiPreferences::default(),
+                Some(format!(
+                    "unable to read GUI preferences — using defaults ({err})"
+                )),
+            );
+        }
+    };
+    if bytes.is_empty() {
+        return reset_gui_preferences(
+            path,
+            &bytes,
+            None,
+            "GUI preferences were empty and have been reset to defaults",
+        );
+    }
+
+    let schema = match serde_json::from_slice::<SchemaHeader>(&bytes) {
+        Ok(header) => header.schema_version,
+        Err(_) => {
+            return reset_gui_preferences(
+                path,
+                &bytes,
+                None,
+                "GUI preferences were unreadable and have been reset to defaults",
+            );
+        }
+    };
+    if schema != GUI_PREFERENCES_SCHEMA_VERSION {
+        return reset_gui_preferences(
+            path,
+            &bytes,
+            Some(schema),
+            &format!("GUI preferences schema v{schema} is not supported — reset to defaults"),
+        );
+    }
+
+    match serde_json::from_slice::<GuiPreferences>(&bytes) {
+        Ok(prefs) => (prefs.normalized(), None),
+        Err(_) => reset_gui_preferences(
+            path,
+            &bytes,
+            None,
+            "GUI preferences were unreadable and have been reset to defaults",
         ),
     }
+}
+
+fn reset_gui_preferences(
+    path: &Path,
+    bytes: &[u8],
+    schema: Option<u32>,
+    message: &str,
+) -> (GuiPreferences, Option<String>) {
+    let warning = match create_gui_backup_exclusive(path, bytes, schema) {
+        Ok(_) => format!("{message} — backup saved"),
+        Err(error) => format!("{message}; the old file could not be backed up ({error})"),
+    };
+    (GuiPreferences::default(), Some(warning))
 }
 
 /// Save preferences to the resolved path. Returns `true` iff a write occurred.
@@ -269,9 +266,7 @@ pub fn save_gui_preferences_to_path(
 ) -> Result<bool, StateError> {
     let normalized = prefs.clone().normalized();
 
-    // Coalesce: compare with existing normalized prefs.
-    if path.exists()
-        && let Ok(bytes) = fs::read(path)
+    if let Ok(bytes) = fs::read(path)
         && let Ok(existing) = serde_json::from_slice::<GuiPreferences>(&bytes)
         && existing.normalized() == normalized
     {

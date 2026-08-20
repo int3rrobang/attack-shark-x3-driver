@@ -245,8 +245,7 @@ impl DeviceManager {
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<ResourceSnapshot<ButtonsState>, ManagerError> {
-        let (_identity, _endpoint, session, _guard) =
-            self.open_locked(device, "read_buttons").await?;
+        let (_identity, session, _guard) = self.open_locked(device, "read_buttons").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(unsupported_read(transport));
@@ -296,8 +295,7 @@ impl DeviceManager {
         let slot_index = delta.slot_index();
         let assignment = delta.assignment();
 
-        let (_identity, _endpoint, session, _guard) =
-            self.open_locked(device, "update_button_slot").await?;
+        let (_identity, session, _guard) = self.open_locked(device, "update_button_slot").await?;
         let transport = session.transport();
         let mut baseline = match transport {
             TransportKind::Ble => {
@@ -477,9 +475,9 @@ mod tests {
     fn identity(transport: TransportKind) -> DeviceIdentity {
         match transport {
             TransportKind::Ble => {
-                DeviceIdentity::ble("test-device", Some("Test")).expect("valid BLE identity")
+                DeviceIdentity::test_ble("test-device", Some("Test")).expect("valid BLE identity")
             }
-            transport => DeviceIdentity::usb(
+            transport => DeviceIdentity::test_usb(
                 transport,
                 0x1d57,
                 0xfa61,

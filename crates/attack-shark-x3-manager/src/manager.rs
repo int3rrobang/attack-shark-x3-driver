@@ -150,15 +150,8 @@ impl DeviceManager {
             if !is_connected {
                 return Err(ManagerError::DeviceDisconnected(explicit_id.clone()));
             }
-            if let TransportSelection::Exact(t) = selection {
-                let explicit_owned = explicit_id.clone();
-                self.store
-                    .mutate_async(move |state| {
-                        if let Some(dev_state) = state.devices.get_mut(&explicit_owned) {
-                            dev_state.identity.preferred_transport = Some(t);
-                        }
-                    })
-                    .await?;
+            if let TransportSelection::Exact(transport) = selection {
+                self.set_preferred_transport(explicit_id, transport).await?;
             }
             return Ok(explicit_id.clone());
         }
@@ -169,15 +162,8 @@ impl DeviceManager {
                 .iter()
                 .any(|d| d.connected && d.identity.id == selected)
         {
-            if let TransportSelection::Exact(t) = selection {
-                let selected_owned = selected.clone();
-                self.store
-                    .mutate_async(move |state| {
-                        if let Some(dev_state) = state.devices.get_mut(&selected_owned) {
-                            dev_state.identity.preferred_transport = Some(t);
-                        }
-                    })
-                    .await?;
+            if let TransportSelection::Exact(transport) = selection {
+                self.set_preferred_transport(&selected, transport).await?;
             }
             return Ok(selected);
         }
@@ -193,15 +179,8 @@ impl DeviceManager {
         match candidates.as_slice() {
             [] => Err(ManagerError::NoDevice { selection }),
             [candidate] => {
-                if let TransportSelection::Exact(t) = selection {
-                    let candidate_owned = candidate.clone();
-                    self.store
-                        .mutate_async(move |state| {
-                            if let Some(dev_state) = state.devices.get_mut(&candidate_owned) {
-                                dev_state.identity.preferred_transport = Some(t);
-                            }
-                        })
-                        .await?;
+                if let TransportSelection::Exact(transport) = selection {
+                    self.set_preferred_transport(candidate, transport).await?;
                 }
                 let candidate_owned = candidate.clone();
                 let inner: Result<(), ManagerError> = self
@@ -222,6 +201,24 @@ impl DeviceManager {
                 candidates,
             }),
         }
+    }
+
+    async fn set_preferred_transport(
+        &self,
+        device: &DeviceId,
+        transport: TransportKind,
+    ) -> Result<(), ManagerError> {
+        let device = device.clone();
+        self.store
+            .mutate_async(move |state| {
+                let device_state = state
+                    .devices
+                    .get_mut(&device)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+                device_state.identity.preferred_transport = Some(transport);
+                Ok::<_, ManagerError>(())
+            })
+            .await?
     }
 
     pub fn register_device(&self, identity: DeviceIdentity) -> Result<(), ManagerError> {
@@ -347,81 +344,30 @@ impl DeviceManager {
             })
             .map(|d| d.endpoint)
             .collect();
-        candidates.sort_by(|a, b| format!("{:?}", a.locator).cmp(&format!("{:?}", b.locator)));
+        candidates.sort_by(|a, b| a.locator.cmp(&b.locator));
         candidates.dedup_by(|a, b| a.locator == b.locator);
         match candidates.len() {
             0 => Err(ManagerError::InvalidUpdate(format!(
                 "no candidate for rebind of device {device} transport {transport:?}"
             ))),
             1 => {
-                let new_endpoint = candidates.into_iter().next().unwrap();
-                let device_for_mut = device.clone();
-                let endpoint_for_mut = new_endpoint.clone();
-                let inner: Result<(), ManagerError> = self
-                    .store
+                let new_endpoint = candidates.pop().expect("length checked above");
+                let device = device.clone();
+                self.store
                     .mutate_async(move |state| {
-                        let dev_state = state
+                        state
                             .devices
-                            .get_mut(&device_for_mut)
-                            .ok_or_else(|| ManagerError::DeviceNotFound(device_for_mut.clone()))?;
-                        dev_state.identity.upsert_endpoint(endpoint_for_mut.clone());
-                        Ok(())
+                            .get_mut(&device)
+                            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+                            .identity
+                            .upsert_endpoint(new_endpoint);
+                        Ok::<_, ManagerError>(())
                     })
-                    .await?;
-                inner?;
-                Ok(())
+                    .await?
             }
             _ => Err(ManagerError::InvalidUpdate(format!(
                 "ambiguous candidates for rebind of device {device} transport {transport:?}: {} candidates with same VID/PID",
                 candidates.len()
-            ))),
-        }
-    }
-
-    pub fn try_rebind_with_candidates(
-        &self,
-        device: &DeviceId,
-        transport: TransportKind,
-        candidates: Vec<DeviceEndpoint>,
-    ) -> Result<(), ManagerError> {
-        let identity = self.device_identity(device)?;
-        let stored = identity.endpoint(transport).cloned().ok_or_else(|| {
-            ManagerError::InvalidUpdate(format!("no stored endpoint for {transport:?}"))
-        })?;
-        if candidates.iter().any(|c| c.locator == stored.locator) {
-            return Ok(());
-        }
-        let filtered: Vec<DeviceEndpoint> = candidates
-            .into_iter()
-            .filter(|c| c.transport == transport)
-            .filter(|c| {
-                if is_usb_transport(transport) {
-                    c.vendor_id == stored.vendor_id && c.product_id == stored.product_id
-                } else {
-                    true
-                }
-            })
-            .collect();
-        match filtered.len() {
-            0 => Err(ManagerError::InvalidUpdate(format!(
-                "no candidate for rebind of {device} transport {transport:?}"
-            ))),
-            1 => {
-                let mut txn = self.store.transaction()?;
-                let dev_state = txn
-                    .state_mut()
-                    .devices
-                    .get_mut(device)
-                    .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-                dev_state
-                    .identity
-                    .upsert_endpoint(filtered.into_iter().next().unwrap());
-                txn.commit()?;
-                Ok(())
-            }
-            _ => Err(ManagerError::InvalidUpdate(format!(
-                "ambiguous rebind candidates for {device} transport {transport:?}: {} matches",
-                filtered.len()
             ))),
         }
     }
@@ -433,7 +379,6 @@ impl DeviceManager {
     ) -> Result<
         (
             DeviceIdentity,
-            DeviceEndpoint,
             Box<dyn DeviceSession>,
             crate::state::DeviceOperationGuard,
         ),
@@ -455,18 +400,16 @@ impl DeviceManager {
             .cloned()
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
         let session = self.factory.open(&endpoint).await?;
-        Ok((identity, endpoint, session, guard))
+        Ok((identity, session, guard))
     }
 
     pub async fn read_battery(&self, device: &DeviceId) -> Result<u8, ManagerError> {
-        let (_identity, _endpoint, session, _guard) =
-            self.open_locked(device, "read_battery").await?;
+        let (_identity, session, _guard) = self.open_locked(device, "read_battery").await?;
         session.read_battery(BATTERY_READ_TIMEOUT).await
     }
 
     pub async fn read_status(&self, device: &DeviceId) -> Result<DeviceStatus, ManagerError> {
-        let (identity, _endpoint, session, _guard) =
-            self.open_locked(device, "read_status").await?;
+        let (identity, session, _guard) = self.open_locked(device, "read_status").await?;
         let transport = session.transport();
         let usb = is_usb_transport(transport);
 
@@ -540,8 +483,7 @@ impl DeviceManager {
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<ProfileSnapshot, ManagerError> {
-        let (_identity, _endpoint, session, _guard) =
-            self.open_locked(device, "read_profile").await?;
+        let (_identity, session, _guard) = self.open_locked(device, "read_profile").await?;
         let snapshot = session.read_profile(profile).await?;
 
         if is_usb_transport(session.transport()) {
@@ -590,11 +532,8 @@ impl DeviceManager {
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<ProfileMetadata, ManagerError> {
-        let (_identity, _endpoint, session, _guard) =
-            self.open_locked(device, "activate_profile").await?;
-        let usb = is_usb_transport(session.transport());
-
-        let maximum = if usb {
+        let (_identity, session, _guard) = self.open_locked(device, "activate_profile").await?;
+        let maximum = if is_usb_transport(session.transport()) {
             session
                 .read_profile_metadata()
                 .await?
@@ -605,69 +544,8 @@ impl DeviceManager {
         };
         let target = ProfileMetadata::new(profile, maximum)
             .map_err(|error| ManagerError::Driver(error.into()))?;
-
-        match session.write_profile_metadata(target).await? {
-            SessionWrite::ReadbackVerified(actual) => {
-                let now = self.now();
-                let device_owned = device.clone();
-                let target_copy = target;
-                let actual_copy = actual;
-                let usb_flag = usb;
-                let inner: Result<(), ManagerError> = self
-                    .store
-                    .mutate_async(move |state| {
-                        let device_state = state
-                            .devices
-                            .get_mut(&device_owned)
-                            .ok_or_else(|| ManagerError::DeviceNotFound(device_owned.clone()))?;
-                        if usb_flag {
-                            crate::resources::state::record_readback(
-                                &mut device_state.profile_metadata,
-                                target_copy,
-                                actual_copy,
-                                now,
-                            );
-                        } else {
-                            crate::resources::state::record_ack(
-                                &mut device_state.profile_metadata,
-                                target_copy,
-                                now,
-                            );
-                        }
-                        Ok(())
-                    })
-                    .await?;
-                inner?;
-                if usb && actual != target {
-                    return Err(ManagerError::VerificationMismatch {
-                        resource: "profile metadata",
-                        profile: Some(profile),
-                    });
-                }
-                Ok(actual)
-            }
-            SessionWrite::Acknowledged => {
-                let now = self.now();
-                let device_owned = device.clone();
-                let inner: Result<(), ManagerError> = self
-                    .store
-                    .mutate_async(move |state| {
-                        let device_state = state
-                            .devices
-                            .get_mut(&device_owned)
-                            .ok_or_else(|| ManagerError::DeviceNotFound(device_owned.clone()))?;
-                        crate::resources::state::record_ack(
-                            &mut device_state.profile_metadata,
-                            target,
-                            now,
-                        );
-                        Ok(())
-                    })
-                    .await?;
-                inner?;
-                Ok(target)
-            }
-        }
+        self.write_profile_metadata(device, session.as_ref(), target)
+            .await
     }
 
     pub async fn set_profile_metadata(
@@ -676,75 +554,51 @@ impl DeviceManager {
         current: ProfileId,
         maximum: ProfileId,
     ) -> Result<ProfileMetadata, ManagerError> {
-        let (_identity, _endpoint, session, _guard) =
-            self.open_locked(device, "set_profile_metadata").await?;
-        let usb = is_usb_transport(session.transport());
-
+        let (_identity, session, _guard) = self.open_locked(device, "set_profile_metadata").await?;
         let target = ProfileMetadata::new(current, maximum)
             .map_err(|error| ManagerError::Driver(error.into()))?;
+        self.write_profile_metadata(device, session.as_ref(), target)
+            .await
+    }
 
-        match session.write_profile_metadata(target).await? {
-            SessionWrite::ReadbackVerified(actual) => {
-                let now = self.now();
-                let device_owned = device.clone();
-                let target_copy = target;
-                let actual_copy = actual;
-                let usb_flag = usb;
-                let inner: Result<(), ManagerError> = self
-                    .store
-                    .mutate_async(move |state| {
-                        let device_state = state
-                            .devices
-                            .get_mut(&device_owned)
-                            .ok_or_else(|| ManagerError::DeviceNotFound(device_owned.clone()))?;
-                        if usb_flag {
-                            crate::resources::state::record_readback(
-                                &mut device_state.profile_metadata,
-                                target_copy,
-                                actual_copy,
-                                now,
-                            );
-                        } else {
-                            crate::resources::state::record_ack(
-                                &mut device_state.profile_metadata,
-                                target_copy,
-                                now,
-                            );
-                        }
-                        Ok(())
-                    })
-                    .await?;
-                inner?;
-                if usb && actual != target {
-                    return Err(ManagerError::VerificationMismatch {
-                        resource: "profile metadata",
-                        profile: Some(current),
-                    });
+    async fn write_profile_metadata(
+        &self,
+        device: &DeviceId,
+        session: &dyn DeviceSession,
+        target: ProfileMetadata,
+    ) -> Result<ProfileMetadata, ManagerError> {
+        let usb = is_usb_transport(session.transport());
+        let (actual, observed) = match session.write_profile_metadata(target).await? {
+            SessionWrite::ReadbackVerified(actual) => (actual, usb.then_some(actual)),
+            SessionWrite::Acknowledged => (target, None),
+        };
+        let mismatch = usb && actual != target;
+        let now = self.now();
+        let device = device.clone();
+        let result = self
+            .store
+            .mutate_async(move |state| {
+                let resource = &mut state
+                    .devices
+                    .get_mut(&device)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+                    .profile_metadata;
+                if let Some(observed) = observed {
+                    crate::resources::state::record_readback(resource, target, observed, now);
+                } else {
+                    crate::resources::state::record_ack(resource, target, now);
                 }
-                Ok(actual)
-            }
-            SessionWrite::Acknowledged => {
-                let now = self.now();
-                let device_owned = device.clone();
-                let inner: Result<(), ManagerError> = self
-                    .store
-                    .mutate_async(move |state| {
-                        let device_state = state
-                            .devices
-                            .get_mut(&device_owned)
-                            .ok_or_else(|| ManagerError::DeviceNotFound(device_owned.clone()))?;
-                        crate::resources::state::record_ack(
-                            &mut device_state.profile_metadata,
-                            target,
-                            now,
-                        );
-                        Ok(())
-                    })
-                    .await?;
-                inner?;
-                Ok(target)
-            }
+                Ok::<_, ManagerError>(())
+            })
+            .await?;
+        result?;
+        if mismatch {
+            return Err(ManagerError::VerificationMismatch {
+                resource: "profile metadata",
+                profile: Some(target.current()),
+            });
         }
+        Ok(actual)
     }
     pub async fn apply_profile_update(
         &self,
@@ -778,8 +632,7 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, _endpoint, session, _guard) =
-            self.open_locked(device, "apply_profile_update").await?;
+        let (_identity, session, _guard) = self.open_locked(device, "apply_profile_update").await?;
         let transport = session.transport();
         let session_ref: &dyn DeviceSession = session.as_ref();
 
@@ -1051,111 +904,6 @@ impl DeviceManager {
             .get(device)
             .map(|device_state| device_state.identity.clone())
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))
-    }
-
-    pub(crate) async fn open_session(
-        &self,
-        device: &DeviceId,
-    ) -> Result<(DeviceIdentity, Box<dyn DeviceSession>), ManagerError> {
-        let (identity, _endpoint, session, guard) =
-            self.open_locked(device, "open_session").await?;
-        struct GuardedSession {
-            _guard: crate::state::DeviceOperationGuard,
-            inner: Box<dyn DeviceSession>,
-        }
-        #[async_trait::async_trait(?Send)]
-        impl crate::backend::DeviceSession for GuardedSession {
-            fn transport(&self) -> TransportKind {
-                self.inner.transport()
-            }
-            async fn read_profile_metadata(&self) -> Result<ProfileMetadata, ManagerError> {
-                self.inner.read_profile_metadata().await
-            }
-            async fn read_profile(
-                &self,
-                profile: ProfileId,
-            ) -> Result<ProfileSnapshot, ManagerError> {
-                self.inner.read_profile(profile).await
-            }
-            async fn read_dpi(
-                &self,
-                profile: ProfileId,
-            ) -> Result<attack_shark_x3::DpiState, ManagerError> {
-                self.inner.read_dpi(profile).await
-            }
-            async fn read_preferences(
-                &self,
-                profile: ProfileId,
-            ) -> Result<attack_shark_x3::PreferencesState, ManagerError> {
-                self.inner.read_preferences(profile).await
-            }
-            async fn read_buttons(
-                &self,
-                profile: ProfileId,
-            ) -> Result<attack_shark_x3::ButtonsState, ManagerError> {
-                self.inner.read_buttons(profile).await
-            }
-            async fn read_live_polling_rate(
-                &self,
-                alias: ProfileId,
-            ) -> Result<attack_shark_x3::PollingRate, ManagerError> {
-                self.inner.read_live_polling_rate(alias).await
-            }
-            async fn write_dpi(
-                &self,
-                state: attack_shark_x3::DpiState,
-                verification: crate::operation::VerificationMethod,
-            ) -> Result<crate::backend::SessionWrite<attack_shark_x3::DpiState>, ManagerError>
-            {
-                self.inner.write_dpi(state, verification).await
-            }
-            async fn write_preferences(
-                &self,
-                state: attack_shark_x3::PreferencesState,
-                verification: crate::operation::VerificationMethod,
-            ) -> Result<crate::backend::SessionWrite<attack_shark_x3::PreferencesState>, ManagerError>
-            {
-                self.inner.write_preferences(state, verification).await
-            }
-            async fn write_buttons(
-                &self,
-                state: attack_shark_x3::ButtonsState,
-                verification: crate::operation::VerificationMethod,
-            ) -> Result<crate::backend::SessionWrite<attack_shark_x3::ButtonsState>, ManagerError>
-            {
-                self.inner.write_buttons(state, verification).await
-            }
-            async fn write_polling_rate_unchecked(
-                &self,
-                profile: ProfileId,
-                rate: attack_shark_x3::PollingRate,
-                verification: crate::operation::VerificationMethod,
-            ) -> Result<crate::backend::SessionWrite<attack_shark_x3::PollingRate>, ManagerError>
-            {
-                self.inner
-                    .write_polling_rate_unchecked(profile, rate, verification)
-                    .await
-            }
-            async fn write_profile_metadata(
-                &self,
-                metadata: ProfileMetadata,
-            ) -> Result<crate::backend::SessionWrite<ProfileMetadata>, ManagerError> {
-                self.inner.write_profile_metadata(metadata).await
-            }
-            async fn read_battery(&self, timeout: Duration) -> Result<u8, ManagerError> {
-                self.inner.read_battery(timeout).await
-            }
-            fn subscribe_events(&self) -> crate::backend::SessionEvents {
-                self.inner.subscribe_events()
-            }
-        }
-        Ok((
-            identity,
-            Box::new(GuardedSession {
-                _guard: guard,
-                inner: session,
-            }),
-        ))
     }
 
     pub(crate) fn now(&self) -> Timestamp {
@@ -1872,10 +1620,6 @@ mod tests {
         )
         .unwrap();
         let id = insert_device_with_endpoint(&store, original.clone());
-        let manager = DeviceManager::with_store_and_factory(
-            store.clone(),
-            Arc::new(ScriptedFakeFactory::new()),
-        );
         let new_candidate = DeviceEndpoint::usb(
             TransportKind::Wired,
             0x1d57,
@@ -1885,8 +1629,14 @@ mod tests {
             None,
         )
         .unwrap();
+        let factory = ScriptedFakeFactory::new().with_endpoint(
+            make_discovered(new_candidate.clone(), true),
+            ScriptedFakeSession::usb(),
+        );
+        let manager = DeviceManager::with_store_and_factory(store.clone(), Arc::new(factory));
         manager
-            .try_rebind_with_candidates(&id, TransportKind::Wired, vec![new_candidate.clone()])
+            .rebind_missing_endpoint(&id, TransportKind::Wired)
+            .await
             .unwrap();
         let updated = manager.device_identity(&id).unwrap();
         assert_eq!(
@@ -1909,10 +1659,6 @@ mod tests {
         )
         .unwrap();
         let id = insert_device_with_endpoint(&store, original.clone());
-        let manager = DeviceManager::with_store_and_factory(
-            store.clone(),
-            Arc::new(ScriptedFakeFactory::new()),
-        );
         let cand1 = DeviceEndpoint::usb(
             TransportKind::Wired,
             0x1d57,
@@ -1931,8 +1677,13 @@ mod tests {
             None,
         )
         .unwrap();
-        let result =
-            manager.try_rebind_with_candidates(&id, TransportKind::Wired, vec![cand1, cand2]);
+        let factory = ScriptedFakeFactory::new()
+            .with_endpoint(make_discovered(cand1, true), ScriptedFakeSession::usb())
+            .with_endpoint(make_discovered(cand2, true), ScriptedFakeSession::usb());
+        let manager = DeviceManager::with_store_and_factory(store.clone(), Arc::new(factory));
+        let result = manager
+            .rebind_missing_endpoint(&id, TransportKind::Wired)
+            .await;
         assert!(
             result.is_err(),
             "ambiguous same VID/PID candidates must fail"
@@ -2218,10 +1969,6 @@ mod tests {
         )
         .unwrap();
         let id = insert_device_with_endpoint(&store, wired0.clone());
-        let manager = DeviceManager::with_store_and_factory(
-            store.clone(),
-            Arc::new(ScriptedFakeFactory::new()),
-        );
         let wired1 = DeviceEndpoint::usb(
             TransportKind::Wired,
             0x1d57,
@@ -2231,8 +1978,14 @@ mod tests {
             None,
         )
         .unwrap();
+        let factory = ScriptedFakeFactory::new().with_endpoint(
+            make_discovered(wired1.clone(), true),
+            ScriptedFakeSession::usb(),
+        );
+        let manager = DeviceManager::with_store_and_factory(store.clone(), Arc::new(factory));
         manager
-            .try_rebind_with_candidates(&id, TransportKind::Wired, vec![wired1.clone()])
+            .rebind_missing_endpoint(&id, TransportKind::Wired)
+            .await
             .unwrap();
         let after_rebind = manager.device_identity(&id).unwrap();
         assert_eq!(after_rebind.id, id);
