@@ -221,7 +221,7 @@ impl DeviceManager {
             .devices
             .get_mut(device)
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        invalidate_device_state(device_state);
+        device_state.invalidate_persistence();
         transaction.state().validate()?;
         transaction.commit()?;
         Ok(())
@@ -328,9 +328,6 @@ pub(crate) fn try_mark_power_cycle<T: PartialEq>(
     resource.try_mark_power_cycle_verified(verified_at)
 }
 
-fn invalidate_device_state(device: &mut DeviceState) {
-    device.invalidate_persistence();
-}
 fn validate_configuration(configuration: &ConfigurationExport) -> Result<(), ManagerError> {
     for (&profile, values) in &configuration.profiles {
         if values
@@ -852,6 +849,189 @@ mod tests {
         }
     }
 
+    #[test]
+    fn central_reconciliation_is_consistent_across_all_four_resources() {
+        use crate::resources::state::{
+            reconcile_observed, record_ack, record_readback, try_mark_power_cycle,
+            try_mark_profile_reload,
+        };
+        use crate::state::{ResourceState, Timestamp};
+
+        fn ts(s: i64) -> Timestamp {
+            Timestamp { unix_seconds: s }
+        }
+
+        fn assert_ack_preserves_observed<T: Clone + PartialEq + std::fmt::Debug>(
+            mut resource: ResourceState<T>,
+            observed_value: T,
+            ack_value: T,
+        ) {
+            reconcile_observed(&mut resource, observed_value.clone(), ts(10));
+            let historical = resource.observed.clone().expect("observed seeded");
+            assert!(resource.desired.is_none());
+            record_ack(&mut resource, ack_value.clone(), ts(20));
+            assert_eq!(resource.desired.as_ref().unwrap().value, ack_value);
+            assert_eq!(
+                resource.desired.as_ref().unwrap().verification.application,
+                ApplicationVerification::Acknowledged
+            );
+            assert!(
+                resource
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .persistence
+                    .is_unknown()
+            );
+            assert_eq!(resource.observed, Some(historical));
+            reconcile_observed(&mut resource, ack_value.clone(), ts(22));
+            assert_eq!(
+                resource.desired.as_ref().unwrap().verification.application,
+                ApplicationVerification::ReadbackVerified
+            );
+            assert!(
+                resource
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .persistence
+                    .is_unknown()
+            );
+        }
+
+        fn assert_readback_and_mismatch<T: Clone + PartialEq + std::fmt::Debug>(
+            ack_value: T,
+            other_value: T,
+        ) {
+            let mut matched: ResourceState<T> = ResourceState::empty();
+            record_readback(&mut matched, ack_value.clone(), ack_value.clone(), ts(30));
+            assert_eq!(
+                matched.desired.as_ref().unwrap().verification.application,
+                ApplicationVerification::ReadbackVerified
+            );
+            assert_eq!(matched.observed.as_ref().unwrap().value, ack_value);
+            assert!(
+                matched
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .persistence
+                    .is_unknown()
+            );
+            assert!(try_mark_profile_reload(&mut matched, ts(31)));
+            assert!(
+                !matched
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .persistence
+                    .is_unknown()
+            );
+            reconcile_observed(&mut matched, ack_value.clone(), ts(32));
+            assert!(
+                matched
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .persistence
+                    .is_unknown()
+            );
+            assert!(try_mark_power_cycle(&mut matched, ts(33)));
+            assert_eq!(
+                matched.desired.as_ref().unwrap().verification.persistence,
+                PersistenceVerification::PowerCycleVerified {
+                    verified_at: ts(33)
+                }
+            );
+            let mut mismatched: ResourceState<T> = ResourceState::empty();
+            record_readback(
+                &mut mismatched,
+                ack_value.clone(),
+                other_value.clone(),
+                ts(30),
+            );
+            assert_eq!(
+                mismatched
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .application,
+                ApplicationVerification::Mismatch
+            );
+            assert_eq!(mismatched.observed.as_ref().unwrap().value, other_value);
+            assert!(!try_mark_profile_reload(&mut mismatched, ts(31)));
+            assert!(!try_mark_power_cycle(&mut mismatched, ts(31)));
+            let mut via_reconcile: ResourceState<T> = ResourceState::empty();
+            record_ack(&mut via_reconcile, ack_value.clone(), ts(40));
+            reconcile_observed(&mut via_reconcile, ack_value.clone(), ts(39));
+            assert_eq!(
+                via_reconcile
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .application,
+                ApplicationVerification::Mismatch
+            );
+            reconcile_observed(&mut via_reconcile, other_value.clone(), ts(41));
+            assert_eq!(
+                via_reconcile
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .application,
+                ApplicationVerification::Mismatch
+            );
+            assert!(!try_mark_profile_reload(&mut via_reconcile, ts(42)));
+            let mut empty: ResourceState<T> = ResourceState::empty();
+            reconcile_observed(&mut empty, other_value.clone(), ts(50));
+            assert!(empty.desired.is_none());
+            assert_eq!(empty.observed.as_ref().unwrap().value, other_value);
+        }
+
+        let profile = ProfileId::new(1).unwrap();
+        let dpi_a = DpiState::captured_empty_profile_one(
+            vec![DpiValue::new(800).unwrap()],
+            StageIndex::new(1).unwrap(),
+        )
+        .unwrap();
+        let dpi_b = DpiState::captured_empty_profile_one(
+            vec![DpiValue::new(1600).unwrap()],
+            StageIndex::new(1).unwrap(),
+        )
+        .unwrap();
+        assert_ack_preserves_observed(
+            ResourceState::<DpiState>::empty(),
+            dpi_a.clone(),
+            dpi_b.clone(),
+        );
+        assert_readback_and_mismatch(dpi_a.clone(), dpi_b.clone());
+        let pref_a = PreferencesState::new(profile, 1, 2, 3, [4, 5, 6], 7, 8);
+        let pref_b = PreferencesState::new(profile, 9, 8, 7, [6, 5, 4], 3, 2);
+        assert_ack_preserves_observed(ResourceState::<PreferencesState>::empty(), pref_a, pref_b);
+        assert_readback_and_mismatch(pref_a, pref_b);
+        let mut slots_a = [ButtonAssignment::default(); 18];
+        slots_a[0] = ButtonAssignment::new(0x01, 0x02, 0x03);
+        let btn_a = ButtonsState::new(profile, slots_a);
+        let mut slots_b = [ButtonAssignment::default(); 18];
+        slots_b[0] = ButtonAssignment::new(0x04, 0x05, 0x06);
+        let btn_b = ButtonsState::new(profile, slots_b);
+        assert_ack_preserves_observed(ResourceState::<ButtonsState>::empty(), btn_a, btn_b);
+        assert_readback_and_mismatch(btn_a, btn_b);
+        assert_ack_preserves_observed(
+            ResourceState::<PollingRate>::empty(),
+            PollingRate::Hz500,
+            PollingRate::Hz1000,
+        );
+        assert_readback_and_mismatch(PollingRate::Hz500, PollingRate::Hz1000);
+    }
     #[test]
     fn old_import_documents_without_profile_names_deserialize() {
         let dir = tempfile::tempdir().expect("tempdir");

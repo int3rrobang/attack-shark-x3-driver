@@ -1884,9 +1884,8 @@ mod tests {
             timestamp(101)
         );
     }
-
-    #[allow(dead_code)]
-    fn _construct_state_types_for_compile() {
+    #[test]
+    fn state_types_construct_for_compile() {
         let identity = device_identity("mouse-1", vec![ble_endpoint("test")]);
         let id = identity.id.clone();
         let _device = DeviceState::new(identity);

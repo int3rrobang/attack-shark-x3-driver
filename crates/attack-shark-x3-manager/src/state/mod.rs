@@ -9,5 +9,9 @@
 pub mod model;
 pub mod store;
 
-pub use model::*;
+pub use model::{
+    ApplicationVerification, DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS,
+    ObservationSource, ObservedState, PersistenceVerification, ProfileState, ResourceState,
+    SCHEMA_VERSION, StateFile, Timestamp, Verification,
+};
 pub use store::{DeviceOperationGuard, StatePaths, StateReset, StateStore, StateTransaction};

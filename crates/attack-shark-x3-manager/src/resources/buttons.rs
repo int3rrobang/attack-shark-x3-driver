@@ -186,8 +186,6 @@ use crate::operation::{
 };
 use crate::resources::state::{reconcile_observed, record_ack, record_readback};
 use crate::state::{ApplicationVerification, DesiredSource, StateFile};
-#[allow(unused_imports)]
-pub use attack_shark_x3::protocol::buttons::BUTTON_SLOT_COUNT;
 
 /// A bounded, typed update to one safe button slot.
 ///
@@ -464,12 +462,13 @@ fn unsupported_read(transport: TransportKind) -> ManagerError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BUTTON_SLOT_COUNT, ButtonSlotDelta, SafeButtonAction, SafeButtonSlot};
+    use super::{ButtonSlotDelta, SafeButtonAction, SafeButtonSlot};
     use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession};
     use crate::device::DeviceIdentity;
     use crate::manager::DeviceManager;
     use crate::operation::{BaselineSource, UpdatePolicy, VerificationMethod};
     use crate::state::{StatePaths, StateStore};
+    use attack_shark_x3::protocol::buttons::BUTTON_SLOT_COUNT;
     use attack_shark_x3::{
         ButtonAssignment, ButtonsState, DpiValue, PreferencesState, ProfileId, ProfileMetadata,
         StageIndex, TransportKind,

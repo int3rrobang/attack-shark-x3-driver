@@ -78,30 +78,36 @@ pub fn replace_dpi_model(
     let Some(model) = model.as_any().downcast_ref::<VecModel<DpiStage>>() else {
         return;
     };
-    clear_model(model);
-    for (index, (value, active)) in stages.iter().copied().enumerate() {
-        let mut stage = dpi_stage(
-            &format!("{:02}", index + 1),
-            &value.to_string(),
-            DPI_LABELS.get(index).copied().unwrap_or("device stage"),
-            96 + ((index as u8) * 8),
-            98 + ((index as u8) * 8),
-            104 + ((index as u8) * 8),
-            active,
-        );
-        stage.ratio = dpi_ratio(stage.dpi, logarithmic, min, max);
-        model.push(stage);
-    }
+    let built: Vec<DpiStage> = stages
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, (value, active))| {
+            let mut stage = dpi_stage(
+                &format!("{:02}", index + 1),
+                &value.to_string(),
+                DPI_LABELS.get(index).copied().unwrap_or("device stage"),
+                96 + ((index as u8) * 8),
+                98 + ((index as u8) * 8),
+                104 + ((index as u8) * 8),
+                active,
+            );
+            stage.ratio = dpi_ratio(stage.dpi, logarithmic, min, max);
+            stage
+        })
+        .collect();
+    model.set_vec(built);
 }
 
 pub fn replace_binding_model(model: &ModelRc<BindingRow>, bindings: &[(String, String, String)]) {
     let Some(model) = model.as_any().downcast_ref::<VecModel<BindingRow>>() else {
         return;
     };
-    clear_model(model);
-    for (button, location, action) in bindings {
-        model.push(binding(button, location, action));
-    }
+    let built: Vec<BindingRow> = bindings
+        .iter()
+        .map(|(button, location, action)| binding(button, location, action))
+        .collect();
+    model.set_vec(built);
 }
 
 /// Exact per-button change summary: one `button → action` line per physical
@@ -140,33 +146,30 @@ pub fn replace_profile_model(model: &ModelRc<ProfileRow>, profiles: &[LiveProfil
     let Some(model) = model.as_any().downcast_ref::<VecModel<ProfileRow>>() else {
         return;
     };
-    clear_model(model);
-    for profile in profiles {
-        let subtitle = if is_ble {
-            if profile.enabled {
-                "saved settings"
+    let built: Vec<ProfileRow> = profiles
+        .iter()
+        .map(|profile| {
+            let subtitle = if is_ble {
+                if profile.enabled {
+                    "saved settings"
+                } else {
+                    "hidden"
+                }
+            } else if profile.enabled {
+                "available"
             } else {
                 "hidden"
+            };
+            ProfileRow {
+                name: profile.name.clone().into(),
+                subtitle: subtitle.into(),
+                active: profile.current,
+                visible: true,
+                enabled: profile.enabled,
             }
-        } else if profile.enabled {
-            "available"
-        } else {
-            "hidden"
-        };
-        model.push(ProfileRow {
-            name: profile.name.clone().into(),
-            subtitle: subtitle.into(),
-            active: profile.current,
-            visible: true,
-            enabled: profile.enabled,
-        });
-    }
-}
-
-pub fn clear_model<T: Clone + 'static>(model: &VecModel<T>) {
-    while model.row_count() > 0 {
-        model.remove(0);
-    }
+        })
+        .collect();
+    model.set_vec(built);
 }
 
 pub fn apply_event(ui: &AppWindow, event: crate::worker::UiEvent) {
@@ -205,16 +208,17 @@ pub fn apply_event(ui: &AppWindow, event: crate::worker::UiEvent) {
             let Some(model) = devices.as_any().downcast_ref::<VecModel<DeviceRow>>() else {
                 return;
             };
-            clear_model(model);
-            for entry in entries {
-                model.push(DeviceRow {
+            let built: Vec<DeviceRow> = entries
+                .into_iter()
+                .map(|entry| DeviceRow {
                     id: entry.id.into(),
                     name: entry.name.into(),
                     detail: entry.detail.into(),
                     selected: entry.selected,
                     connected: entry.connected,
-                });
-            }
+                })
+                .collect();
+            model.set_vec(built);
         }
         UiEvent::Snapshot(snapshot) => apply_snapshot(ui, &snapshot, false),
         UiEvent::EventSnapshot(snapshot) => apply_snapshot(ui, &snapshot, true),
@@ -370,6 +374,19 @@ pub fn refresh_dpi_ratios(stages: &VecModel<DpiStage>, logarithmic: bool, min: f
             stage.ratio = dpi_ratio(stage.dpi, logarithmic, min, max);
             stages.set_row_data(row, stage);
         }
+    }
+}
+
+pub fn update_single_dpi_ratio(
+    stages: &VecModel<DpiStage>,
+    row: usize,
+    logarithmic: bool,
+    min: f32,
+    max: f32,
+) {
+    if let Some(mut stage) = stages.row_data(row) {
+        stage.ratio = dpi_ratio(stage.dpi, logarithmic, min, max);
+        stages.set_row_data(row, stage);
     }
 }
 pub fn dpi_stage(
@@ -719,5 +736,130 @@ mod tests {
         assert_eq!(fields.sleep_half_minutes, None);
         assert_eq!(fields.raw_sleep_timer, "00");
         assert_eq!(fields.raw_debounce, "00");
+    }
+
+    #[test]
+    fn clear_model_is_linear_single_reset() {
+        let model = VecModel::from(vec![
+            binding("a", "loc", "act"),
+            binding("b", "loc", "act2"),
+        ]);
+        assert_eq!(model.row_count(), 2);
+        model.set_vec(Vec::new());
+        assert_eq!(model.row_count(), 0);
+        model.set_vec(Vec::new());
+        assert_eq!(model.row_count(), 0);
+    }
+
+    #[test]
+    fn replace_dpi_model_batches_via_set_vec() {
+        use slint::{Model, ModelRc};
+        let backing = std::rc::Rc::new(VecModel::default());
+        let rc: ModelRc<DpiStage> = ModelRc::from(backing.clone());
+        replace_dpi_model(&rc, &[(400, true), (800, false)], false, 200.0, 3200.0);
+        assert_eq!(backing.row_count(), 2);
+        assert_eq!(backing.row_data(0).unwrap().value.as_str(), "400");
+        assert!(backing.row_data(0).unwrap().active);
+        assert!(!backing.row_data(1).unwrap().active);
+        assert_eq!(backing.row_data(1).unwrap().index.as_str(), "02");
+        // Replacing with a different size truncates via single reset, not repeated remove(0).
+        replace_dpi_model(&rc, &[(1200, false)], true, 200.0, 3200.0);
+        assert_eq!(backing.row_count(), 1);
+        assert_eq!(backing.row_data(0).unwrap().value.as_str(), "1200");
+        // Empty replacement clears to zero rows linearly.
+        replace_dpi_model(&rc, &[], false, 200.0, 3200.0);
+        assert_eq!(backing.row_count(), 0);
+    }
+
+    #[test]
+    fn replace_binding_model_batches_linearly() {
+        use slint::{Model, ModelRc};
+        let backing = std::rc::Rc::new(VecModel::default());
+        let rc: ModelRc<BindingRow> = ModelRc::from(backing.clone());
+        replace_binding_model(
+            &rc,
+            &[
+                (
+                    "lmb".to_string(),
+                    "primary".to_string(),
+                    "left click".to_string(),
+                ),
+                (
+                    "rmb".to_string(),
+                    "secondary".to_string(),
+                    "right click".to_string(),
+                ),
+            ],
+        );
+        assert_eq!(backing.row_count(), 2);
+        assert_eq!(backing.row_data(0).unwrap().button.as_str(), "lmb");
+        replace_binding_model(&rc, &[]);
+        assert_eq!(backing.row_count(), 0);
+    }
+
+    #[test]
+    fn replace_profile_model_batches_and_maps_subtitles() {
+        use crate::worker::LiveProfile;
+        use slint::{Model, ModelRc};
+        let backing = std::rc::Rc::new(VecModel::default());
+        let rc: ModelRc<ProfileRow> = ModelRc::from(backing.clone());
+        let profiles = vec![
+            LiveProfile {
+                name: "p1".into(),
+                current: true,
+                enabled: true,
+            },
+            LiveProfile {
+                name: "p2".into(),
+                current: false,
+                enabled: false,
+            },
+        ];
+        replace_profile_model(&rc, &profiles, false);
+        assert_eq!(backing.row_count(), 2);
+        assert_eq!(backing.row_data(0).unwrap().subtitle.as_str(), "available");
+        assert_eq!(backing.row_data(1).unwrap().subtitle.as_str(), "hidden");
+        replace_profile_model(&rc, &profiles, true);
+        assert_eq!(
+            backing.row_data(0).unwrap().subtitle.as_str(),
+            "saved settings"
+        );
+        assert_eq!(backing.row_data(1).unwrap().subtitle.as_str(), "hidden");
+        replace_profile_model(&rc, &[], false);
+        assert_eq!(backing.row_count(), 0);
+    }
+
+    #[test]
+    fn single_row_ratio_update_leaves_other_ratios_untouched() {
+        let stages = VecModel::from(
+            vec![
+                dpi_stage("01", "400", "low", 96, 98, 104, true),
+                dpi_stage("02", "800", "mid", 112, 114, 120, false),
+                dpi_stage("03", "1600", "high", 128, 130, 136, false),
+            ]
+            .into_iter()
+            .map(|mut s| {
+                s.ratio = dpi_ratio(s.dpi, false, 200.0, 3200.0);
+                s
+            })
+            .collect::<Vec<_>>(),
+        );
+        let before: Vec<f32> = (0..stages.row_count())
+            .map(|r| stages.row_data(r).unwrap().ratio)
+            .collect();
+        // Change only row 1's DPI and recompute its ratio alone.
+        if let Some(mut stage) = stages.row_data(1) {
+            stage.dpi = 1200.0;
+            stage.value = "1200".into();
+            stages.set_row_data(1, stage);
+        }
+        update_single_dpi_ratio(&stages, 1, false, 200.0, 3200.0);
+        let after: Vec<f32> = (0..stages.row_count())
+            .map(|r| stages.row_data(r).unwrap().ratio)
+            .collect();
+        assert!((before[0] - after[0]).abs() < f32::EPSILON);
+        assert!((before[2] - after[2]).abs() < f32::EPSILON);
+        assert!((after[1] - dpi_ratio(1200.0, false, 200.0, 3200.0)).abs() < 0.0001);
+        assert_ne!(before[1], after[1]);
     }
 }

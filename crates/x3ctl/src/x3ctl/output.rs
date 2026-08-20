@@ -235,4 +235,63 @@ mod tests {
             .unwrap();
         assert_eq!(human_out, human);
     }
+
+    #[test]
+    fn bind_human_text_is_readable_without_raw_hex() {
+        // Ordinary human bind output must lead with slot/action names and
+        // readable modifier/key labels, never raw hex fragments.
+        let human_samples = [
+            "Set forward button to copy (Ctrl+C)",
+            "Buttons for profile 1\n  [ 0] left: left-click",
+            "Buttons for profile 1\n  [ 4] slot 4: copy (Ctrl+C)",
+        ];
+        for human in human_samples {
+            assert!(!human.contains("0x"), "human leaks hex: {human}");
+            assert!(!human.contains("mod=0x"), "human leaks raw: {human}");
+            // Must lead with slot/action wording
+            assert!(
+                human.contains("button to") || human.contains("Buttons for profile"),
+                "not leading: {human}"
+            );
+            // JSON must keep raw typed fields verbatim
+            let payload = json!({
+                "slot": 6,
+                "action": 0x11,
+                "modifier": 0x01,
+                "keyCode": 0x06,
+                "raw": [0x11, 0x01, 0x06]
+            });
+            let rendered = Output::new(OutputFormat::Json)
+                .render_success(human, &payload)
+                .unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+            assert_eq!(parsed["data"]["modifier"], json!(0x01));
+            assert_eq!(parsed["data"]["keyCode"], json!(0x06));
+            assert_eq!(parsed["data"]["raw"], json!([0x11, 0x01, 0x06]));
+            let human_out = Output::new(OutputFormat::Human)
+                .render_success(human, &payload)
+                .unwrap();
+            assert_eq!(human_out, human);
+            assert!(!human_out.contains("0x"));
+        }
+    }
+
+    #[test]
+    fn debug_hex_remains_lossless_while_human_stays_friendly() {
+        // Debug/JSON must preserve every raw field; hex helper is stable lower-case.
+        let bytes = [0x08u8, 0x3b, 0x02, 0x00, 0x00, 0xab, 0xff];
+        assert_eq!(Output::hex(&bytes), "083b020000abff");
+        let human = "Buttons for profile 2\n  [ 0] left: left-click";
+        let payload = json!({
+            "profile": 2,
+            "slots": [{ "action": 0x02, "modifier": 0x00, "keyCode": 0x00 }],
+            "rawHex": Output::hex(&bytes)
+        });
+        let rendered = Output::new(OutputFormat::Json)
+            .render_success(human, &payload)
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["data"]["rawHex"], json!("083b020000abff"));
+        assert_eq!(parsed["data"]["slots"][0]["action"], json!(0x02));
+    }
 }

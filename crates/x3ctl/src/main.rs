@@ -5,19 +5,20 @@ mod args;
 #[path = "x3ctl/output.rs"]
 mod output;
 
-use std::path::PathBuf;
-use std::process::ExitCode;
-
 use attack_shark_x3_manager::{
     BaselineSource, ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport, DeviceId,
     DeviceManager, DeviceStatus, DpiDelta, DpiState, DpiValue, FullProfileRefreshOutcome,
     LiftOffDistance, PollingRate, PreferencesDelta, PreferencesFraming, PreferencesState,
     ProfileId, ProfileResourceKind, ResourceSnapshot, SafeButtonAction, SafeButtonSlot,
     SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind, TransportSelection,
-    UpdatePolicy, VerificationMethod, encode_debug_buttons, encode_debug_dpi, encode_debug_prefs,
+    UpdatePolicy, VerificationMethod, X3ButtonAction, encode_debug_buttons, encode_debug_dpi,
+    encode_debug_prefs,
 };
 use clap::Parser;
 use serde::Serialize;
+use std::fmt::Write as _;
+use std::path::PathBuf;
+use std::process::ExitCode;
 
 use args::{
     ActionArg, BaselineArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, DebugDpiArgs,
@@ -545,14 +546,14 @@ async fn dispatch(
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            output.print(
-                format!(
-                    "Set {} button to {}",
-                    slot_label(delta.slot()),
-                    action_label(delta.action())
-                ),
-                &outcome,
-            )
+            let mut human = String::new();
+            let _ = write!(
+                human,
+                "Set {} button to {}",
+                slot_label(delta.slot()),
+                bind_set_action_human(delta.action())
+            );
+            output.print(human, &outcome)
         }
         Action::Battery => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -941,58 +942,230 @@ fn format_buttons_human(profile: ProfileId, snapshot: &ResourceSnapshot<ButtonsS
         if slot.action == 0 && slot.modifier == 0 && slot.key_code == 0 {
             continue;
         }
-        let name = button_action_name(slot.action);
-        text.push_str(&format!(
-            "\n  [{index:2}] action=0x{action:02x} ({name}) mod=0x{mod:02x} key=0x{key:02x}",
-            action = slot.action,
-            mod = slot.modifier,
-            key = slot.key_code,
-        ));
+        let readable = assignment_human_readable(*slot);
+        let slot_title = match index {
+            0 => "left",
+            1 => "right",
+            2 => "middle",
+            3 => "dpi",
+            6 => "forward",
+            7 => "backward",
+            _ => "",
+        };
+        if slot_title.is_empty() {
+            let _ = write!(text, "\n  [{index:2}] slot {index}: {readable}");
+        } else {
+            let _ = write!(text, "\n  [{index:2}] {slot_title}: {readable}");
+        }
     }
     text
 }
 
-fn button_action_name(action: u8) -> &'static str {
-    match action {
-        0x01 => "disable",
-        0x02 => "left-click",
-        0x03 => "right-click",
-        0x04 => "middle-click",
-        0x05 => "backward",
-        0x06 => "forward",
-        0x07 => "double-click",
-        0x08 => "fire-button",
-        0x09 => "scroll-up",
-        0x0a => "scroll-down",
-        0x0d => "dpi-cycle",
-        0x0e => "dpi-plus",
-        0x0f => "dpi-minus",
-        0x10 => "easy-aim",
-        0x11 => "shortcut",
-        0x12 => "macro",
-        0x15 => "media-player",
-        0x16 => "previous-track",
-        0x17 => "next-track",
-        0x18 => "play-pause",
-        0x19 => "stop",
-        0x1a => "mute",
-        0x1b => "volume-up",
-        0x1c => "volume-down",
-        0x1d => "calculator",
-        0x1e => "email",
-        0x20 => "browser-forward",
-        0x21 => "browser-backward",
-        0x22 => "browser-stop",
-        0x23 => "my-computer",
-        0x24 => "browser-refresh",
-        0x25 => "browser-home",
-        0x26 => "browser-search",
-        0x34 => "profile-cycle",
-        0x35 => "profile-plus",
-        0x36 => "profile-minus",
-        0x3c => "wheel-scroll-up",
-        _ => "unknown",
+fn assignment_human_readable(assignment: ButtonAssignment) -> String {
+    // Friendly preset names that share the 0x11 shortcut encoding but deserve
+    // effect-first labels like "copy (Ctrl+C)" for ordinary output.
+    let preset = match assignment.as_bytes() {
+        [0x11, 0x01, 0x1b] => Some(("cut", "Ctrl", "X")),
+        [0x11, 0x01, 0x06] => Some(("copy", "Ctrl", "C")),
+        [0x11, 0x01, 0x19] => Some(("paste", "Ctrl", "V")),
+        [0x11, 0x01, 0x12] => Some(("open", "Ctrl", "O")),
+        [0x11, 0x01, 0x16] => Some(("save", "Ctrl", "S")),
+        [0x11, 0x01, 0x09] => Some(("find", "Ctrl", "F")),
+        [0x11, 0x01, 0x1c] => Some(("redo", "Ctrl", "Y")),
+        [0x11, 0x01, 0x04] => Some(("select-all", "Ctrl", "A")),
+        [0x11, 0x01, 0x13] => Some(("print", "Ctrl", "P")),
+        [0x11, 0x04, 0x3d] => Some(("close-window", "Alt", "F4")),
+        [0x11, 0x04, 0x2b] => Some(("swap-windows", "Alt", "Tab")),
+        [0x11, 0x08, 0x07] => Some(("show-desktop", "Win", "D")),
+        [0x11, 0x08, 0x15] => Some(("run-command", "Win", "R")),
+        [0x11, 0x08, 0x0f] => Some(("lock-pc", "Win", "L")),
+        [0x11, 0x0a, 0x16] => Some(("screen-capture", "Win+Shift", "S")),
+        [0x11, 0x03, 0x12] => Some(("browser-favorites", "Ctrl+Shift", "O")),
+        _ => None,
+    };
+    if let Some((name, mods, key)) = preset {
+        let mut out = String::new();
+        let _ = write!(out, "{name} ({mods}+{key})");
+        return out;
     }
+    match assignment.decode_x3_action() {
+        Ok(action) => match action {
+            X3ButtonAction::Disable => "disable".to_owned(),
+            X3ButtonAction::LeftClick => "left-click".to_owned(),
+            X3ButtonAction::RightClick => "right-click".to_owned(),
+            X3ButtonAction::MiddleClick => "middle-click".to_owned(),
+            X3ButtonAction::Backward => "backward".to_owned(),
+            X3ButtonAction::Forward => "forward".to_owned(),
+            X3ButtonAction::DoubleClick => "double-click".to_owned(),
+            X3ButtonAction::FireButton => "fire-button".to_owned(),
+            X3ButtonAction::ScrollUp => "scroll-up".to_owned(),
+            X3ButtonAction::ScrollDown => "scroll-down".to_owned(),
+            X3ButtonAction::DpiCycle => "dpi-cycle".to_owned(),
+            X3ButtonAction::DpiPlus => "dpi-plus".to_owned(),
+            X3ButtonAction::DpiMinus => "dpi-minus".to_owned(),
+            X3ButtonAction::ProfileCycle => "profile-cycle".to_owned(),
+            X3ButtonAction::ProfilePlus => "profile-plus".to_owned(),
+            X3ButtonAction::ProfileMinus => "profile-minus".to_owned(),
+            X3ButtonAction::MediaPlayer => "media-player".to_owned(),
+            X3ButtonAction::PreviousTrack => "previous-track".to_owned(),
+            X3ButtonAction::NextTrack => "next-track".to_owned(),
+            X3ButtonAction::PlayPause => "play-pause".to_owned(),
+            X3ButtonAction::Stop => "stop".to_owned(),
+            X3ButtonAction::Mute => "mute".to_owned(),
+            X3ButtonAction::VolumeUp => "volume-up".to_owned(),
+            X3ButtonAction::VolumeDown => "volume-down".to_owned(),
+            X3ButtonAction::Calculator => "calculator".to_owned(),
+            X3ButtonAction::Email => "email".to_owned(),
+            X3ButtonAction::BrowserForward => "browser-forward".to_owned(),
+            X3ButtonAction::BrowserBackward => "browser-backward".to_owned(),
+            X3ButtonAction::BrowserStop => "browser-stop".to_owned(),
+            X3ButtonAction::MyComputer => "my-computer".to_owned(),
+            X3ButtonAction::BrowserRefresh => "browser-refresh".to_owned(),
+            X3ButtonAction::BrowserHome => "browser-home".to_owned(),
+            X3ButtonAction::BrowserSearch => "browser-search".to_owned(),
+            X3ButtonAction::KeyboardShortcut { modifiers, key } => {
+                let mods = modifiers_human(modifiers.bits());
+                let key_name = hid_key_human(key.get());
+                if mods.is_empty() {
+                    key_name
+                } else {
+                    let mut out = String::new();
+                    let _ = write!(out, "{mods}+{key_name}");
+                    out
+                }
+            }
+            X3ButtonAction::Macro { reference } => {
+                let mut out = String::new();
+                let _ = write!(out, "macro {reference}");
+                out
+            }
+        },
+        Err(_) => match assignment.action {
+            0x10 => "easy-aim".to_owned(),
+            0x3c => "wheel-scroll-up".to_owned(),
+            _ => "unknown".to_owned(),
+        },
+    }
+}
+
+fn modifiers_human(bits: u8) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    if bits & 0x01 != 0 {
+        out.push_str("Ctrl");
+        first = false;
+    }
+    if bits & 0x02 != 0 {
+        if !first {
+            out.push('+');
+        }
+        out.push_str("Shift");
+        first = false;
+    }
+    if bits & 0x04 != 0 {
+        if !first {
+            out.push('+');
+        }
+        out.push_str("Alt");
+        first = false;
+    }
+    if bits & 0x08 != 0 {
+        if !first {
+            out.push('+');
+        }
+        out.push_str("Win");
+    }
+    out
+}
+
+fn hid_key_human(usage: u8) -> String {
+    match usage {
+        0x04 => "A".to_owned(),
+        0x05 => "B".to_owned(),
+        0x06 => "C".to_owned(),
+        0x07 => "D".to_owned(),
+        0x08 => "E".to_owned(),
+        0x09 => "F".to_owned(),
+        0x0a => "G".to_owned(),
+        0x0b => "H".to_owned(),
+        0x0c => "I".to_owned(),
+        0x0d => "J".to_owned(),
+        0x0e => "K".to_owned(),
+        0x0f => "L".to_owned(),
+        0x10 => "M".to_owned(),
+        0x11 => "N".to_owned(),
+        0x12 => "O".to_owned(),
+        0x13 => "P".to_owned(),
+        0x14 => "Q".to_owned(),
+        0x15 => "R".to_owned(),
+        0x16 => "S".to_owned(),
+        0x17 => "T".to_owned(),
+        0x18 => "U".to_owned(),
+        0x19 => "V".to_owned(),
+        0x1a => "W".to_owned(),
+        0x1b => "X".to_owned(),
+        0x1c => "Y".to_owned(),
+        0x1d => "Z".to_owned(),
+        0x1e => "1".to_owned(),
+        0x1f => "2".to_owned(),
+        0x20 => "3".to_owned(),
+        0x21 => "4".to_owned(),
+        0x22 => "5".to_owned(),
+        0x23 => "6".to_owned(),
+        0x24 => "7".to_owned(),
+        0x25 => "8".to_owned(),
+        0x26 => "9".to_owned(),
+        0x27 => "0".to_owned(),
+        0x28 => "Enter".to_owned(),
+        0x29 => "Esc".to_owned(),
+        0x2a => "Backspace".to_owned(),
+        0x2b => "Tab".to_owned(),
+        0x2c => "Space".to_owned(),
+        0x2d => "-".to_owned(),
+        0x2e => "=".to_owned(),
+        0x2f => "[".to_owned(),
+        0x30 => "]".to_owned(),
+        0x31 => "\\".to_owned(),
+        0x32 => "#".to_owned(),
+        0x33 => ";".to_owned(),
+        0x34 => "'".to_owned(),
+        0x35 => "`".to_owned(),
+        0x36 => ",".to_owned(),
+        0x37 => ".".to_owned(),
+        0x38 => "/".to_owned(),
+        0x39 => "CapsLock".to_owned(),
+        0x3a => "F1".to_owned(),
+        0x3b => "F2".to_owned(),
+        0x3c => "F3".to_owned(),
+        0x3d => "F4".to_owned(),
+        0x3e => "F5".to_owned(),
+        0x3f => "F6".to_owned(),
+        0x40 => "F7".to_owned(),
+        0x41 => "F8".to_owned(),
+        0x42 => "F9".to_owned(),
+        0x43 => "F10".to_owned(),
+        0x44 => "F11".to_owned(),
+        0x45 => "F12".to_owned(),
+        0x49 => "Insert".to_owned(),
+        0x4a => "Home".to_owned(),
+        0x4b => "PageUp".to_owned(),
+        0x4c => "Delete".to_owned(),
+        0x4d => "End".to_owned(),
+        0x4e => "PageDown".to_owned(),
+        0x4f => "Right".to_owned(),
+        0x50 => "Left".to_owned(),
+        0x51 => "Down".to_owned(),
+        0x52 => "Up".to_owned(),
+        _ => {
+            let mut out = String::new();
+            let _ = write!(out, "key {usage}");
+            out
+        }
+    }
+}
+
+fn bind_set_action_human(action: SafeButtonAction) -> String {
+    assignment_human_readable(action.to_assignment())
 }
 
 fn slot_label(slot: SafeButtonSlot) -> &'static str {
@@ -1003,60 +1176,6 @@ fn slot_label(slot: SafeButtonSlot) -> &'static str {
         SafeButtonSlot::Dpi => "dpi",
         SafeButtonSlot::Forward => "forward",
         SafeButtonSlot::Backward => "backward",
-    }
-}
-
-fn action_label(action: SafeButtonAction) -> &'static str {
-    match action {
-        SafeButtonAction::Disable => "disable",
-        SafeButtonAction::LeftClick => "left-click",
-        SafeButtonAction::RightClick => "right-click",
-        SafeButtonAction::MiddleClick => "middle-click",
-        SafeButtonAction::Backward => "backward",
-        SafeButtonAction::Forward => "forward",
-        SafeButtonAction::DoubleClick => "double-click",
-        SafeButtonAction::FireButton => "fire-button",
-        SafeButtonAction::ScrollUp => "scroll-up",
-        SafeButtonAction::ScrollDown => "scroll-down",
-        SafeButtonAction::DpiCycle => "dpi-cycle",
-        SafeButtonAction::DpiPlus => "dpi-plus",
-        SafeButtonAction::DpiMinus => "dpi-minus",
-        SafeButtonAction::ProfileCycle => "profile-cycle",
-        SafeButtonAction::ProfilePlus => "profile-plus",
-        SafeButtonAction::ProfileMinus => "profile-minus",
-        SafeButtonAction::MediaPlayer => "media-player",
-        SafeButtonAction::PreviousTrack => "previous-track",
-        SafeButtonAction::NextTrack => "next-track",
-        SafeButtonAction::PlayPause => "play-pause",
-        SafeButtonAction::Stop => "stop",
-        SafeButtonAction::Mute => "mute",
-        SafeButtonAction::VolumeUp => "volume-up",
-        SafeButtonAction::VolumeDown => "volume-down",
-        SafeButtonAction::Calculator => "calculator",
-        SafeButtonAction::Email => "email",
-        SafeButtonAction::BrowserForward => "browser-forward",
-        SafeButtonAction::BrowserBackward => "browser-backward",
-        SafeButtonAction::BrowserStop => "browser-stop",
-        SafeButtonAction::MyComputer => "my-computer",
-        SafeButtonAction::BrowserRefresh => "browser-refresh",
-        SafeButtonAction::BrowserHome => "browser-home",
-        SafeButtonAction::BrowserSearch => "browser-search",
-        SafeButtonAction::BrowserFavorites => "browser-favorites",
-        SafeButtonAction::Cut => "cut",
-        SafeButtonAction::Copy => "copy",
-        SafeButtonAction::Paste => "paste",
-        SafeButtonAction::Open => "open",
-        SafeButtonAction::Save => "save",
-        SafeButtonAction::Find => "find",
-        SafeButtonAction::Redo => "redo",
-        SafeButtonAction::SelectAll => "select-all",
-        SafeButtonAction::Print => "print",
-        SafeButtonAction::CloseWindow => "close-window",
-        SafeButtonAction::SwapWindows => "swap-windows",
-        SafeButtonAction::ShowDesktop => "show-desktop",
-        SafeButtonAction::RunCommand => "run-command",
-        SafeButtonAction::LockPc => "lock-pc",
-        SafeButtonAction::ScreenCapture => "screen-capture",
     }
 }
 
@@ -1163,6 +1282,7 @@ fn action_name(action: &Action) -> &'static str {
 mod tests {
     use super::*;
     use args::BindCommand;
+    use attack_shark_x3_manager::{ObservationSource, ObservedState, ResourceState, Timestamp};
     #[test]
     fn build_bind_action_maps_safe_slot_and_action() {
         let cli = args::Cli::try_parse_from([
@@ -1419,10 +1539,137 @@ mod tests {
         assert!(!with_max.contains("Activated"), "{with_max}");
         assert!(with_max.contains("maximum"));
     }
+    #[test]
+    fn bind_human_labels_are_readable() {
+        assert_eq!(slot_label(SafeButtonSlot::Left), "left");
+        assert_eq!(slot_label(SafeButtonSlot::Dpi), "dpi");
+        assert_eq!(
+            bind_set_action_human(SafeButtonAction::ProfileCycle),
+            "profile-cycle"
+        );
+        assert_eq!(
+            bind_set_action_human(SafeButtonAction::LeftClick),
+            "left-click"
+        );
+        assert_eq!(
+            bind_set_action_human(SafeButtonAction::ScreenCapture),
+            "screen-capture (Win+Shift+S)"
+        );
+        let human = format!(
+            "Set {} button to {}",
+            slot_label(SafeButtonSlot::Left),
+            bind_set_action_human(SafeButtonAction::ProfileCycle)
+        );
+        assert_eq!(human, "Set left button to profile-cycle");
+    }
+    #[test]
+    fn bind_get_human_is_readable_and_hex_free() {
+        let profile = ProfileId::try_from(1).unwrap();
+        let mut slots = [ButtonAssignment::default(); 18];
+        slots[0] = ButtonAssignment::new(0x02, 0x00, 0x00);
+        slots[3] = ButtonAssignment::new(0x34, 0x00, 0x00);
+        slots[4] = ButtonAssignment::new(0x11, 0x01, 0x06);
+        slots[7] = ButtonAssignment::new(0x06, 0x00, 0x00);
+        // unknown raw to verify fallback without hex
+        slots[8] = ButtonAssignment::new(0xff, 0x00, 0x00);
+        let state = ButtonsState::new(profile, slots);
+        let snapshot = ResourceSnapshot {
+            resource: ResourceState {
+                desired: None,
+                observed: Some(ObservedState {
+                    value: state,
+                    source: ObservationSource::UsbReadback,
+                    observed_at: Timestamp { unix_seconds: 0 },
+                }),
+            },
+        };
+        let human = format_buttons_human(profile, &snapshot);
+        assert!(human.starts_with("Buttons for profile 1"), "{human}");
+        assert!(human.contains("left: left-click"), "{human}");
+        assert!(human.contains("dpi: profile-cycle"), "{human}");
+        assert!(human.contains("backward: forward"), "{human}");
+        // shortcut preset must show effect name and Ctrl label
+        assert!(human.contains("copy (Ctrl+C)"), "{human}");
+        assert!(human.contains("unknown"), "{human}");
+        // ordinary output must not contain raw hex fragments
+        assert!(!human.contains("0x"), "{human}");
+        assert!(!human.contains("mod="), "{human}");
+        assert!(!human.contains("key=0x"), "{human}");
+    }
 
     #[test]
+    fn bind_get_human_shows_generic_shortcut_and_macro_readably() {
+        let profile = ProfileId::try_from(2).unwrap();
+        let mut slots = [ButtonAssignment::default(); 18];
+        // Generic Ctrl+Shift+T shortcut
+        slots[0] = ButtonAssignment::new(0x11, 0x03, 0x17);
+        // Generic macro reference 7
+        slots[1] = ButtonAssignment::new(0x12, 0x00, 0x07);
+        // easy-aim legacy
+        slots[2] = ButtonAssignment::new(0x10, 0x00, 0x00);
+        let state = ButtonsState::new(profile, slots);
+        let snapshot = ResourceSnapshot {
+            resource: ResourceState {
+                desired: None,
+                observed: Some(ObservedState {
+                    value: state,
+                    source: ObservationSource::UsbReadback,
+                    observed_at: Timestamp { unix_seconds: 0 },
+                }),
+            },
+        };
+        let human = format_buttons_human(profile, &snapshot);
+        assert!(human.contains("Ctrl+Shift+T"), "{human}");
+        assert!(human.contains("macro 7"), "{human}");
+        assert!(human.contains("easy-aim"), "{human}");
+        assert!(!human.contains("0x"), "{human}");
+    }
+
+    #[test]
+    fn bind_set_human_leads_with_slot_and_readable_shortcut() {
+        let delta = ButtonSlotDelta::new(SafeButtonSlot::Forward, SafeButtonAction::Copy);
+        let mut human = String::new();
+        let _ = write!(
+            human,
+            "Set {} button to {}",
+            slot_label(delta.slot()),
+            bind_set_action_human(delta.action())
+        );
+        assert_eq!(human, "Set forward button to copy (Ctrl+C)");
+        assert!(!human.contains("0x"), "{human}");
+        assert!(human.starts_with("Set forward button to"));
+    }
+
+    #[test]
+    fn bind_set_human_for_parameterless_has_no_hex() {
+        let delta = ButtonSlotDelta::new(SafeButtonSlot::Dpi, SafeButtonAction::DpiPlus);
+        let mut human = String::new();
+        let _ = write!(
+            human,
+            "Set {} button to {}",
+            slot_label(delta.slot()),
+            bind_set_action_human(delta.action())
+        );
+        assert_eq!(human, "Set dpi button to dpi-plus");
+        assert!(!human.contains("0x"));
+    }
+
+    #[test]
+    fn modifiers_and_keys_are_human_readable() {
+        assert_eq!(modifiers_human(0x01), "Ctrl");
+        assert_eq!(modifiers_human(0x03), "Ctrl+Shift");
+        assert_eq!(modifiers_human(0x0a), "Shift+Win");
+        assert_eq!(hid_key_human(0x04), "A");
+        assert_eq!(hid_key_human(0x2b), "Tab");
+        assert_eq!(hid_key_human(0x3d), "F4");
+        // fallback without hex
+        let fallback = hid_key_human(0xff);
+        assert!(fallback.contains("key"), "{fallback}");
+        assert!(!fallback.contains("0x"), "{fallback}");
+    }
+    #[test]
     fn import_human_says_saved_locally_not_sent() {
-        let device = DeviceId::new("receiver:1d57:fa60:serial:x").unwrap();
+        let device = DeviceId::new("mouse-1").unwrap();
         let human = format_import_human(&device);
         assert!(human.contains("Saved settings locally"), "{human}");
         assert!(human.contains("not sent to mouse"), "{human}");
@@ -1431,27 +1678,6 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("imported configuration")
         );
-    }
-
-    #[test]
-    fn bind_human_labels_are_readable() {
-        assert_eq!(slot_label(SafeButtonSlot::Left), "left");
-        assert_eq!(slot_label(SafeButtonSlot::Dpi), "dpi");
-        assert_eq!(
-            action_label(SafeButtonAction::ProfileCycle),
-            "profile-cycle"
-        );
-        assert_eq!(action_label(SafeButtonAction::LeftClick), "left-click");
-        assert_eq!(
-            action_label(SafeButtonAction::ScreenCapture),
-            "screen-capture"
-        );
-        let human = format!(
-            "Set {} button to {}",
-            slot_label(SafeButtonSlot::Left),
-            action_label(SafeButtonAction::ProfileCycle)
-        );
-        assert_eq!(human, "Set left button to profile-cycle");
     }
 
     #[test]

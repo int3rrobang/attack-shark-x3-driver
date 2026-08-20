@@ -30,14 +30,24 @@ pub use attack_shark_x3::{
     ProfileId, ProfileMetadata, ReadbackRequest, SensorOptions, StageIndex, TransportKind,
     X3ButtonAction,
 };
-pub use device::*;
+pub use device::{DeviceEndpoint, DeviceId, DeviceIdentity, DeviceLocator, TransportSelection};
 pub use error::{ManagerError, StateError};
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use events::EventSubscriptions;
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use manager::DeviceManager;
-pub use offline_debug::*;
-pub use operation::*;
+pub use offline_debug::{
+    OfflinePacket, OfflinePacketFraming, OfflinePacketKind, debug_buttons, debug_dpi, debug_prefs,
+    encode_debug_buttons, encode_debug_dpi, encode_debug_preferences, encode_debug_prefs,
+};
+#[cfg(any(feature = "usb", feature = "ble"))]
+pub use operation::ProfileUpdate;
+pub use operation::{
+    BaselineSource, DeviceEvent, DeviceStatus, DiscoveredDevice, DiscoveredEndpoint,
+    FullProfileRefreshOutcome, PowerCycleVerificationOutcome, ProfileResourceKind,
+    ProfileUpdateOutcome, ProfileVerificationOutcome, RefreshedProfile, ResourceSnapshot,
+    UpdatePolicy, VerificationMethod, WriteOutcome,
+};
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use resources::buttons::{ButtonSlotDelta, SafeButtonAction, SafeButtonSlot};
 #[cfg(any(feature = "usb", feature = "ble"))]

@@ -6,9 +6,12 @@ use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tokio::sync::{mpsc, watch};
 
 mod app_settings;
+mod generated_ui;
 mod presentation;
 mod projection;
 mod worker;
+
+pub use generated_ui::{AppWindow, BindingRow, DeviceRow, DpiStage, ProfileRow, Theme};
 
 use crate::presentation::{
     BINDING_ACTIONS, MAX_DPI_STAGES, RAW_PREFERENCE_CONFIGURATION, RAW_PREFERENCE_DEBOUNCE,
@@ -23,12 +26,9 @@ use crate::presentation::{
 };
 use crate::projection::{
     append_dpi_stage, dpi_from_ratio, refresh_button_change_summary, refresh_deep_sleep_display,
-    refresh_dpi_ratios, remove_dpi_stage, set_active_dpi_stage,
+    refresh_dpi_ratios, remove_dpi_stage, set_active_dpi_stage, update_single_dpi_ratio,
 };
 use crate::worker::{BaselineChoice, Command, Draft, VerificationChoice, worker_main};
-
-slint::include_modules!();
-
 fn main() -> Result<(), Box<dyn Error>> {
     let ui = AppWindow::new()?;
     let dpi_stages = std::rc::Rc::new(VecModel::from(Vec::<DpiStage>::new()));
@@ -312,28 +312,23 @@ fn install_callbacks(
                 return;
             }
             let row = row as usize;
-            let Some(mut stage) = dpi_stages.row_data(row) else {
+            if row >= dpi_stages.row_count() {
                 return;
-            };
-            let dpi = dpi_from_ratio(
-                ratio,
-                ui.get_dpi_log_scale(),
-                ui.get_dpi_min(),
-                ui.get_dpi_max(),
-            );
+            }
+            let logarithmic = ui.get_dpi_log_scale();
+            let min = ui.get_dpi_min();
+            let max = ui.get_dpi_max();
+            let dpi = dpi_from_ratio(ratio, logarithmic, min, max);
             let dpi = round_dpi_step(dpi) as f32;
             set_active_dpi_stage(&dpi_stages, row);
-            stage.active = true;
-            stage.dpi = dpi;
-            stage.value = format_dpi_setting(dpi).into();
-            dpi_stages.set_row_data(row, stage);
+            if let Some(mut stage) = dpi_stages.row_data(row) {
+                stage.active = true;
+                stage.dpi = dpi;
+                stage.value = format_dpi_setting(dpi).into();
+                dpi_stages.set_row_data(row, stage);
+            }
+            update_single_dpi_ratio(&dpi_stages, row, logarithmic, min, max);
             ui.set_active_dpi(row as i32);
-            refresh_dpi_ratios(
-                &dpi_stages,
-                ui.get_dpi_log_scale(),
-                ui.get_dpi_min(),
-                ui.get_dpi_max(),
-            );
             ui.set_dirty(true);
             ui.set_status_text("DPI ladder changed in the draft — save to apply".into());
         });
