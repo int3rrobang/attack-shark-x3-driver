@@ -92,7 +92,7 @@ pub enum ManagerError {
     Ble(#[from] attack_shark_x3::BleError),
 
     /// The selected transport cannot perform the requested operation.
-    #[error("operation {operation} is unsupported on {transport:?}")]
+    #[error("{operation} isn't supported over {transport:?}")]
     UnsupportedOperation {
         operation: &'static str,
         transport: TransportKind,
@@ -100,14 +100,14 @@ pub enum ManagerError {
 
     /// The operation is dangerous and the safe-by-default path refuses it
     /// until the user grants explicit authorization for this invocation.
-    #[error("operation {operation} on {transport:?} requires explicit authorization")]
+    #[error("{operation} on {transport:?} needs your permission")]
     ExplicitAuthorizationRequired {
         operation: &'static str,
         transport: TransportKind,
     },
 
     /// A partial update has no complete baseline to merge against.
-    #[error("missing {resource} baseline for profile {profile:?}")]
+    #[error("no saved {resource} for profile {profile:?}")]
     MissingBaseline {
         resource: &'static str,
         profile: Option<ProfileId>,
@@ -132,13 +132,13 @@ pub enum ManagerError {
     DeviceDisconnected(DeviceId),
     /// The exact USB device did not disappear within the interactive wait window.
     #[error(
-        "timed out waiting for USB device {device} to disappear during power-cycle verification after {timeout:?}"
+        "timed out waiting for USB device {device} to disconnect during the power-cycle check after {timeout:?}"
     )]
     PowerCycleDisappearanceTimeout { device: DeviceId, timeout: Duration },
 
     /// The exact USB device did not return within the interactive wait window.
     #[error(
-        "timed out waiting for USB device {device} to reappear during power-cycle verification after {timeout:?}"
+        "timed out waiting for USB device {device} to reconnect during the power-cycle check after {timeout:?}"
     )]
     PowerCycleReappearanceTimeout { device: DeviceId, timeout: Duration },
 
@@ -150,7 +150,7 @@ pub enum ManagerError {
     },
 
     /// A normalized readback differs from the requested value.
-    #[error("verification mismatch for {resource} on profile {profile:?}")]
+    #[error("confirmation mismatch for {resource} on profile {profile:?}")]
     VerificationMismatch {
         resource: &'static str,
         profile: Option<ProfileId>,
@@ -158,13 +158,13 @@ pub enum ManagerError {
     /// Profile capture completed, but the original metadata could not be
     /// restored, so the device may remain expanded or switched.
     #[error(
-        "all-profile refresh captured data, but restoring the original profile metadata failed ({restore}); the device may remain on a different profile or with additional profiles enabled"
+        "read the profiles, but couldn't restore the original setup ({restore}); the mouse may be left on a different profile or with extra profiles enabled"
     )]
     RefreshRestorationFailed { restore: String },
     /// Profile capture and metadata restoration both failed, so the device
     /// may remain expanded or switched.
     #[error(
-        "all-profile refresh failed ({refresh}); restoring the original profile metadata also failed ({restore}); the device may remain on a different profile or with additional profiles enabled"
+        "reading the profiles failed ({refresh}); restoring the original setup also failed ({restore}); the mouse may be left on a different profile or with extra profiles enabled"
     )]
     RefreshRestoreFailed { refresh: String, restore: String },
 

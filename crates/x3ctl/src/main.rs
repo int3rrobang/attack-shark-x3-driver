@@ -493,7 +493,7 @@ async fn dispatch(
                 .map_err(|error| error.to_string())?;
             output.print(
                 format!(
-                    "Polling-rate packet accepted for profile {profile} to {rate} (unverified BLE write; persistence not verified)"
+                    "Polling rate {rate} sent for profile {profile} over BLE (delivered; not confirmed after restart)"
                 ),
                 &outcome,
             )
@@ -568,7 +568,7 @@ async fn dispatch(
             }
             VerificationAction::PowerCycle => {
                 let device = resolve_hardware(manager, cli, selection).await?;
-                let instruction = "Unplug the device from USB, switch the mouse off, and wait for it to disappear. Then switch it on, reconnect, and wait for it to reappear. A USB unplug alone is not a true power cycle: the mouse battery keeps it powered.";
+                let instruction = "Unplug USB, turn the mouse off, and wait for it to disappear. Then turn it on, reconnect, and wait for it to reappear. Unplugging USB alone isn't a real power cycle — the mouse battery keeps it running.";
                 output.print(
                     instruction,
                     &serde_json::json!({"instruction": instruction}),
@@ -622,7 +622,7 @@ async fn dispatch(
             manager
                 .invalidate_state(&device)
                 .map_err(|error| error.to_string())?;
-            output.print(format!("Invalidated state evidence for {device}"), &device)
+            output.print(format!("Cleared saved confirmation for {device}"), &device)
         }
         Action::StateReset => {
             let reset = manager
@@ -959,7 +959,7 @@ fn button_action_name(action: u8) -> &'static str {
 
 fn format_refresh_human(outcome: &FullProfileRefreshOutcome) -> String {
     let mut text = format!(
-        "Refreshed all {} profiles from USB.\nOriginal/restored metadata: current {}, maximum {}.",
+        "Read all {} profiles from USB.\nRestored current {} / maximum {}.",
         outcome.profiles.len(),
         outcome.restored_metadata.current(),
         outcome.restored_metadata.maximum()
@@ -968,9 +968,9 @@ fn format_refresh_human(outcome: &FullProfileRefreshOutcome) -> String {
         text.push_str("\nProfile slots were temporarily enabled through slot 5.");
     }
     if outcome.profile_metadata_drift || !outcome.drift.is_empty() {
-        text.push_str("\nDesired/observed drift:");
+        text.push_str("\nDifferences found between saved settings and the mouse:");
         if outcome.profile_metadata_drift {
-            text.push_str("\n  profile metadata");
+            text.push_str("\n  profile setup");
         }
         for (profile, resources) in &outcome.drift {
             let names = resources
@@ -981,11 +981,9 @@ fn format_refresh_human(outcome: &FullProfileRefreshOutcome) -> String {
             text.push_str(&format!("\n  profile {profile}: {names}"));
         }
     } else {
-        text.push_str("\nAll stored desired values match fresh observations.");
+        text.push_str("\nYour saved settings match what's on the mouse.");
     }
-    text.push_str(
-        "\nPersistence remains unverified; use `verify` for stronger persistence evidence.",
-    );
+    text.push_str("\nNot yet confirmed to survive a restart. Run `verify` to check it.");
     text
 }
 
@@ -1031,14 +1029,12 @@ fn action_name(action: &Action) -> &'static str {
         Action::Status => "read status",
         Action::ProfileGet { .. } => "read profile",
         Action::ProfileSet { .. } => "set profile",
-        Action::ProfileRefreshAll => {
-            "temporarily enable and refresh all five profiles, then restore metadata"
-        }
+        Action::ProfileRefreshAll => "read all five profiles, then restore the original setup",
         Action::DpiGet { .. } => "read DPI",
         Action::DpiSet { .. } => "set DPI",
         Action::RateGet { .. } => "read polling rate",
         Action::RateSet { .. } => "set polling rate",
-        Action::RateSetUnverifiedBle { .. } => "set polling rate (unverified BLE packet write)",
+        Action::RateSetUnverifiedBle { .. } => "set polling rate (BLE, not confirmed)",
         Action::PrefsGet { .. } => "read preferences",
         Action::PrefsSet { .. } => "set preferences",
         Action::BindGet { .. } => "read buttons",
@@ -1051,8 +1047,8 @@ fn action_name(action: &Action) -> &'static str {
         Action::Export => "export configuration",
         Action::Import { .. } => "import configuration",
         Action::StateSelected => "read selected device",
-        Action::StateInvalidate => "invalidate state",
-        Action::StateReset => "reset state file",
+        Action::StateInvalidate => "clear saved confirmation",
+        Action::StateReset => "reset saved data",
     }
 }
 
@@ -1212,7 +1208,7 @@ mod tests {
                 profile: ProfileId::try_from(1).unwrap(),
                 rate,
             }),
-            "set polling rate (unverified BLE packet write)"
+            "set polling rate (BLE, not confirmed)"
         );
     }
 
@@ -1225,7 +1221,7 @@ mod tests {
         assert!(matches!(action, Action::ProfileRefreshAll));
         assert_eq!(
             action_name(&action),
-            "temporarily enable and refresh all five profiles, then restore metadata"
+            "read all five profiles, then restore the original setup"
         );
     }
 

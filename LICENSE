@@ -1,6 +1,12 @@
 MIT License
 
 Copyright (c) 2026 HarukaYamamoto0
+Copyright (c) 2026 int3rrobang
+
+The driver for the Attack Shark X11 mouse (a different model under the same
+brand) was originally authored by HarukaYamamoto0. This project is a fork of
+that driver, adapted for the X3/M600 mouse family, maintained by int3rrobang,
+and remains MIT licensed.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

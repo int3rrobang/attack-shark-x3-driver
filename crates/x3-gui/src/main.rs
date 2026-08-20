@@ -84,6 +84,8 @@ const MAX_DPI_STAGES: usize = 8;
 const DPI_MIN: f32 = 50.0;
 const DPI_MAX: f32 = 26_000.0;
 const DPI_STEP: f32 = 50.0;
+const DEFAULT_DPI_DISPLAY_MIN: f32 = 200.0;
+const DEFAULT_DPI_DISPLAY_MAX: f32 = 3_200.0;
 const DPI_LABELS: [&str; MAX_DPI_STAGES] = [
     "stage 01", "stage 02", "stage 03", "stage 04", "stage 05", "stage 06", "stage 07", "stage 08",
 ];
@@ -95,12 +97,12 @@ const RAW_PREFERENCE_DEBOUNCE: i32 = 3;
 
 /// Verification banner for profile-reload verification: the device stays
 /// connected the whole time; the manager switches the active profile twice.
-const VERIFICATION_INSTRUCTION_PROFILE_RELOAD: &str = "Keep the selected device connected — profile-reload verification switches the active profile twice on the device; do not unplug or power off the mouse.";
+const VERIFICATION_INSTRUCTION_PROFILE_RELOAD: &str = "Keep the mouse connected. This check switches your active profile twice to test it. Don't unplug or turn it off.";
 
 /// Verification banner for power-cycle verification: the device must
 /// physically leave and return so the saved profile survives a full power
 /// loss. Mirrors the status line shown while the verification runs.
-const VERIFICATION_INSTRUCTION_POWER_CYCLE: &str = "Unplug USB, switch the mouse off, wait for it to disappear, then switch it on and reconnect — verification waits for each transition.";
+const VERIFICATION_INSTRUCTION_POWER_CYCLE: &str = "Unplug USB, turn the mouse off, wait for it to disappear, then turn it on and reconnect. The check waits for each step.";
 
 #[derive(Debug)]
 enum Command {
@@ -293,11 +295,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui.set_lifecycle_text("starting device discovery".into());
     ui.set_status_text("discovering wired, receiver, and BLE devices".into());
     ui.set_transport_label("no device selected".into());
-    ui.set_battery_text("unavailable".into());
-    ui.set_dpi_min(DPI_MIN);
-    ui.set_dpi_max(DPI_MAX);
-    ui.set_dpi_min_text(format_dpi_setting(DPI_MIN).into());
-    ui.set_dpi_max_text(format_dpi_setting(DPI_MAX).into());
+    ui.set_battery_text("".into());
+    ui.set_dpi_log_scale(true);
+    ui.set_dpi_min(DEFAULT_DPI_DISPLAY_MIN);
+    ui.set_dpi_max(DEFAULT_DPI_DISPLAY_MAX);
+    ui.set_dpi_min_text(format_dpi_setting(DEFAULT_DPI_DISPLAY_MIN).into());
+    ui.set_dpi_max_text(format_dpi_setting(DEFAULT_DPI_DISPLAY_MAX).into());
     ui.set_preferences_ready(false);
     ui.set_debounce_ms(0);
     ui.set_sleep_half_minutes(0);
@@ -428,13 +431,14 @@ fn install_callbacks(
                 return;
             }
             if ui.get_dirty() {
-                ui.set_status_text("save or discard the current draft before adding a profile".into());
+                ui.set_status_text(
+                    "save or discard the current draft before adding a profile".into(),
+                );
                 return;
             }
             if ui.get_ble_device() {
                 ui.set_status_text(
-                    "adding a profile writes profile metadata, which is disabled over BLE (no readback)"
-                        .into(),
+                    "adding a profile is unavailable over BLE; connect by USB".into(),
                 );
                 return;
             }
@@ -473,13 +477,14 @@ fn install_callbacks(
                 return;
             }
             if ui.get_dirty() {
-                ui.set_status_text("save or discard the current draft before hiding a profile".into());
+                ui.set_status_text(
+                    "save or discard the current draft before hiding a profile".into(),
+                );
                 return;
             }
             if ui.get_ble_device() {
                 ui.set_status_text(
-                    "hiding a profile writes profile metadata, which is disabled over BLE (no readback)"
-                        .into(),
+                    "hiding a profile is unavailable over BLE; connect by USB".into(),
                 );
                 return;
             }
@@ -903,16 +908,14 @@ fn install_callbacks(
                 let choice = choice.clamp(0, 1);
                 ui.set_baseline_choice(choice);
                 if ui.get_ble_device() {
-                    ui.set_status_text(
-                        "BLE always merges configuration against the stored baseline".into(),
-                    );
+                    ui.set_status_text("BLE always starts from your last saved settings".into());
                 } else if choice == 1 {
                     ui.set_status_text(
-                        "stored baseline selected for the next USB write (no live pre-read)".into(),
+                        "next USB write will start from your last saved settings".into(),
                     );
                 } else {
                     ui.set_status_text(
-                        "live baseline selected for the next USB write (fresh pre-read)".into(),
+                        "next USB write will start from the mouse's current settings".into(),
                     );
                 }
             }
@@ -925,9 +928,9 @@ fn install_callbacks(
                 ui.set_allow_explicit_defaults(enabled);
                 ui.set_status_text(
                     if enabled {
-                        "explicit captured defaults are allowed when no stored baseline exists"
+                        "explicit defaults allowed when no saved settings exist"
                     } else {
-                        "explicit defaults refused; missing baselines will fail safely"
+                        "explicit defaults off; missing saved settings will fail safely"
                     }
                     .into(),
                 );
@@ -990,15 +993,13 @@ fn install_callbacks(
             if !ui.get_hardware_ready() || ui.get_busy() {
                 return;
             }
-            if let Some(message) =
-                dirty_draft_message(ui.get_dirty(), "refreshing all profile observations")
-            {
+            if let Some(message) = dirty_draft_message(ui.get_dirty(), "reading all profiles") {
                 ui.set_status_text(message.into());
                 return;
             }
             if ui.get_ble_device() {
                 ui.set_status_text(
-                    "all-profile readback requires USB; it is unavailable over BLE".into(),
+                    "reading all profiles needs USB; it's unavailable over BLE".into(),
                 );
                 return;
             }
@@ -1016,22 +1017,20 @@ fn install_callbacks(
             if !ui.get_hardware_ready() || ui.get_busy() {
                 return;
             }
-            if let Some(message) =
-                dirty_draft_message(ui.get_dirty(), "refreshing all profile observations")
-            {
+            if let Some(message) = dirty_draft_message(ui.get_dirty(), "reading all profiles") {
                 ui.set_status_text(message.into());
                 return;
             }
             if ui.get_ble_device() {
                 ui.set_status_text(
-                    "all-profile readback requires USB; it is unavailable over BLE".into(),
+                    "reading all profiles needs USB; it's unavailable over BLE".into(),
                 );
                 return;
             }
             ui.set_busy(true);
-            ui.set_lifecycle_text("reading all profile observations".into());
+            ui.set_lifecycle_text("reading all profiles".into());
             ui.set_status_text(
-                "reading all five profiles; the original profile settings will be restored…".into(),
+                "reading all five profiles; your current settings will be restored…".into(),
             );
             queue_command(&ui, &commands, Command::RefreshAllProfiles);
         });
@@ -1045,14 +1044,14 @@ fn install_callbacks(
                 return;
             }
             if let Some(message) =
-                dirty_draft_message(ui.get_dirty(), "invalidating persistence evidence")
+                dirty_draft_message(ui.get_dirty(), "clearing saved confirmation")
             {
                 ui.set_status_text(message.into());
                 return;
             }
             ui.set_busy(true);
-            ui.set_lifecycle_text("invalidating persistence evidence".into());
-            ui.set_status_text("clearing persistence claims; desired values are preserved…".into());
+            ui.set_lifecycle_text("clearing saved confirmation".into());
+            ui.set_status_text("clearing saved confirmation; your settings are kept…".into());
             queue_command(&ui, &commands, Command::InvalidateState);
         });
     }
@@ -1065,20 +1064,19 @@ fn install_callbacks(
                 return;
             }
             if let Some(message) =
-                dirty_draft_message(ui.get_dirty(), "verifying profile persistence")
+                dirty_draft_message(ui.get_dirty(), "running the profile-reload check")
             {
                 ui.set_status_text(message.into());
                 return;
             }
             if ui.get_ble_device() {
                 ui.set_status_text(
-                    "profile-reload verification requires USB readback; unavailable over BLE"
-                        .into(),
+                    "the profile-reload check needs USB; unavailable over BLE".into(),
                 );
                 return;
             }
             ui.set_busy(true);
-            ui.set_lifecycle_text("verifying profile persistence".into());
+            ui.set_lifecycle_text("running the profile-reload check".into());
             ui.set_verification_instruction(VERIFICATION_INSTRUCTION_PROFILE_RELOAD.into());
             ui.set_status_text(
                 "profile-reload verification switches profiles twice — controls are locked…".into(),
@@ -1095,19 +1093,19 @@ fn install_callbacks(
                 return;
             }
             if let Some(message) =
-                dirty_draft_message(ui.get_dirty(), "verifying power-cycle persistence")
+                dirty_draft_message(ui.get_dirty(), "running the power-cycle check")
             {
                 ui.set_status_text(message.into());
                 return;
             }
             if ui.get_ble_device() {
                 ui.set_status_text(
-                    "power-cycle verification requires USB readback; unavailable over BLE".into(),
+                    "the power-cycle check needs USB; unavailable over BLE".into(),
                 );
                 return;
             }
             ui.set_busy(true);
-            ui.set_lifecycle_text("verifying power-cycle persistence".into());
+            ui.set_lifecycle_text("running the power-cycle check".into());
             ui.set_verification_instruction(VERIFICATION_INSTRUCTION_POWER_CYCLE.into());
             ui.set_status_text(
                 "unplug USB, switch the mouse off, wait for it to disappear, then switch it on and reconnect — verification waits for each transition…"
@@ -1132,14 +1130,7 @@ fn install_callbacks(
             };
             let Some(action) = validated_binding_action(item.action.as_str(), label.as_str())
             else {
-                ui.set_status_text(
-                    if BINDING_ACTIONS.contains(&item.action.as_str()) {
-                        "that button action is not supported"
-                    } else {
-                        "this button has an assignment that cannot be changed here"
-                    }
-                    .into(),
-                );
+                ui.set_status_text("that button action is not supported".into());
                 return;
             };
             if item.action == action {
@@ -1154,10 +1145,15 @@ fn install_callbacks(
     }
     {
         let weak = ui.as_weak();
-        ui.on_toggle_theme(move || {
+        ui.on_select_appearance(move |choice| {
             if let Some(ui) = weak.upgrade() {
                 let theme = ui.global::<Theme>();
-                theme.set_dark_mode(!theme.get_dark_mode());
+                let appearance = match choice {
+                    1 => slint::language::ColorScheme::Light,
+                    2 => slint::language::ColorScheme::Dark,
+                    _ => slint::language::ColorScheme::Unknown,
+                };
+                theme.set_appearance(appearance);
                 ui.set_status_text("theme updated".into());
             }
         });
@@ -1195,13 +1191,13 @@ fn install_callbacks(
                 ui.set_validation_choice(choice.clamp(0, 1));
                 if ui.get_ble_device() {
                     ui.set_status_text(
-                        "BLE writes are always transport-verified; readback is unavailable".into(),
+                        "BLE saves confirm delivery; the mouse can't read the setting back".into(),
                     );
                 } else {
                     ui.set_status_text(if choice == 1 {
-                        "readback verification selected for the next USB write".into()
+                        "next USB save will be confirmed by the mouse".into()
                     } else {
-                        "transport submission selected for the next USB write".into()
+                        "next USB save will confirm delivery only".into()
                     });
                 }
             }
@@ -1216,13 +1212,13 @@ fn install_callbacks(
             {
                 if ui.get_ble_device() {
                     ui.set_status_text(
-                        "polling-rate writes are disabled over BLE (no readback preflight)".into(),
+                        "polling-rate changes are unavailable over BLE".into(),
                     );
                     return;
                 }
                 if !ui.get_polling_rate_ready() {
                     ui.set_status_text(
-                        "polling-rate writes need complete stored DPI, preferences, and buttons for this profile"
+                        "polling-rate changes need full saved DPI, preferences, and buttons for this profile"
                             .into(),
                     );
                     return;
@@ -1656,7 +1652,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                         Ok(new_loaded) => {
                             let status = if new_loaded.identity.transport == TransportKind::Ble {
                                 format!(
-                                    "profile {number} activation submitted over BLE; readback unavailable"
+                                    "profile {number} activation sent; the mouse can't confirm it over BLE"
                                 )
                             } else {
                                 "profile activation complete".to_owned()
@@ -1828,7 +1824,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                         emit(
                             &weak,
                             UiEvent::OperationError(
-                                "adding a profile is disabled over BLE (profile metadata needs USB readback)"
+                                "adding a profile is unavailable over BLE (the mouse can't confirm it); connect by USB"
                                     .into(),
                             ),
                         );
@@ -1967,7 +1963,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                         emit(
                             &weak,
                             UiEvent::OperationError(
-                                "hiding a profile is disabled over BLE (profile metadata needs USB readback)"
+                                "hiding a profile is unavailable over BLE (the mouse can't confirm it); connect by USB"
                                     .into(),
                             ),
                         );
@@ -2124,7 +2120,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                                         &weak,
                                         ready,
                                         &format!(
-                                            "configuration imported from {}; stored baselines refreshed (no hardware write)",
+                                            "configuration imported from {}; saved settings updated (nothing sent to the mouse)",
                                             path.display()
                                         ),
                                     );
@@ -2204,7 +2200,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                     emit(
                         &weak,
                         UiEvent::OperationError(format!(
-                            "configuration exported to {} (desired values, then observed)",
+                            "configuration exported to {} (your settings, then what the mouse reported)",
                             path.display()
                         )),
                     );
@@ -2302,7 +2298,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                                 emit_snapshot(
                                     &weak,
                                     ready,
-                                    "persistence evidence invalidated; desired values preserved",
+                                    "saved confirmation cleared; your settings are kept",
                                 );
                             }
                         }
@@ -2335,8 +2331,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                         emit(
                             &weak,
                             UiEvent::OperationError(
-                                "profile-reload verification requires USB readback; unavailable over BLE"
-                                    .into(),
+                                "the profile-reload check needs USB; unavailable over BLE".into(),
                             ),
                         );
                         continue;
@@ -2409,8 +2404,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                         emit(
                             &weak,
                             UiEvent::OperationError(
-                                "power-cycle verification requires USB readback; unavailable over BLE"
-                                    .into(),
+                                "the power-cycle check needs USB; unavailable over BLE".into(),
                             ),
                         );
                         continue;
@@ -2749,9 +2743,9 @@ fn apply_snapshot_replacing(ui: &AppWindow, snapshot: &LiveSnapshot) {
     ui.set_hardware_ready(true);
     ui.set_lifecycle_text(
         if snapshot.is_ble {
-            "connected — stored/imported baseline loaded (no readback)"
+            "connected — your saved settings (not read from the mouse)"
         } else {
-            "connected — live USB readback loaded"
+            "connected — settings read from the mouse"
         }
         .into(),
     );
@@ -2820,9 +2814,9 @@ fn apply_snapshot_preserving_draft(ui: &AppWindow, snapshot: &LiveSnapshot) {
     ui.set_hardware_ready(true);
     ui.set_lifecycle_text(
         if snapshot.is_ble {
-            "connected — stored/imported baseline loaded (no readback)"
+            "connected — your saved settings (not read from the mouse)"
         } else {
-            "connected — live USB readback loaded"
+            "connected — settings read from the mouse"
         }
         .into(),
     );
@@ -2854,7 +2848,7 @@ fn apply_snapshot_preserving_draft(ui: &AppWindow, snapshot: &LiveSnapshot) {
 
 fn polling_rate_text(snapshot: &LiveSnapshot) -> String {
     if snapshot.is_ble {
-        "unavailable (ble — no readback)".to_owned()
+        "not available over BLE".to_owned()
     } else if snapshot.polling_rate_ready {
         format!("{} hz", snapshot.polling_rate_hz)
     } else {
@@ -2892,14 +2886,14 @@ fn clear_live_state(ui: &AppWindow) {
     ui.set_verification_running(false);
     ui.set_verification_instruction("".into());
     ui.set_last_enabled_profile(-1);
-    ui.set_battery_text("unavailable".into());
+    ui.set_battery_text("".into());
     ui.set_device_name("device not loaded".into());
     ui.set_device_id_text("not available".into());
     ui.set_device_product_text("not available".into());
     ui.set_profile_summary("no live profile".into());
     ui.set_metadata_summary("not available".into());
     ui.set_sensor_summary("not available".into());
-    ui.set_verification_text("no evidence".into());
+    ui.set_verification_text("no confirmation yet".into());
     ui.set_active_dpi_text("not available".into());
     ui.set_active_stage_text("not available".into());
     ui.set_dirty(false);
@@ -3301,7 +3295,7 @@ fn stored_evidence_summary(
     captured_image: bool,
 ) -> String {
     if captured_image {
-        return "captured stock image shown; no stored baseline (import one or enable explicit defaults)"
+        return "showing the factory image; no saved settings yet (import one or allow defaults)"
             .to_owned();
     }
     let Some(profile_state) = state
@@ -3310,9 +3304,9 @@ fn stored_evidence_summary(
         .and_then(|device| device.profiles.get(&profile))
     else {
         return if is_ble {
-            "stored/imported baseline only; no submissions yet".to_owned()
+            "saved settings only; nothing applied yet".to_owned()
         } else {
-            "live readback observed; persistence unverified".to_owned()
+            "read from the mouse; not confirmed after restart".to_owned()
         };
     };
     let mut summary = SubmissionSummary::default();
@@ -3320,17 +3314,17 @@ fn stored_evidence_summary(
     record_submission(&profile_state.preferences, &mut summary);
     record_submission(&profile_state.buttons, &mut summary);
     if summary.power_cycle {
-        "power-cycle persistence verified".to_owned()
+        "confirmed to survive a full power-off".to_owned()
     } else if summary.reload {
-        "profile-reload persistence verified".to_owned()
+        "confirmed to survive switching profiles".to_owned()
     } else if summary.submitted && summary.imported_only {
-        "imported configuration stored; not sent to hardware".to_owned()
+        "imported settings saved; nothing sent to the mouse".to_owned()
     } else if summary.submitted {
-        "writes submitted; persistence not yet verified".to_owned()
+        "applied".to_owned()
     } else if is_ble {
-        "stored/imported baseline only; no submissions yet".to_owned()
+        "saved settings only; nothing applied yet".to_owned()
     } else {
-        "live readback observed; persistence unverified".to_owned()
+        "read from the mouse; not confirmed after restart".to_owned()
     }
 }
 
@@ -3348,7 +3342,7 @@ fn select_profile(
             .map_err(|error| format_error_string("BLE profile activation failed", error))?;
         return runtime
             .block_on(read_loaded(manager, &current.device, Some(target)))
-            .map_err(|error| format_error_string("stored baseline reload failed", error));
+            .map_err(|error| format_error_string("saved-settings reload failed", error));
     }
     if target > current.metadata.maximum() {
         return Err(format!(
@@ -3366,7 +3360,7 @@ fn select_profile(
         .map_err(|error| format_error_string("profile activation failed", error))?;
     runtime
         .block_on(read_loaded(manager, &current.device, Some(target)))
-        .map_err(|error| format_error_string("profile readback failed", error))
+        .map_err(|error| format_error_string("profile read failed", error))
 }
 
 fn apply_draft(
@@ -3393,12 +3387,12 @@ fn apply_draft(
             .and_then(|snapshot| snapshot.resource.observed.as_ref())
             .map(|observed| observed.value.current())
             .ok_or_else(|| {
-                "pre-write USB status did not include current-profile readback; no write was attempted"
+                "couldn't confirm the current profile before writing; nothing was changed"
                     .to_owned()
             })?;
         if fresh_current != profile {
             return Err(format!(
-                "device profile changed outside the GUI from {profile} to {fresh_current}; no write was attempted; reload the draft"
+                "the active profile changed outside the app ({profile} → {fresh_current}); reload before saving"
             ));
         }
     }
@@ -3424,15 +3418,14 @@ fn apply_draft(
 
     if draft.dpi_values.is_empty() || draft.dpi_values.len() > MAX_DPI_STAGES {
         return Err(format!(
-            "draft has {} DPI stages; the device supports 1..={MAX_DPI_STAGES}; no write was attempted",
+            "the draft has {} DPI stages; the mouse supports 1..={MAX_DPI_STAGES}; nothing was changed",
             draft.dpi_values.len()
         ));
     }
     let active_stage_index = draft.active_stage;
     if active_stage_index == 0 || active_stage_index as usize > draft.dpi_values.len() {
         return Err(
-            "draft active DPI stage does not refer to a configured stage; no write was attempted"
-                .into(),
+            "the active DPI stage isn't one of the configured stages; nothing was changed".into(),
         );
     }
 
@@ -3512,7 +3505,7 @@ fn apply_draft(
             .is_some_and(|baseline| baseline != requested)
         {
             let action = safe_button_action(requested).ok_or_else(|| {
-                format!("unsupported button action {requested:?}; no write was attempted")
+                format!("unsupported button action {requested:?}; nothing was changed")
             })?;
             button_changes.push((SAFE_BUTTON_SLOTS[index], action));
         }
@@ -3524,13 +3517,12 @@ fn apply_draft(
     if rate_changed {
         if is_ble {
             return Err(
-                "polling-rate writes are disabled over BLE (the safe preflight needs USB readback); no hardware write was attempted"
-                    .into(),
+                "polling-rate changes need USB for a safety check; nothing was changed".into(),
             );
         }
         if !current.polling_rate_ready {
             return Err(
-                "polling-rate write is unavailable: the manager does not yet have complete desired DPI, preferences, and buttons for this profile; no hardware write was attempted"
+                "polling-rate changes need full saved DPI, preferences, and buttons for this profile; nothing was changed"
                     .into(),
             );
         }
@@ -3540,7 +3532,7 @@ fn apply_draft(
             || !button_changes.is_empty()
         {
             return Err(
-                "polling-rate changes must be applied separately from DPI, sensor, preference, or button changes so the manager can validate the complete live profile before report 0x06; no hardware write was attempted"
+                "save polling rate on its own, without other changes, so it can be checked safely; nothing was changed"
                     .into(),
             );
         }
@@ -3601,13 +3593,13 @@ fn apply_draft(
     }
     if evidence.is_empty() {
         return Ok((
-            "no changes to write; live device state is unchanged".into(),
+            "no changes to apply; the mouse is already up to date".into(),
             profile,
         ));
     }
     Ok((
         format!(
-            "safe writes complete: {}; persistence not yet verified (use the verification workflows)",
+            "applied to the mouse: {} · to confirm it survives a restart, run a check in Advanced",
             evidence.join("; ")
         ),
         profile,
@@ -3630,16 +3622,9 @@ fn make_live_snapshot(loaded: &LoadedDevice, status: &str) -> LiveSnapshot {
         TransportKind::Receiver => "2.4g receiver",
         TransportKind::Ble => "ble",
     };
-    let battery = loaded.battery.map_or_else(
-        || {
-            if is_ble {
-                "unavailable (ble)".to_owned()
-            } else {
-                "unavailable (wired USB)".to_owned()
-            }
-        },
-        |value| format!("{value}%"),
-    );
+    let battery = loaded
+        .battery
+        .map_or_else(String::new, |value| format!("{value}%"));
     let sensor = loaded.profile.dpi.sensor;
     let fields = preference_fields(&loaded.profile.preferences);
     let stages = loaded
@@ -3694,7 +3679,7 @@ fn make_live_snapshot(loaded: &LoadedDevice, status: &str) -> LiveSnapshot {
         .collect();
     let metadata_summary = if is_ble {
         format!(
-            "current {} / maximum {} · not read back (ble)",
+            "current {} / maximum {} · not read from the mouse (ble)",
             loaded.metadata.current(),
             loaded.metadata.maximum()
         )
@@ -3707,7 +3692,7 @@ fn make_live_snapshot(loaded: &LoadedDevice, status: &str) -> LiveSnapshot {
     };
     let profile_summary = if is_ble {
         format!(
-            "profile {} · {} dpi · stored baseline (no readback)",
+            "profile {} · {} dpi · saved settings (not read from the mouse)",
             loaded.metadata.current(),
             active_dpi
         )
@@ -3805,27 +3790,25 @@ fn preference_fields(preferences: &attack_shark_x3_manager::PreferencesState) ->
 
 fn workflow_summary(workflow: &str, profile: ProfileId, verification: &Verification) -> String {
     let persistence = match verification.persistence {
-        PersistenceVerification::PowerCycleVerified { .. } => "power-cycle persistence verified",
-        PersistenceVerification::ProfileReloadVerified { .. } => {
-            "profile-reload persistence verified"
-        }
-        PersistenceVerification::Unknown => "persistence unverified",
+        PersistenceVerification::PowerCycleVerified { .. } => "survives a full power-off",
+        PersistenceVerification::ProfileReloadVerified { .. } => "survives switching profiles",
+        PersistenceVerification::Unknown => "not confirmed after restart",
     };
-    format!("{workflow} verification: profile {profile} readback verified; {persistence}")
+    format!("{workflow} check: profile {profile} confirmed by the mouse; {persistence}")
 }
 
 fn verification_summary(verification: &Verification) -> String {
     match verification.application {
-        ApplicationVerification::ReadbackVerified => "readback verified".to_owned(),
-        ApplicationVerification::Acknowledged => "transport submitted".to_owned(),
-        ApplicationVerification::Mismatch => "verification mismatch".to_owned(),
+        ApplicationVerification::ReadbackVerified => "confirmed by the mouse".to_owned(),
+        ApplicationVerification::Acknowledged => "applied (device acknowledged)".to_owned(),
+        ApplicationVerification::Mismatch => "confirmation mismatch".to_owned(),
         ApplicationVerification::NotSent => "not sent".to_owned(),
     }
 }
 
 fn format_refresh_summary(outcome: &FullProfileRefreshOutcome) -> String {
     let mut text = format!(
-        "all five profile observations refreshed; restored current {} / maximum {}",
+        "all five profiles read; restored current {} / maximum {}",
         outcome.restored_metadata.current(),
         outcome.restored_metadata.maximum()
     );
@@ -3833,9 +3816,9 @@ fn format_refresh_summary(outcome: &FullProfileRefreshOutcome) -> String {
         text.push_str("; profile slots were temporarily enabled through 5");
     }
     if outcome.profile_metadata_drift || !outcome.drift.is_empty() {
-        text.push_str("; desired/observed drift found");
+        text.push_str("; differences found between your saved settings and the mouse");
         if outcome.profile_metadata_drift {
-            text.push_str(" (profile metadata)");
+            text.push_str(" (profile setup)");
         }
         for (profile, resources) in &outcome.drift {
             let names = resources
@@ -3846,9 +3829,9 @@ fn format_refresh_summary(outcome: &FullProfileRefreshOutcome) -> String {
             text.push_str(&format!("; profile {profile}: {names}"));
         }
     } else {
-        text.push_str("; desired values match fresh observations");
+        text.push_str("; your settings match what's on the mouse");
     }
-    text.push_str("; persistence remains unverified");
+    text.push_str("; not yet confirmed after restart");
     text
 }
 
@@ -3865,7 +3848,7 @@ fn format_error(prefix: &str, error: ManagerError) -> UiEvent {
     UiEvent::Error(format_error_string(prefix, error))
 }
 fn format_error_string(prefix: &str, error: ManagerError) -> String {
-    format!("{prefix}: {error}; no retry was attempted")
+    format!("{prefix}: {error}")
 }
 fn on_off(value: bool) -> &'static str {
     if value { "on" } else { "off" }
@@ -4025,7 +4008,7 @@ fn button_action_name(assignment: attack_shark_x3_manager::ButtonAssignment) -> 
         return name.to_owned();
     }
     if assignment.modifier != 0 || assignment.key_code != 0 {
-        return "unsupported (not editable)".to_owned();
+        return "unsupported assignment".to_owned();
     }
     match assignment.action {
         0x01 => "disabled",
@@ -4061,7 +4044,7 @@ fn button_action_name(assignment: attack_shark_x3_manager::ButtonAssignment) -> 
         0x34 => "profile cycle",
         0x35 => "profile plus",
         0x36 => "profile minus",
-        _ => "unsupported (not editable)",
+        _ => "unsupported assignment",
     }
     .to_owned()
 }
@@ -4121,10 +4104,7 @@ fn safe_button_action(name: &str) -> Option<SafeButtonAction> {
     })
 }
 
-fn validated_binding_action(current: &str, requested: &str) -> Option<String> {
-    if !BINDING_ACTIONS.contains(&current) {
-        return None;
-    }
+fn validated_binding_action(_current: &str, requested: &str) -> Option<String> {
     let action = safe_button_action(requested)?;
     Some(button_action_name(action.to_assignment()))
 }
@@ -4330,7 +4310,7 @@ fn binding(button: &str, location: &str, action: &str) -> BindingRow {
         location: location.into(),
         action: action.into(),
         original_action: action.into(),
-        editable: BINDING_ACTIONS.contains(&action),
+        editable: true,
     }
 }
 
@@ -4549,8 +4529,8 @@ mod tests {
             Some("save or discard the current draft before importing a configuration")
         );
         assert_eq!(
-            dirty_draft_message(true, "verifying power-cycle persistence").as_deref(),
-            Some("save or discard the current draft before verifying power-cycle persistence")
+            dirty_draft_message(true, "running the power-cycle check").as_deref(),
+            Some("save or discard the current draft before running the power-cycle check")
         );
         assert!(dirty_draft_message(false, "renaming a profile").is_none());
     }
@@ -4682,9 +4662,9 @@ mod tests {
     }
 
     #[test]
-    fn dpi_slider_snaps_to_fifty_and_clamps_to_configured_range() {
-        let min = 200.0;
-        let max = 3_200.0;
+    fn dpi_slider_snaps_to_fifty_and_clamps_to_default_display_range() {
+        let min = DEFAULT_DPI_DISPLAY_MIN;
+        let max = DEFAULT_DPI_DISPLAY_MAX;
         for logarithmic in [false, true] {
             let low = dpi_from_ratio(-1.0, logarithmic, min, max);
             let middle = dpi_from_ratio(0.5, logarithmic, min, max);
@@ -4798,24 +4778,23 @@ mod tests {
     }
 
     #[test]
-    fn modified_or_unknown_button_assignments_remain_read_only() {
+    fn modified_or_unknown_button_assignments_are_not_exposed_as_safe_actions() {
         let modified = attack_shark_x3_manager::ButtonAssignment::new(0x02, 1, 0);
         let unknown = attack_shark_x3_manager::ButtonAssignment::new(0xff, 0, 0);
-        assert_eq!(button_action_name(modified), "unsupported (not editable)");
-        assert_eq!(button_action_name(unknown), "unsupported (not editable)");
-        assert!(safe_button_action("unsupported (not editable)").is_none());
+        assert_eq!(button_action_name(modified), "unsupported assignment");
+        assert_eq!(button_action_name(unknown), "unsupported assignment");
+        assert!(safe_button_action("unsupported assignment").is_none());
     }
 
     #[test]
-    fn dropdown_selection_accepts_exact_safe_labels_and_rejects_invalid_rows() {
+    fn dropdown_selection_overrides_an_unsupported_current_assignment_with_a_safe_action() {
+        let forward = binding("forward", "side upper", "unsupported assignment");
+        assert!(forward.editable);
         assert_eq!(
-            validated_binding_action("left click", "right click").as_deref(),
+            validated_binding_action(forward.action.as_str(), "right click").as_deref(),
             Some("right click")
         );
-        assert!(validated_binding_action("unsupported (not editable)", "right click").is_none());
-        assert!(validated_binding_action("left click", "not a safe action").is_none());
-        assert!(binding("lmb", "primary", "left click").editable);
-        assert!(!binding("unknown", "device", "unsupported (not editable)").editable);
+        assert!(validated_binding_action(forward.action.as_str(), "not a safe action").is_none());
     }
 
     #[test]
@@ -4922,7 +4901,7 @@ mod tests {
         assert!(summary.contains("restored current 2 / maximum 3"));
         assert!(summary.contains("temporarily enabled through 5"));
         assert!(summary.contains("profile 2: polling rate, buttons"));
-        assert!(summary.contains("persistence remains unverified"));
+        assert!(summary.contains("not yet confirmed after restart"));
     }
 
     #[test]
@@ -4996,5 +4975,181 @@ mod tests {
         // The location never appears in the summary lines.
         rows[1].action = "scroll".into();
         assert_eq!(button_change_summary(&rows).as_str(), "wheel → scroll");
+    }
+
+    /// Jargon that must not leak into normal user-facing copy (see
+    /// `docs/ui-copy.md`). Keep in sync with the blocklist there.
+    const BLOCKLIST: &[&str] = &[
+        "readback",
+        "persistence",
+        "baseline",
+        "observed",
+        "desired",
+        "drift",
+        "evidence",
+        "preflight",
+        "submission",
+        "schema",
+        "unverified",
+        "was attempted",
+        "definitive",
+        "packet",
+    ];
+
+    /// Returns true when `text` contains any blocklist token as a whole word
+    /// (or, for multi-word tokens, as a contiguous substring).
+    fn contains_blocklist_token(text: &str) -> bool {
+        let lower = text.to_ascii_lowercase();
+        for token in BLOCKLIST {
+            if token.contains(' ') {
+                if lower.contains(token) {
+                    return true;
+                }
+                continue;
+            }
+            let mut from = 0;
+            while let Some(pos) = lower[from..].find(token) {
+                let abs = from + pos;
+                let before = abs == 0 || !lower.as_bytes()[abs - 1].is_ascii_alphanumeric();
+                let end = abs + token.len();
+                let after = end >= lower.len() || !lower.as_bytes()[end].is_ascii_alphanumeric();
+                if before && after {
+                    return true;
+                }
+                from = abs + token.len();
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn user_facing_slint_copy_avoids_blocklist_vocabulary() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app-window.slint");
+        let source = std::fs::read_to_string(path).expect("read app-window.slint");
+        let attrs = [
+            "text:",
+            "label:",
+            "detail:",
+            "subtitle:",
+            "title:",
+            "placeholder-text:",
+        ];
+        let mut checked = 0;
+        for line in source.lines() {
+            let segments: Vec<&str> = line.split('"').collect();
+            // Quoted strings are at odd indices (pairs of quotes).
+            for (idx, seg) in segments.iter().enumerate() {
+                if idx % 2 == 0 || idx == 0 {
+                    continue;
+                }
+                let prefix = segments[idx - 1];
+                let is_user_copy = attrs.iter().any(|attr| prefix.trim_end().ends_with(attr));
+                if !is_user_copy {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    !contains_blocklist_token(seg),
+                    "user-facing string in app-window.slint contains blocklist vocabulary: {seg:?}"
+                );
+            }
+        }
+        assert!(
+            checked > 30,
+            "expected many user-facing strings, checked {checked}"
+        );
+    }
+
+    #[test]
+    fn evidence_summaries_avoid_blocklist_vocabulary() {
+        let timestamp = attack_shark_x3_manager::Timestamp { unix_seconds: 1 };
+        let cases = [
+            (
+                Verification {
+                    application: ApplicationVerification::ReadbackVerified,
+                    persistence: PersistenceVerification::Unknown,
+                },
+                "readback verified / unknown",
+            ),
+            (
+                Verification {
+                    application: ApplicationVerification::Acknowledged,
+                    persistence: PersistenceVerification::PowerCycleVerified {
+                        verified_at: timestamp,
+                    },
+                },
+                "acknowledged / power-cycle",
+            ),
+            (
+                Verification {
+                    application: ApplicationVerification::Mismatch,
+                    persistence: PersistenceVerification::ProfileReloadVerified {
+                        verified_at: timestamp,
+                    },
+                },
+                "mismatch / reload",
+            ),
+            (
+                Verification {
+                    application: ApplicationVerification::NotSent,
+                    persistence: PersistenceVerification::Unknown,
+                },
+                "not sent / unknown",
+            ),
+        ];
+        for (verification, label) in cases {
+            let summary = verification_summary(&verification);
+            assert!(
+                !contains_blocklist_token(&summary),
+                "{label}: verification_summary leaked: {summary:?}"
+            );
+            let workflow =
+                workflow_summary("profile reload", ProfileId::new(1).unwrap(), &verification);
+            assert!(
+                !contains_blocklist_token(&workflow),
+                "{label}: workflow_summary leaked: {workflow:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stored_evidence_summary_avoids_blocklist_vocabulary() {
+        let profile = ProfileId::new(1).unwrap();
+        let device = DeviceId::new("test-device").expect("valid device id");
+        let mut state = attack_shark_x3_manager::StateFile::default();
+        for (is_ble, captured) in [(false, true), (false, false), (true, false)] {
+            let summary = stored_evidence_summary(&state, &device, profile, is_ble, captured);
+            assert!(
+                !contains_blocklist_token(&summary),
+                "stored_evidence_summary(ble={is_ble}, captured={captured}) leaked: {summary:?}"
+            );
+        }
+
+        let identity = DeviceIdentity::usb(
+            TransportKind::Wired,
+            0x1234,
+            0x5678,
+            Some("summary-test"),
+            "summary-test-path",
+            Some("summary test device"),
+        )
+        .expect("valid test identity");
+        let applied_device = identity.id.clone();
+        let mut device_state = attack_shark_x3_manager::DeviceState::new(identity);
+        let mut profile_state = attack_shark_x3_manager::ProfileState::default();
+        profile_state.preferences.desired = Some(attack_shark_x3_manager::DesiredState {
+            value: attack_shark_x3::PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+            source: DesiredSource::UserWrite,
+            verification: Verification {
+                application: ApplicationVerification::Acknowledged,
+                persistence: PersistenceVerification::Unknown,
+            },
+            updated_at: attack_shark_x3_manager::Timestamp { unix_seconds: 1 },
+        });
+        device_state.profiles.insert(profile, profile_state);
+        state.devices.insert(applied_device.clone(), device_state);
+
+        let summary = stored_evidence_summary(&state, &applied_device, profile, false, false);
+        assert_eq!(summary, "applied");
     }
 }

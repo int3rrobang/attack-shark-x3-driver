@@ -248,6 +248,19 @@ When hardware testing is authorized:
 
 Full safety checklist is in `docs/safety.md`. Read it before any hardware write.
 
+## User-facing copy
+
+- **Read `docs/ui-copy.md` and apply it whenever you add or edit any
+  user-facing text** — GUI strings (`x3-gui/ui/app-window.slint`,
+  `x3-gui/src/main.rs`), `x3ctl` human output, and `ManagerError` messages that
+  can surface to a user.
+- The guide defines the voice, a confidence ladder (applied → confirmed →
+  survives switching → survives power-off), a vocabulary table (e.g. never
+  "readback", "persistence", "baseline", "evidence", "preflight" in user copy),
+  and a blocklist. Keep every control and option; only the wording changes.
+- Engineering vocabulary stays in `docs/`, code comments, and JSON/debug
+  output; it is not exposed as normal user-facing prose.
+
 ## Documentation rules
 
 - Update the relevant protocol document under `docs/protocols/` when implementation behavior or confirmed understanding changes.

@@ -1,7 +1,9 @@
-import { ComboBox, ScrollView, Slider } from "std-widgets.slint";
+import { Palette, ScrollView } from "std-widgets.slint";
 
 export global Theme {
-    in-out property <bool> dark-mode: false;
+    in-out property <ColorScheme> appearance: ColorScheme.unknown;
+    out property <bool> system-dark: Palette.color-scheme == ColorScheme.dark;
+    out property <bool> dark-mode: appearance == ColorScheme.dark || (appearance == ColorScheme.unknown && system-dark);
     out property <color> canvas: dark-mode ? #111318 : #f4f5f8;
     out property <color> surface: dark-mode ? #1a1d24 : #ffffff;
     out property <color> surface-raised: dark-mode ? #232731 : #fbfbfd;
@@ -17,6 +19,7 @@ export global Theme {
     out property <color> danger: dark-mode ? #edb0ae : #a34f4b;
     out property <color> danger-soft: dark-mode ? #432d32 : #f8e9e8;
     out property <color> on-accent: #f8f9fb;
+    out property <color> on-primary: dark-mode ? #20232b : #f8f9fb;
     out property <color> shadow: #12141c34;
     out property <length> radius: 6px;
     out property <length> space-1: 4px;
@@ -89,7 +92,7 @@ component ActionButton inherits Rectangle {
 
     Text {
         text: root.label;
-        color: root.primary ? Theme.on-accent : root.destructive ? Theme.danger : Theme.text;
+        color: root.primary ? Theme.on-primary : root.destructive ? Theme.danger : Theme.text;
         font-size: root.compact ? 12px : 13px;
         font-weight: 650;
         horizontal-alignment: center;
@@ -108,21 +111,22 @@ component StatusPill inherits Rectangle {
     in property <color> dot-color: Theme.success;
     in property <bool> compact: false;
     height: compact ? 26px : 30px;
-    width: compact ? 142px : 168px;
     border-radius: Theme.radius;
     background: Theme.surface-raised;
     border-width: 1px;
     border-color: Theme.border;
 
-    Rectangle { x: 10px; y: parent.height / 2 - 4px; width: 8px; height: 8px; border-radius: 4px; background: root.dot-color; }
-    Text {
-        x: 26px; width: parent.width - 34px; height: parent.height;
-        text: root.label;
-        color: Theme.text;
-        font-size: root.compact ? 10px : 11px;
-        font-weight: 600;
-        vertical-alignment: center;
-        overflow: elide;
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 12px; spacing: 8px; alignment: start; cross-axis-alignment: center;
+        Rectangle { width: 8px; height: 8px; border-radius: 4px; background: root.dot-color; }
+        Text {
+            text: root.label;
+            color: Theme.text;
+            font-size: root.compact ? 10px : 11px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
     }
 }
 
@@ -184,6 +188,60 @@ component InputField inherits Rectangle {
         selection-foreground-color: Theme.text; selection-background-color: Theme.accent-soft;
         vertical-alignment: center; single-line: true; enabled: root.interactive;
         accepted => { root.accepted(self.text); }
+    }
+}
+
+component ThemedSlider inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in property <float> value: 0;
+    in property <bool> enabled: true;
+    in property <string> accessible-name: "value";
+    in property <string> minimum-label;
+    in property <string> maximum-label;
+    callback changed(float);
+    height: 52px;
+    background: transparent;
+    opacity: root.enabled ? 1.0 : 0.48;
+    property <float> value-ratio: root.maximum > root.minimum ? max(0.0, min(1.0, (root.value - root.minimum) / (root.maximum - root.minimum))) : 0.0;
+    property <float> pointer-ratio: max(0.0, min(1.0, (slider-area.mouse-x - Theme.space-2) / (slider-area.width - Theme.space-4)));
+    property <float> pointer-value: root.step > 0 ? root.minimum + round((root.pointer-ratio * (root.maximum - root.minimum)) / root.step) * root.step : root.minimum + root.pointer-ratio * (root.maximum - root.minimum);
+
+    track := Rectangle {
+        x: Theme.space-2; y: 16px; width: parent.width - Theme.space-4; height: Theme.space-1;
+        border-radius: 2px;
+        background: Theme.faint;
+        Rectangle {
+            x: 0px; y: 0px; width: parent.width * root.value-ratio; height: parent.height;
+            border-radius: parent.border-radius;
+            background: Theme.accent;
+        }
+    }
+    Rectangle {
+        x: track.x + track.width * root.value-ratio - Theme.space-2; y: Theme.space-2;
+        width: Theme.space-4; height: Theme.space-4; border-radius: Theme.space-2;
+        border-width: 2px; border-color: Theme.surface;
+        background: Theme.accent;
+    }
+    Text {
+        x: track.x; y: 34px; width: track.width / 2; height: 14px;
+        text: root.minimum-label; color: Theme.muted; font-size: 9px;
+        horizontal-alignment: left; vertical-alignment: center;
+    }
+    Text {
+        x: track.x + track.width / 2; y: 34px; width: track.width / 2; height: 14px;
+        text: root.maximum-label; color: Theme.muted; font-size: 9px;
+        horizontal-alignment: right; vertical-alignment: center;
+    }
+    slider-area := TouchArea {
+        x: 0px; y: 0px; width: parent.width; height: 34px;
+        enabled: root.enabled;
+        accessible-role: slider;
+        accessible-label: root.accessible-name;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.changed(max(root.minimum, min(root.maximum, root.pointer-value))); }
+        moved => { if (slider-area.pressed) { root.changed(max(root.minimum, min(root.maximum, root.pointer-value))); } }
     }
 }
 
@@ -267,11 +325,10 @@ component DeviceSelectorPanel inherits Card {
 
     Text { x: 12px; y: 8px; text: "devices"; color: Theme.text; font-size: 12px; font-weight: 700; }
     if root.device-count == 0 : Text { x: 12px; y: 28px; width: parent.width - 24px; text: "No compatible devices found"; color: Theme.warning; font-size: 10px; }
-    if root.device-count == 1 : Text { x: 12px; y: 28px; width: parent.width - 24px; text: "One device found — transport detail below"; color: Theme.muted; font-size: 9px; }
     if root.device-count > 1 : Text { x: 12px; y: 28px; width: parent.width - 24px; text: "Choose a device; wired, receiver, and BLE details stay visible"; color: Theme.muted; font-size: 9px; }
 
     ScrollView {
-        x: 8px; y: 44px; width: parent.width - 16px; height: parent.height - 50px;
+        x: Theme.space-2; y: root.device-count == 1 ? 28px : 44px; width: parent.width - Theme.space-4; height: parent.height - (root.device-count == 1 ? 34px : 50px);
         VerticalLayout {
             width: parent.width;
             spacing: 3px;
@@ -363,9 +420,8 @@ component ProfilePanel inherits Card {
     height: 214px;
 
     Text { x: 12px; y: 9px; text: "profiles"; color: Theme.text; font-size: 12px; font-weight: 700; }
-    Text { x: 12px; y: 28px; width: parent.width - 24px; text: "Choose, rename, or add a profile."; color: Theme.muted; font-size: 9px; }
     ScrollView {
-        x: 8px; y: 48px; width: parent.width - 16px; height: parent.height - 84px;
+        x: Theme.space-2; y: 28px; width: parent.width - Theme.space-4; height: parent.height - 64px;
         VerticalLayout {
             width: parent.width;
             spacing: Theme.space-1;
@@ -387,6 +443,110 @@ component ProfilePanel inherits Card {
     }
 }
 
+component BindingActionDropdown inherits Rectangle {
+    in property <string> current-value;
+    in property <[string]> actions;
+    in property <bool> interactive: true;
+    in property <bool> popup-above: false;
+    callback selected(string);
+    height: 38px;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: action-area.has-hover ? Theme.accent : Theme.border;
+    background: action-area.has-hover ? Theme.surface-raised : Theme.surface;
+    opacity: root.interactive ? 1.0 : 0.48;
+    accessible-role: combobox;
+    accessible-label: "button action, " + root.current-value;
+    accessible-action-default => { if (root.interactive) { action-popup.show(); } }
+
+    Text {
+        x: Theme.space-3; y: 0px; width: parent.width - 34px; height: parent.height;
+        text: root.current-value; color: Theme.text; font-size: 11px; font-weight: 600;
+        vertical-alignment: center; overflow: elide;
+    }
+    Text {
+        x: parent.width - 26px; y: 0px; width: 16px; height: parent.height;
+        text: "⌄"; color: Theme.muted; font-size: 14px;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    action-area := TouchArea {
+        enabled: root.interactive;
+        mouse-cursor: root.interactive ? pointer : default;
+        clicked => { action-popup.show(); }
+    }
+    action-popup := PopupWindow {
+        x: 0px; y: root.popup-above ? -self.height - Theme.space-1 : root.height + Theme.space-1;
+        width: root.width; height: 264px;
+        Rectangle {
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: Theme.radius;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: Theme.shadow;
+            ScrollView {
+                x: Theme.space-1; y: Theme.space-1;
+                width: parent.width - 2 * Theme.space-1;
+                height: parent.height - 2 * Theme.space-1;
+                VerticalLayout {
+                    width: parent.width;
+                    spacing: 0px;
+                    for action[index] in root.actions : Rectangle {
+                        height: 32px;
+                        border-radius: Theme.radius;
+                        background: action == root.current-value ? Theme.accent-soft : option-area.has-hover ? Theme.surface-raised : Theme.surface;
+                        Text {
+                            x: Theme.space-2; y: 0px; width: parent.width - 2 * Theme.space-2; height: parent.height;
+                            text: action; color: Theme.text; font-size: 11px;
+                            font-weight: action == root.current-value ? 700 : 500;
+                            vertical-alignment: center; overflow: elide;
+                        }
+                        option-area := TouchArea {
+                            accessible-role: button;
+                            accessible-label: "assign " + action;
+                            accessible-action-default => { root.selected(action); action-popup.close(); }
+                            mouse-cursor: pointer;
+                            clicked => { root.selected(action); action-popup.close(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component MouseConnector inherits Rectangle {
+    in property <length> from-x;
+    in property <length> from-y;
+    in property <length> to-x;
+    in property <length> to-y;
+    x: root.from-x;
+    y: min(root.from-y, root.to-y);
+    width: root.to-x - root.from-x;
+    height: max(root.from-y, root.to-y) - root.y + 1px;
+    background: transparent;
+    Rectangle {
+        x: 0px; y: root.from-y - root.y;
+        width: parent.width - Theme.space-4; height: 1px;
+        background: Theme.border;
+    }
+    Rectangle {
+        x: parent.width - Theme.space-4; y: min(root.from-y, root.to-y) - root.y;
+        width: 1px; height: max(1px, max(root.from-y, root.to-y) - min(root.from-y, root.to-y));
+        background: Theme.border;
+    }
+    Rectangle {
+        x: parent.width - Theme.space-4; y: root.to-y - root.y;
+        width: Theme.space-4; height: 1px;
+        background: Theme.border;
+    }
+    Rectangle {
+        x: -4px; y: root.from-y - root.y - 4px;
+        width: 8px; height: 8px; border-radius: 4px;
+        background: Theme.accent;
+    }
+}
+
 component BindingCard inherits Rectangle {
     in property <BindingRow> item;
     in property <int> item-index;
@@ -399,11 +559,12 @@ component BindingCard inherits Rectangle {
     Text { x: 0px; y: 24px; width: 116px; text: root.item.location; color: Theme.muted; font-size: 9px; overflow: elide; }
     accessible-role: groupbox;
     accessible-label: root.item.button + " assignment";
-    ComboBox {
-        x: 124px; y: 7px; width: parent.width - 124px; height: 38px;
-        model: root.actions;
+    BindingActionDropdown {
+        x: 124px; y: 7px; width: parent.width - 124px;
+        actions: root.actions;
         current-value: root.item.action;
-        enabled: root.interactive && root.item.editable;
+        popup-above: root.item-index >= 4;
+        interactive: root.interactive && root.item.editable;
         selected(value) => { root.action-selected(root.item-index, value); }
     }
 }
@@ -418,38 +579,39 @@ component DpiStageRow inherits Rectangle {
     callback clicked(int);
     callback dragged(int, float);
     callback remove(int);
-    height: 58px;
+    height: 64px;
     border-radius: Theme.radius;
     border-width: stage.active ? 2px : 1px;
     border-color: stage.active ? stage.accent : Theme.border;
     background: stage.active ? Theme.accent-soft : root.interactive && row-area.has-hover ? Theme.surface-raised : Theme.surface;
     property <float> pointer-ratio: max(0.0, min(1.0, (track-area.mouse-x - 6px) / (track-area.width - 12px)));
 
-    Rectangle { x: 12px; y: 10px; width: 6px; height: 28px; border-radius: 3px; background: stage.accent; }
-    Text { x: 30px; y: 8px; width: 28px; text: stage.index; color: Theme.muted; font-size: 10px; font-weight: 700; }
-    Text { x: 62px; y: 5px; width: 106px; text: stage.value + " dpi"; color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
-    Text { x: 62px; y: 27px; width: 106px; text: stage.active ? "active stage" : stage.label; color: stage.active ? Theme.accent : Theme.muted; font-size: 9px; overflow: elide; }
-    Rectangle { x: 184px; y: 21px; width: parent.width - 300px; height: 2px; background: Theme.border; }
-    Rectangle { x: 184px + (parent.width - 300px) * stage.ratio - 5px; y: 17px; width: 10px; height: 10px; border-radius: 5px; background: stage.active ? stage.accent : Theme.muted; }
-    Text { x: 184px; y: 34px; width: 70px; text: root.range-min; color: Theme.muted; font-size: 8px; }
-    Text { x: parent.width - 186px; y: 34px; width: 70px; text: root.range-max; color: Theme.muted; font-size: 8px; horizontal-alignment: right; }
+    Rectangle { x: 10px; y: 10px; width: 5px; height: 22px; border-radius: 3px; background: stage.accent; }
+    Text { x: 23px; y: 8px; width: 24px; text: stage.index; color: Theme.muted; font-size: 9px; font-weight: 700; }
+    Text { x: 50px; y: 5px; width: 92px; text: stage.value + " dpi"; color: Theme.text; font-size: 13px; font-weight: 700; overflow: elide; }
+    Text { x: 146px; y: 8px; width: parent.width - 246px; text: stage.active ? "active" : stage.label; color: stage.active ? Theme.accent : Theme.muted; font-size: 9px; overflow: elide; }
+    Rectangle { x: 50px; y: 39px; width: parent.width - 64px; height: 2px; background: Theme.border; }
+    Rectangle { x: 50px + (parent.width - 64px) * stage.ratio - 5px; y: 35px; width: 10px; height: 10px; border-radius: 5px; background: stage.active ? stage.accent : Theme.muted; }
+    Text { x: 50px; y: 46px; width: 72px; text: root.range-min; color: Theme.muted; font-size: 8px; }
+    Text { x: parent.width - 86px; y: 46px; width: 72px; text: root.range-max; color: Theme.muted; font-size: 8px; horizontal-alignment: right; }
     track-area := TouchArea {
-        x: 176px; y: 6px; width: parent.width - 292px; height: 32px;
+        x: 42px; y: 29px; width: parent.width - 48px; height: 28px;
         enabled: root.interactive;
         accessible-role: button;
         accessible-label: "adjust DPI stage " + root.stage.index;
+        accessible-action-default => { root.dragged(root.item-index, root.pointer-ratio); }
         mouse-cursor: root.interactive ? pointer : default;
         clicked => { root.dragged(root.item-index, root.pointer-ratio); }
         moved => { if (track-area.pressed) { root.dragged(root.item-index, root.pointer-ratio); } }
     }
     if root.can-remove : ActionButton {
-        x: parent.width - 104px; y: 13px; width: 92px; height: 32px;
+        x: parent.width - 94px; y: 5px; width: 82px; height: 28px;
         label: "remove"; compact: true; enabled: root.interactive;
         clicked => { root.remove(root.item-index); }
     }
-    if !root.can-remove : Text { x: parent.width - 104px; y: 23px; width: 92px; text: "keep one stage"; color: Theme.muted; font-size: 8px; horizontal-alignment: center; }
+    if !root.can-remove : Text { x: parent.width - 94px; y: 13px; width: 82px; text: "one required"; color: Theme.muted; font-size: 8px; horizontal-alignment: center; }
     row-area := TouchArea {
-        x: 0px; y: 0px; width: 170px; height: parent.height; enabled: root.interactive;
+        x: 0px; y: 0px; width: parent.width - 98px; height: 29px; enabled: root.interactive;
         accessible-role: button;
         accessible-label: "select DPI stage " + root.stage.index;
         accessible-action-default => { root.clicked(root.item-index); }
@@ -459,7 +621,6 @@ component DpiStageRow inherits Rectangle {
 }
 
 component OverviewPage inherits Rectangle {
-    in property <string> transport-label;
     in property <string> battery-text;
     in property <string> device-name;
     in property <string> profile-summary;
@@ -482,10 +643,13 @@ component OverviewPage inherits Rectangle {
         Text { x: 20px; y: 18px; text: root.device-name; color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
         Text { x: 20px; y: 50px; width: 340px; text: root.hardware-ready ? "ready to customize" : "connect your mouse"; color: Theme.text; font-size: 27px; font-weight: 700; }
         Text { x: 20px; y: 112px; width: 380px; text: root.profile-summary; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
-        StatusPill { x: 20px; y: 144px; label: root.transport-label; dot-color: root.hardware-ready ? Theme.success : Theme.warning; compact: true; }
-        Text { x: parent.width - 206px; y: 20px; width: 180px; text: "battery"; color: Theme.muted; font-size: 10px; horizontal-alignment: right; }
-        Text { x: parent.width - 206px; y: 46px; width: 180px; text: root.battery-text == "unavailable (wired USB)" ? "wired" : root.battery-text; color: Theme.text; font-size: 25px; font-weight: 700; horizontal-alignment: right; overflow: elide; }
-        Text { x: parent.width - 206px; y: 86px; width: 180px; text: root.verification-text; color: Theme.muted; font-size: 9px; horizontal-alignment: right; wrap: word-wrap; }
+        if !root.battery-text.is-empty : Text { x: parent.width - 206px; y: 20px; width: 180px; text: "battery"; color: Theme.muted; font-size: 10px; horizontal-alignment: right; }
+        if !root.battery-text.is-empty : Text { x: parent.width - 206px; y: 46px; width: 180px; text: root.battery-text; color: Theme.text; font-size: 25px; font-weight: 700; horizontal-alignment: right; overflow: elide; }
+        Text { x: parent.width - 206px; y: 86px; width: 180px; text: root.verification-text; color: Theme.muted; font-size: 9px; horizontal-alignment: right; wrap: word-wrap;
+            Tooltip {
+                text: @markdown("What this means: applied — sent to the mouse; confirmed — the mouse reported it back; survives power-off — proven to stay after a full power cycle. Run a check in Advanced to raise the confidence.");
+            }
+        }
     }
     HorizontalLayout {
         x: 24px; y: 290px; width: parent.width - 48px; height: 104px; spacing: Theme.space-2;
@@ -496,7 +660,7 @@ component OverviewPage inherits Rectangle {
     if root.hardware-ready && !root.ble-device && !root.all-profiles-observed && !root.all-profiles-refresh-dismissed : Card {
         x: 24px; y: 408px; width: parent.width - 48px; height: 142px;
         Text { x: 18px; y: 14px; text: "read all profile slots"; color: Theme.text; font-size: 15px; font-weight: 700; }
-        Text { x: 18px; y: 40px; width: parent.width - 36px; height: 46px; text: "The app has not yet observed every profile. Temporarily read all five slots, then restore the current profile and enabled count."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+        Text { x: 18px; y: 40px; width: parent.width - 36px; height: 46px; text: "The app hasn't read every profile yet. This reads all five slots, then restores your current profile and enabled count."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
         ActionButton { x: 18px; y: 98px; width: 138px; label: "read all profiles"; primary: true; compact: true; clicked => { root.request-refresh-all-profiles(); } }
         ActionButton { x: 164px; y: 98px; width: 84px; label: "not now"; compact: true; clicked => { root.dismiss-all-profiles-refresh(); } }
     }
@@ -510,23 +674,50 @@ component ButtonsPage inherits Rectangle {
     background: transparent;
 
     SectionTitle { x: 24px; y: 20px; title: "buttons"; subtitle: "Choose what each physical button does."; }
-    Card {
+    assignments-card := Card {
         x: 24px; y: 88px; width: parent.width - 48px; height: parent.height - 106px;
+        property <length> mouse-box-height: self.height - 76px;
+        property <length> mouse-render-height: min(self.mouse-box-height, 280px * 1104.0 / 606.0);
+        property <length> mouse-render-width: self.mouse-render-height * 606.0 / 1104.0;
+        property <length> mouse-left: 34px + (280px - self.mouse-render-width) / 2;
+        property <length> mouse-top: 52px + (self.mouse-box-height - self.mouse-render-height) / 2;
         Text { x: 18px; y: 14px; text: root.interactive ? "Button assignments" : "Connect your mouse to change button assignments."; color: root.interactive ? Theme.muted : Theme.warning; font-size: 10px; }
-        Image { x: 34px; y: 52px; width: 280px; height: parent.height - 76px; source: @image-url("../assets/mouse-top.png"); image-fit: contain; }
+        Image {
+            x: assignments-card.mouse-left; y: assignments-card.mouse-top;
+            width: assignments-card.mouse-render-width; height: assignments-card.mouse-render-height;
+            source: @image-url("../assets/mouse-top.png"); image-fit: contain;
+        }
 
-        Rectangle { x: 160px; y: 78px; width: 206px; height: 1px; background: Theme.border; }
-        Rectangle { x: 220px; y: 132px; width: 146px; height: 1px; background: Theme.border; }
-        Rectangle { x: 136px; y: 186px; width: 230px; height: 1px; background: Theme.border; }
-        Rectangle { x: 236px; y: 240px; width: 130px; height: 1px; background: Theme.border; }
-        Rectangle { x: 112px; y: 294px; width: 254px; height: 1px; background: Theme.border; }
-        Rectangle { x: 184px; y: 348px; width: 182px; height: 1px; background: Theme.border; }
-        Rectangle { x: 156px; y: 74px; width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; }
-        Rectangle { x: 216px; y: 128px; width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; }
-        Rectangle { x: 132px; y: 182px; width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; }
-        Rectangle { x: 232px; y: 236px; width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; }
-        Rectangle { x: 108px; y: 290px; width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; }
-        Rectangle { x: 180px; y: 344px; width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; }
+        left-click-connector := MouseConnector {
+            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.36;
+            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.15;
+            to-x: 366px; to-y: 77px;
+        }
+        right-click-connector := MouseConnector {
+            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.68;
+            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.15;
+            to-x: 366px; to-y: 131px;
+        }
+        wheel-connector := MouseConnector {
+            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.51;
+            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.19;
+            to-x: 366px; to-y: 185px;
+        }
+        dpi-connector := MouseConnector {
+            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.515;
+            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.36;
+            to-x: 366px; to-y: 239px;
+        }
+        forward-side-connector := MouseConnector {
+            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.085;
+            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.35;
+            to-x: 366px; to-y: 293px;
+        }
+        back-side-connector := MouseConnector {
+            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.085;
+            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.51;
+            to-x: 366px; to-y: 347px;
+        }
 
         VerticalLayout {
             x: 374px; y: 50px; width: parent.width - 392px; height: 330px; spacing: 0px;
@@ -540,11 +731,8 @@ component ButtonsPage inherits Rectangle {
 
 component SensitivityPage inherits Rectangle {
     in property <[DpiStage]> dpi-stages;
-    in property <bool> logarithmic-scale;
     in property <float> dpi-min;
     in property <float> dpi-max;
-    in-out property <string> dpi-min-text;
-    in-out property <string> dpi-max-text;
     in property <bool> interactive: false;
     in-out property <bool> motion-sync-readback: false;
     in-out property <bool> ripple-control-readback: false;
@@ -554,13 +742,13 @@ component SensitivityPage inherits Rectangle {
     callback drag-dpi(int, float);
     callback add-dpi-stage;
     callback remove-dpi-stage(int);
-    callback toggle-dpi-scale;
-    callback apply-dpi-range(string, string);
+    callback open-settings;
     callback toggle-motion-sync(bool);
     callback toggle-ripple-control(bool);
     callback toggle-angle-snap(bool);
     callback set-lift-off(int);
     background: transparent;
+    property <length> columns-height: max(462px, 78px + root.dpi-stages.length * 68px);
 
     SectionTitle { x: 24px; y: 20px; title: "sensitivity"; subtitle: "Fine-tune pointer speed and sensor behavior."; }
     ScrollView {
@@ -568,47 +756,49 @@ component SensitivityPage inherits Rectangle {
         VerticalLayout {
             width: parent.width;
             spacing: Theme.space-3;
-            Card {
-                width: parent.width; height: 112px;
-                Text { x: 18px; y: 14px; text: "DPI scale and range"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                ActionButton { x: 18px; y: 52px; width: 142px; label: root.logarithmic-scale ? "logarithmic scale" : "linear scale"; compact: true; enabled: root.interactive; clicked => { root.toggle-dpi-scale(); } }
-                Text { x: 184px; y: 39px; text: "minimum"; color: Theme.muted; font-size: 9px; }
-                InputField { x: 184px; y: 55px; width: 94px; text <=> root.dpi-min-text; interactive: root.interactive; accepted(value) => { root.apply-dpi-range(value, root.dpi-max-text); } }
-                Text { x: 290px; y: 39px; text: "maximum"; color: Theme.muted; font-size: 9px; }
-                InputField { x: 290px; y: 55px; width: 94px; text <=> root.dpi-max-text; interactive: root.interactive; accepted(value) => { root.apply-dpi-range(root.dpi-min-text, value); } }
-                ActionButton { x: 398px; y: 55px; width: 116px; label: "apply range"; primary: true; compact: true; enabled: root.interactive; clicked => { root.apply-dpi-range(root.dpi-min-text, root.dpi-max-text); } }
-                Text { x: 534px; y: 56px; width: parent.width - 552px; height: 34px; text: "Current: \{round(root.dpi-min)}–\{round(root.dpi-max)} DPI"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
-            }
-            Card {
-                width: parent.width; height: 82px + root.dpi-stages.length * 62px;
-                Text { x: 18px; y: 14px; text: "DPI stages"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 38px; width: parent.width - 170px; text: "Drag a stage to adjust it, or add up to eight stages."; color: Theme.muted; font-size: 10px; }
-                ActionButton { x: parent.width - 134px; y: 12px; width: 116px; label: "add stage"; compact: true; enabled: root.interactive && root.dpi-stages.length < 8; clicked => { root.add-dpi-stage(); } }
-                VerticalLayout {
-                    x: 12px; y: 68px; width: parent.width - 24px; height: parent.height - 78px; spacing: Theme.space-1;
-                    for stage[index] in root.dpi-stages : DpiStageRow {
-                        stage: stage; item-index: index; interactive: root.interactive; can-remove: root.dpi-stages.length > 1; range-min: root.dpi-min-text; range-max: root.dpi-max-text;
-                        clicked(item-index) => { root.select-dpi(item-index); }
-                        dragged(item-index, ratio) => { root.drag-dpi(item-index, ratio); }
-                        remove(item-index) => { root.remove-dpi-stage(item-index); }
+            HorizontalLayout {
+                width: parent.width; height: root.columns-height; spacing: Theme.space-3;
+                Card {
+                    min-width: 430px; height: root.columns-height;
+                    Text { x: 16px; y: 14px; text: "DPI stages"; color: Theme.text; font-size: 14px; font-weight: 700; }
+                    Text { x: 16px; y: 36px; width: parent.width - 146px; text: "Select or drag a stage."; color: Theme.muted; font-size: 9px; }
+                    ActionButton { x: parent.width - 122px; y: 10px; width: 106px; label: "add stage"; compact: true; enabled: root.interactive && root.dpi-stages.length < 8; clicked => { root.add-dpi-stage(); } }
+                    VerticalLayout {
+                        x: 10px; y: 66px; width: parent.width - 20px; height: parent.height - 76px; spacing: Theme.space-1;
+                        for stage[index] in root.dpi-stages : DpiStageRow {
+                            stage: stage; item-index: index; interactive: root.interactive; can-remove: root.dpi-stages.length > 1;
+                            range-min: "\{round(root.dpi-min)}"; range-max: "\{round(root.dpi-max)}";
+                            clicked(item-index) => { root.select-dpi(item-index); }
+                            dragged(item-index, ratio) => { root.drag-dpi(item-index, ratio); }
+                            remove(item-index) => { root.remove-dpi-stage(item-index); }
+                        }
                     }
                 }
-            }
-            Card {
-                width: parent.width; height: 438px;
-                Text { x: 18px; y: 16px; text: "sensor behavior"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 41px; width: parent.width - 36px; text: root.interactive ? "Adjust how the sensor responds to movement." : "Connect your mouse to edit these controls."; color: Theme.muted; font-size: 10px; }
-                ToggleRow { x: 18px; y: 68px; width: parent.width - 36px; label: "motion sync"; detail: "Keep reports aligned with the sensor's capture timing."; checked <=> root.motion-sync-readback; interactive: root.interactive; toggled(value) => { root.toggle-motion-sync(value); } }
-                Rectangle { x: 18px; y: 136px; width: parent.width - 36px; height: 1px; background: Theme.border; }
-                ToggleRow { x: 18px; y: 144px; width: parent.width - 36px; label: "ripple control"; detail: "Smooth tiny movements at high DPI."; checked <=> root.ripple-control-readback; interactive: root.interactive; toggled(value) => { root.toggle-ripple-control(value); } }
-                Rectangle { x: 18px; y: 212px; width: parent.width - 36px; height: 1px; background: Theme.border; }
-                ToggleRow { x: 18px; y: 220px; width: parent.width - 36px; label: "angle snapping"; detail: "Straighten near-horizontal and near-vertical movement."; checked <=> root.angle-snap; interactive: root.interactive; toggled(value) => { root.toggle-angle-snap(value); } }
-                Rectangle { x: 18px; y: 288px; width: parent.width - 36px; height: 1px; background: Theme.border; }
-                Text { x: 18px; y: 312px; text: "lift-off distance"; color: Theme.text; font-size: 13px; font-weight: 650; }
-                Text { x: 18px; y: 337px; width: parent.width - 36px; text: "Choose how high the mouse can be lifted before tracking stops."; color: Theme.muted; font-size: 10px; }
-                HorizontalLayout { x: 18px; y: 370px; width: 300px; height: 42px; spacing: Theme.space-2;
-                    ChoiceButton { label: "1 mm"; selected: root.lift-off-choice == 0; enabled: root.interactive; clicked => { root.lift-off-choice = 0; root.set-lift-off(0); } }
-                    ChoiceButton { label: "2 mm"; selected: root.lift-off-choice == 1; enabled: root.interactive; clicked => { root.lift-off-choice = 1; root.set-lift-off(1); } }
+                VerticalLayout {
+                    min-width: 318px; max-width: 318px; height: 462px; spacing: Theme.space-3;
+                    Card {
+                        height: 64px;
+                        Text { x: 16px; y: 10px; text: "DPI display range"; color: Theme.text; font-size: 12px; font-weight: 700; }
+                        Text { x: 16px; y: 32px; width: parent.width - 174px; text: "Configured in App Settings."; color: Theme.muted; font-size: 9px; overflow: elide; }
+                        ActionButton { x: parent.width - 142px; y: 15px; width: 126px; label: "app settings"; primary: true; compact: true; clicked => { root.open-settings(); } }
+                    }
+                    Card {
+                        height: 386px;
+                        Text { x: 16px; y: 14px; text: "sensor behavior"; color: Theme.text; font-size: 14px; font-weight: 700; }
+                        Text { x: 16px; y: 36px; width: parent.width - 32px; text: root.interactive ? "Tune how movement is reported." : "Connect your mouse to edit."; color: root.interactive ? Theme.muted : Theme.warning; font-size: 9px; overflow: elide; }
+                        ToggleRow { x: 16px; y: 56px; width: parent.width - 32px; label: "motion sync"; detail: "Align reports with sensor capture timing."; checked <=> root.motion-sync-readback; interactive: root.interactive; toggled(value) => { root.toggle-motion-sync(value); } }
+                        Rectangle { x: 16px; y: 120px; width: parent.width - 32px; height: 1px; background: Theme.border; }
+                        ToggleRow { x: 16px; y: 124px; width: parent.width - 32px; label: "ripple control"; detail: "Smooth tiny movements at high DPI."; checked <=> root.ripple-control-readback; interactive: root.interactive; toggled(value) => { root.toggle-ripple-control(value); } }
+                        Rectangle { x: 16px; y: 188px; width: parent.width - 32px; height: 1px; background: Theme.border; }
+                        ToggleRow { x: 16px; y: 192px; width: parent.width - 32px; label: "angle snapping"; detail: "Straighten near-axis movement."; checked <=> root.angle-snap; interactive: root.interactive; toggled(value) => { root.toggle-angle-snap(value); } }
+                        Rectangle { x: 16px; y: 256px; width: parent.width - 32px; height: 1px; background: Theme.border; }
+                        Text { x: 16px; y: 270px; text: "lift-off distance"; color: Theme.text; font-size: 12px; font-weight: 650; }
+                        Text { x: 16px; y: 294px; width: parent.width - 32px; text: "Stop tracking sooner or later when lifted."; color: Theme.muted; font-size: 9px; overflow: elide; }
+                        HorizontalLayout { x: 16px; y: 326px; width: parent.width - 32px; height: 34px; spacing: Theme.space-2;
+                            ChoiceButton { label: "1 mm"; compact: true; selected: root.lift-off-choice == 0; enabled: root.interactive; clicked => { root.lift-off-choice = 0; root.set-lift-off(0); } }
+                            ChoiceButton { label: "2 mm"; compact: true; selected: root.lift-off-choice == 1; enabled: root.interactive; clicked => { root.lift-off-choice = 1; root.set-lift-off(1); } }
+                        }
+                    }
                 }
             }
         }
@@ -650,32 +840,48 @@ component PerformancePage inherits Rectangle {
                 }
             }
             Card {
-                width: parent.width; height: 148px;
+                width: parent.width; height: 140px;
                 Text { x: 18px; y: 16px; text: "click debounce"; color: Theme.text; font-size: 14px; font-weight: 700; }
                 Text { x: 18px; y: 40px; text: "Lower values respond faster; higher values filter switch bounce."; color: Theme.muted; font-size: 10px; }
-                Slider { x: 18px; y: 72px; width: parent.width - 178px; minimum: 4; maximum: 50; step: 2; value: root.debounce-ms; enabled: root.interactive; changed(value) => { root.set-debounce-ms(round(value / 2) * 2); } }
+                ThemedSlider {
+                    x: 18px; y: 64px; width: parent.width - 178px;
+                    minimum: 4; maximum: 50; step: 2; value: root.debounce-ms; enabled: root.interactive;
+                    accessible-name: "click debounce"; minimum-label: "4 ms"; maximum-label: "50 ms";
+                    changed(value) => { root.set-debounce-ms(round(value / 2) * 2); }
+                }
                 InputField { x: parent.width - 144px; y: 68px; width: 82px; text: "\{root.debounce-ms}"; interactive: root.interactive; accepted(value) => { root.set-debounce-text(value); } }
-                Text { x: parent.width - 54px; y: 68px; height: 34px; text: "ms"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
-                Text { x: 18px; y: 112px; width: parent.width - 36px; text: "4 ms                                      50 ms"; color: Theme.muted; font-size: 9px; }
+                Text { x: parent.width - 54px; y: 68px; height: Theme.control-height; text: "ms"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
             }
-            Card {
-                width: parent.width; height: 148px;
-                Text { x: 18px; y: 16px; text: "sleep timer"; color: Theme.text; font-size: 14px; font-weight: 700; }
-                Text { x: 18px; y: 40px; text: "How long the mouse waits before entering its first power-saving state."; color: Theme.muted; font-size: 10px; }
-                Slider { x: 18px; y: 72px; width: parent.width - 178px; minimum: 1; maximum: 60; step: 1; value: root.sleep-half-minutes; enabled: root.interactive; changed(value) => { root.set-sleep-half-minutes(round(value)); } }
-                InputField { x: parent.width - 144px; y: 68px; width: 82px; text: "\{root.sleep-half-minutes * 0.5}"; interactive: root.interactive; accepted(value) => { root.set-sleep-text(value); } }
-                Text { x: parent.width - 54px; y: 68px; height: 34px; text: "min"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
-                Text { x: 18px; y: 112px; width: parent.width - 36px; text: "0.5 min                                    30 min"; color: Theme.muted; font-size: 9px; }
-            }
-            Card {
-                width: parent.width; height: 164px;
-                Text { x: 18px; y: 16px; text: "deep sleep"; color: Theme.text; font-size: 14px; font-weight: 700; }
-                Text { x: 18px; y: 40px; width: parent.width - 36px; text: "Choose any whole-minute value from 1 to 60 minutes."; color: Theme.muted; font-size: 10px; }
-                Slider { x: 18px; y: 76px; width: parent.width - 178px; minimum: 1; maximum: 60; step: 1; value: root.deep-sleep-minutes; enabled: root.interactive && root.deep-sleep-known; changed(value) => { root.set-deep-sleep-minutes(round(value)); } }
-                InputField { x: parent.width - 144px; y: 72px; width: 82px; text: "\{root.deep-sleep-minutes}"; interactive: root.interactive && root.deep-sleep-known; accepted(value) => { root.set-deep-sleep-text(value); } }
-                Text { x: parent.width - 54px; y: 72px; height: 34px; text: "min"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
-                Text { x: 18px; y: 116px; width: parent.width - 36px; text: "1 min                                      60 min"; color: Theme.muted; font-size: 9px; }
-                if !root.deep-sleep-known : Text { x: 18px; y: 140px; width: parent.width - 36px; text: "Reconnect the mouse to load this setting."; color: Theme.warning; font-size: 9px; }
+            power-card := Card {
+                width: parent.width; height: 174px;
+                Rectangle {
+                    x: 18px; y: 0px; width: (power-card.width - 54px) / 2; height: parent.height; background: transparent;
+                    Text { y: 16px; text: "sleep timer"; color: Theme.text; font-size: 14px; font-weight: 700; }
+                    Text { y: 40px; width: parent.width; text: "First power-saving delay."; color: Theme.muted; font-size: 10px; }
+                    ThemedSlider {
+                        x: 0px; y: 64px; width: parent.width - 100px;
+                        minimum: 1; maximum: 60; step: 1; value: root.sleep-half-minutes; enabled: root.interactive;
+                        accessible-name: "sleep timer"; minimum-label: "0.5 min"; maximum-label: "30 min";
+                        changed(value) => { root.set-sleep-half-minutes(round(value)); }
+                    }
+                    InputField { x: parent.width - 90px; y: 68px; width: 56px; text: "\{root.sleep-half-minutes * 0.5}"; interactive: root.interactive; accepted(value) => { root.set-sleep-text(value); } }
+                    Text { x: parent.width - 28px; y: 68px; height: Theme.control-height; text: "min"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
+                }
+                Rectangle { x: parent.width / 2; y: Theme.space-4; width: 1px; height: parent.height - Theme.space-5 - Theme.space-3; background: Theme.border; }
+                Rectangle {
+                    x: parent.width / 2 + 18px; y: 0px; width: (power-card.width - 54px) / 2; height: parent.height; background: transparent;
+                    Text { y: 16px; text: "deep sleep"; color: Theme.text; font-size: 14px; font-weight: 700; }
+                    Text { y: 40px; width: parent.width; text: "Whole-minute power-off delay."; color: Theme.muted; font-size: 10px; }
+                    ThemedSlider {
+                        x: 0px; y: 64px; width: parent.width - 100px;
+                        minimum: 1; maximum: 60; step: 1; value: root.deep-sleep-minutes; enabled: root.interactive && root.deep-sleep-known;
+                        accessible-name: "deep sleep timer"; minimum-label: "1 min"; maximum-label: "60 min";
+                        changed(value) => { root.set-deep-sleep-minutes(round(value)); }
+                    }
+                    InputField { x: parent.width - 90px; y: 68px; width: 56px; text: "\{root.deep-sleep-minutes}"; interactive: root.interactive && root.deep-sleep-known; accepted(value) => { root.set-deep-sleep-text(value); } }
+                    Text { x: parent.width - 28px; y: 68px; height: Theme.control-height; text: "min"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
+                    if !root.deep-sleep-known : Text { x: 0px; y: 136px; width: parent.width; text: "Reconnect the mouse to load this setting."; color: Theme.warning; font-size: 9px; }
+                }
             }
         }
     }
@@ -741,13 +947,13 @@ component AdvancedPage inherits Rectangle {
             }
             Card {
                 width: parent.width; height: 170px;
-                Text { x: 18px; y: 15px; text: "save verification"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                Text { x: 18px; y: 15px; text: "save checks"; color: Theme.text; font-size: 15px; font-weight: 700; }
                 Text { x: 18px; y: 40px; width: parent.width - 36px; text: root.ble-device ? "Bluetooth saves can confirm delivery but cannot read settings back." : "Choose how USB saves are checked."; color: root.ble-device ? Theme.warning : Theme.muted; font-size: 10px; wrap: word-wrap; }
                 HorizontalLayout { x: 18px; y: 82px; width: 260px; height: 38px; spacing: 6px;
-                    ChoiceButton { label: "transport"; compact: true; selected: root.validation-choice == 0; enabled: root.interactive; clicked => { root.set-validation-choice(0); } }
-                    ChoiceButton { label: "readback"; compact: true; selected: root.validation-choice == 1; enabled: root.interactive && !root.ble-device; clicked => { root.set-validation-choice(1); } }
+                    ChoiceButton { label: "delivery only"; compact: true; selected: root.validation-choice == 0; enabled: root.interactive; clicked => { root.set-validation-choice(0); } }
+                    ChoiceButton { label: "confirm on mouse"; compact: true; selected: root.validation-choice == 1; enabled: root.interactive && !root.ble-device; clicked => { root.set-validation-choice(1); } }
                 }
-                Text { x: 294px; y: 87px; width: parent.width - 314px; text: root.validation-choice == 1 && !root.ble-device ? "fresh USB readback" : "transport submission"; color: Theme.text; font-size: 11px; font-weight: 650; }
+                Text { x: 294px; y: 87px; width: parent.width - 314px; text: root.validation-choice == 1 && !root.ble-device ? "confirmed by the mouse" : "delivery acknowledged"; color: Theme.text; font-size: 11px; font-weight: 650; }
                 Text { x: 18px; y: 137px; text: root.lifecycle-text; color: Theme.muted; font-size: 9px; overflow: elide; }
             }
             Card {
@@ -755,8 +961,8 @@ component AdvancedPage inherits Rectangle {
                 Text { x: 18px; y: 15px; text: "configuration source"; color: Theme.text; font-size: 15px; font-weight: 700; }
                 Text { x: 18px; y: 40px; width: parent.width - 36px; text: root.baseline-choice == 1 ? "Use the last saved configuration." : "Use settings read from the connected mouse."; color: root.baseline-choice == 1 || root.ble-device ? Theme.warning : Theme.muted; font-size: 10px; wrap: word-wrap; }
                 HorizontalLayout { x: 18px; y: 78px; width: 230px; height: 38px; spacing: 6px;
-                    ChoiceButton { label: "live"; compact: true; selected: root.baseline-choice == 0; enabled: root.interactive && !root.ble-device; clicked => { root.baseline-choice = 0; root.set-baseline-choice(0); } }
-                    ChoiceButton { label: "stored"; compact: true; selected: root.baseline-choice == 1; enabled: root.interactive; clicked => { root.baseline-choice = 1; root.set-baseline-choice(1); } }
+                    ChoiceButton { label: "from mouse"; compact: true; selected: root.baseline-choice == 0; enabled: root.interactive && !root.ble-device; clicked => { root.baseline-choice = 0; root.set-baseline-choice(0); } }
+                    ChoiceButton { label: "saved"; compact: true; selected: root.baseline-choice == 1; enabled: root.interactive; clicked => { root.baseline-choice = 1; root.set-baseline-choice(1); } }
                 }
                 ToggleRow { x: 276px; y: 67px; width: parent.width - 294px; label: "use defaults if needed"; detail: "Use only when no saved or connected configuration is available."; checked <=> root.allow-explicit-defaults; interactive: root.interactive; toggled(value) => { root.set-allow-explicit-defaults(value); } }
             }
@@ -775,9 +981,9 @@ component AdvancedPage inherits Rectangle {
             }
             Card {
                 width: parent.width; height: 184px;
-                Text { x: 18px; y: 15px; text: "profile observations"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 40px; width: parent.width - 36px; height: 58px; text: root.ble-device ? "USB readback is unavailable over BLE." : root.all-profiles-observed ? "All five profile slots have fresh observations." : "Rebuild all five profile observations without replacing desired values."; color: root.ble-device ? Theme.warning : Theme.muted; font-size: 10px; wrap: word-wrap; }
-                ActionButton { x: 18px; y: 116px; width: 194px; label: "rebuild observations"; compact: true; enabled: root.interactive && !root.ble-device; clicked => { root.request-refresh-all-profiles(); } }
+                Text { x: 18px; y: 15px; text: "profile readings"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                Text { x: 18px; y: 40px; width: parent.width - 36px; height: 58px; text: root.ble-device ? "Reading profiles needs USB; unavailable over BLE." : root.all-profiles-observed ? "All five profiles have been read." : "Re-read all five profiles without replacing your saved settings."; color: root.ble-device ? Theme.warning : Theme.muted; font-size: 10px; wrap: word-wrap; }
+                ActionButton { x: 18px; y: 116px; width: 194px; label: "read all profiles"; compact: true; enabled: root.interactive && !root.ble-device; clicked => { root.request-refresh-all-profiles(); } }
             }
             Card {
                 width: parent.width; height: 116px;
@@ -794,7 +1000,7 @@ component AdvancedPage inherits Rectangle {
                 Text { x: 18px; y: 15px; text: "device checks"; color: Theme.text; font-size: 15px; font-weight: 700; }
                 Text { x: 18px; y: 40px; width: parent.width - 36px; text: "Reload the profile to check saved settings. A power-cycle check asks you to disconnect and reconnect the mouse."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
                 Rectangle { x: 18px; y: 84px; width: parent.width - 36px; height: 36px; border-radius: Theme.radius; background: root.verification-running ? Theme.accent-soft : Theme.surface-raised; }
-                Text { x: 30px; y: 84px; width: parent.width - 60px; height: 36px; text: root.verification-running ? root.verification-instruction : "No verification is running. Read the instructions above first."; color: root.verification-running ? Theme.accent : Theme.muted; font-size: 9px; vertical-alignment: center; wrap: word-wrap; }
+                Text { x: 30px; y: 84px; width: parent.width - 60px; height: 36px; text: root.verification-running ? root.verification-instruction : "No check is running. Read the instructions above first."; color: root.verification-running ? Theme.accent : Theme.muted; font-size: 9px; vertical-alignment: center; wrap: word-wrap; }
                 ActionButton { x: 18px; y: 132px; width: 152px; label: "verify profile reload"; compact: true; enabled: root.interactive && !root.verification-running; clicked => { root.request-verify-profile(); } }
                 ActionButton { x: 180px; y: 132px; width: 162px; label: "verify power cycle"; compact: true; enabled: root.interactive && !root.verification-running; clicked => { root.request-verify-power-cycle(); } }
             }
@@ -805,24 +1011,59 @@ component AdvancedPage inherits Rectangle {
 component SettingsPage inherits Rectangle {
     in property <int> product-name-choice;
     in-out property <string> custom-product-name;
+    in property <bool> logarithmic-scale;
+    in property <float> dpi-min;
+    in property <float> dpi-max;
+    in-out property <string> dpi-min-text;
+    in-out property <string> dpi-max-text;
     callback select-product-name(int);
     callback custom-name-changed(string);
+    callback select-appearance(int);
+    callback toggle-dpi-scale;
+    callback apply-dpi-range(string, string);
 
-    Rectangle { x: 0px; y: 0px; width: parent.width; height: 76px; background: Theme.accent-soft; }
-    SectionTitle { x: 24px; y: 18px; title: "app settings"; subtitle: "Personalize this app without changing your mouse."; }
-    Card {
-        x: 24px; y: 100px; width: parent.width - 48px; height: 190px;
-        Text { x: 18px; y: 16px; text: "display name"; color: Theme.text; font-size: 15px; font-weight: 700; }
-        Text { x: 18px; y: 42px; text: "This name appears at the top of the app."; color: Theme.muted; font-size: 10px; }
-        HorizontalLayout { x: 18px; y: 74px; width: parent.width - 36px; height: 34px; spacing: Theme.space-1;
-            ChoiceButton { label: "Attack Shark X3"; compact: true; selected: root.product-name-choice == 0; clicked => { root.select-product-name(0); } }
-            ChoiceButton { label: "Kysona M600"; compact: true; selected: root.product-name-choice == 1; clicked => { root.select-product-name(1); } }
-            ChoiceButton { label: "custom"; compact: true; selected: root.product-name-choice == 2; clicked => { root.select-product-name(2); } }
-        }
-        if root.product-name-choice == 2 : InputField {
-            x: 18px; y: 126px; width: 360px; text <=> root.custom-product-name;
-            placeholder-text: "enter a display name";
-            accepted(value) => { root.custom-name-changed(value); }
+    SectionTitle { x: 24px; y: 18px; title: "app settings"; subtitle: "Personalize the app and its DPI display."; }
+    ScrollView {
+        x: 24px; y: 88px; width: parent.width - 48px; height: parent.height - 106px;
+        VerticalLayout {
+            width: parent.width; spacing: Theme.space-3;
+            Card {
+                width: parent.width; height: 142px;
+                Text { x: 18px; y: 14px; text: "DPI scale and range"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                Text { x: 18px; y: 38px; width: parent.width - 36px; text: "Controls how DPI stages are spaced in the Sensitivity visualization."; color: Theme.muted; font-size: 9px; overflow: elide; }
+                ActionButton { x: 18px; y: 66px; width: 142px; label: root.logarithmic-scale ? "logarithmic scale" : "linear scale"; compact: true; clicked => { root.toggle-dpi-scale(); } }
+                Text { x: 176px; y: 56px; text: "minimum"; color: Theme.muted; font-size: 9px; }
+                InputField { x: 176px; y: 72px; width: 84px; text <=> root.dpi-min-text; accepted(value) => { root.apply-dpi-range(value, root.dpi-max-text); } }
+                Text { x: 272px; y: 56px; text: "maximum"; color: Theme.muted; font-size: 9px; }
+                InputField { x: 272px; y: 72px; width: 84px; text <=> root.dpi-max-text; accepted(value) => { root.apply-dpi-range(root.dpi-min-text, value); } }
+                ActionButton { x: 368px; y: 72px; width: 106px; label: "apply range"; primary: true; compact: true; clicked => { root.apply-dpi-range(root.dpi-min-text, root.dpi-max-text); } }
+                Text { x: 490px; y: 72px; width: parent.width - 508px; height: 34px; text: "Current: \{round(root.dpi-min)}–\{round(root.dpi-max)} DPI"; color: Theme.muted; font-size: 9px; vertical-alignment: center; overflow: elide; }
+            }
+            Card {
+                width: parent.width; height: root.product-name-choice == 2 ? 178px : 120px;
+                Text { x: 18px; y: 16px; text: "display name"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                Text { x: 18px; y: 42px; text: "This name appears at the top of the app."; color: Theme.muted; font-size: 10px; }
+                HorizontalLayout { x: 18px; y: 74px; width: parent.width - 36px; height: 34px; spacing: Theme.space-1;
+                    ChoiceButton { label: "Attack Shark X3"; compact: true; selected: root.product-name-choice == 0; clicked => { root.select-product-name(0); } }
+                    ChoiceButton { label: "Kysona M600"; compact: true; selected: root.product-name-choice == 1; clicked => { root.select-product-name(1); } }
+                    ChoiceButton { label: "custom"; compact: true; selected: root.product-name-choice == 2; clicked => { root.select-product-name(2); } }
+                }
+                if root.product-name-choice == 2 : InputField {
+                    x: 18px; y: 126px; width: 360px; text <=> root.custom-product-name;
+                    placeholder-text: "enter a display name";
+                    accepted(value) => { root.custom-name-changed(value); }
+                }
+            }
+            Card {
+                width: parent.width; height: 112px;
+                Text { x: 18px; y: 16px; text: "appearance"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                Text { x: 18px; y: 42px; text: "Follow system tracks operating system changes automatically."; color: Theme.muted; font-size: 10px; }
+                HorizontalLayout { x: 18px; y: 70px; width: 360px; height: 34px; spacing: Theme.space-1;
+                    ChoiceButton { label: "follow system"; compact: true; selected: Theme.appearance == ColorScheme.unknown; clicked => { root.select-appearance(0); } }
+                    ChoiceButton { label: "light"; compact: true; selected: Theme.appearance == ColorScheme.light; clicked => { root.select-appearance(1); } }
+                    ChoiceButton { label: "dark"; compact: true; selected: Theme.appearance == ColorScheme.dark; clicked => { root.select-appearance(2); } }
+                }
+            }
         }
     }
 }
@@ -845,7 +1086,7 @@ component StateConflictPopup inherits PopupWindow {
         Text { x: 20px; y: 50px; width: parent.width - 40px; height: 90px; text: root.message; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
         ActionButton { x: 20px; y: parent.height - 54px; width: 178px; label: "reset local data"; primary: true; clicked => { root.discard(); } }
         ActionButton { x: parent.width - 110px; y: parent.height - 54px; width: 90px; label: "quit"; compact: true; clicked => { root.close-app(); } }
-        Text { x: 214px; y: parent.height - 46px; width: parent.width - 334px; height: 30px; text: "A backup is kept next to state.json."; color: Theme.muted; font-size: 9px; wrap: word-wrap; }
+        Text { x: 214px; y: parent.height - 46px; width: parent.width - 334px; height: 30px; text: "A backup is kept automatically."; color: Theme.muted; font-size: 9px; wrap: word-wrap; }
     }
 }
 
@@ -916,7 +1157,7 @@ component AllProfilesRefreshPopup inherits PopupWindow {
         Text { x: 20px; y: 16px; width: parent.width - 40px; text: "read all five profile slots?"; color: Theme.text; font-size: 16px; font-weight: 700; }
         Text {
             x: 20px; y: 54px; width: parent.width - 40px; height: 178px;
-            text: "This explicit USB workflow temporarily enables all five profile slots, switches through each profile, and reads DPI, preferences, buttons, and polling rate. It restores the original current profile and enabled count before saving fresh observations.\\n\\nDesired values are preserved; differences are reported rather than written back. This does not verify power-cycle persistence. Keep the mouse connected and do not interrupt the operation.";
+            text: "This reads all five profile slots over USB, switching through each profile to capture DPI, preferences, buttons, and polling rate. It restores your current profile and enabled count when done.\n\nYour saved settings are kept; only new readings are stored, and any differences are reported rather than written back. Keep the mouse connected and don't interrupt this.";
             color: Theme.muted; font-size: 11px; wrap: word-wrap;
         }
         ActionButton { x: 20px; y: parent.height - 58px; width: 194px; label: "read all profiles"; primary: true; clicked => { root.confirm(); } }
@@ -944,16 +1185,16 @@ export component AppWindow inherits Window {
     in-out property <bool> polling-rate-ready: false;
     in-out property <bool> motion-sync-readback: false;
     in-out property <bool> ripple-control-readback: false;
-    in-out property <bool> dpi-log-scale: false;
+    in-out property <bool> dpi-log-scale: true;
     in-out property <int> product-name-choice: 0;
     in-out property <string> product-name: "Attack Shark X3";
     in-out property <string> custom-product-name: "custom mouse";
-    in-out property <float> dpi-min: 50.0;
-    in-out property <float> dpi-max: 26000.0;
-    in-out property <string> dpi-min-text: "50";
-    in-out property <string> dpi-max-text: "26000";
+    in-out property <float> dpi-min: 200.0;
+    in-out property <float> dpi-max: 3200.0;
+    in-out property <string> dpi-min-text: "200";
+    in-out property <string> dpi-max-text: "3200";
     in-out property <string> transport-label: "USB not selected";
-    in-out property <string> battery-text: "unavailable";
+    in-out property <string> battery-text: "";
     in-out property <string> lifecycle-text: "starting";
     in-out property <string> device-name: "No device selected";
     in-out property <string> device-id-text: "not available";
@@ -966,10 +1207,10 @@ export component AppWindow inherits Window {
     in-out property <string> metadata-summary: "not available";
     in-out property <bool> all-profiles-observed: false;
     in-out property <bool> all-profiles-refresh-dismissed: false;
-    in-out property <string> verification-text: "no evidence";
+    in-out property <string> verification-text: "no confirmation yet";
     in-out property <string> status-text: "discovering a compatible device";
     in-out property <string> button-change-summary: "No physical button assignments changed.";
-    in-out property <string> verification-instruction: "Follow the active verification workflow instruction.";
+    in-out property <string> verification-instruction: "Follow the check instructions above.";
 
     in-out property <bool> preferences-ready: false;
     in-out property <int> debounce-ms: 8;
@@ -1016,7 +1257,7 @@ export component AppWindow inherits Window {
     callback custom-name-changed(string);
     callback dpi-range-changed(string, string);
     callback set-binding-action(int, string);
-    callback toggle-theme;
+    callback select-appearance(int);
     callback request-save;
     callback request-reset;
     callback request-refresh;
@@ -1049,19 +1290,19 @@ export component AppWindow inherits Window {
     Rectangle {
         x: 0px; y: 0px; width: parent.width; height: 62px; background: Theme.surface;
         Rectangle { x: 0px; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.border; }
-        Text { x: 18px; y: 8px; width: 240px; height: 25px; text: root.product-name; color: Theme.text; font-size: 17px; font-weight: 700; vertical-alignment: center; overflow: elide; }
-        Text { x: 18px; y: 33px; width: 240px; height: 20px; text: root.device-name; color: Theme.muted; font-size: 10px; vertical-alignment: center; overflow: elide; }
-        StatusPill { x: 274px; y: 16px; label: root.transport-label; dot-color: root.hardware-ready ? Theme.success : Theme.warning; compact: true; }
-        Text { x: 426px; width: 120px; height: parent.height; text: "battery: " + root.battery-text; color: Theme.muted; font-size: 10px; vertical-alignment: center; overflow: elide; }
-        ActionButton { x: parent.width - 418px; y: 14px; width: 86px; label: "refresh"; compact: true; enabled: !root.busy && !root.dirty; clicked => { root.request-refresh(); } }
-        ActionButton { x: parent.width - 322px; y: 14px; width: 126px; label: "discard / reload"; compact: true; enabled: root.hardware-ready && !root.busy; clicked => { root.request-reset(); } }
-        Rectangle { x: parent.width - 178px; y: 14px; width: 36px; height: 34px; border-radius: Theme.radius; background: settings-area.has-hover || root.current-page == 5 ? Theme.accent-soft : transparent;
-            Text { width: parent.width; height: parent.height; text: "⚙"; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
-            settings-area := TouchArea { accessible-role: button; accessible-label: "app settings"; accessible-action-default => { root.open-config(); } mouse-cursor: pointer; clicked => { root.open-config(); } }
+        HorizontalLayout {
+            x: 18px; y: 11px; height: 40px; spacing: Theme.space-3; alignment: start;
+            VerticalLayout { spacing: 0px; max-width: 240px;
+                Text { text: root.product-name; color: Theme.text; font-size: 17px; font-weight: 700; overflow: elide; }
+                Text { text: root.device-name; color: Theme.muted; font-size: 10px; overflow: elide; }
+            }
+            StatusPill { label: root.transport-label + (root.battery-text.is-empty ? "" : " · " + root.battery-text); dot-color: root.hardware-ready ? Theme.success : Theme.warning; compact: true; }
         }
-        Rectangle { x: parent.width - 62px; y: 14px; width: 36px; height: 34px; border-radius: Theme.radius; background: theme-area.has-hover ? Theme.surface-raised : transparent;
-            Text { width: parent.width; height: parent.height; text: Theme.dark-mode ? "☾" : "☼"; color: Theme.text; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
-            theme-area := TouchArea { accessible-role: button; accessible-label: "toggle theme"; accessible-action-default => { root.toggle-theme(); } mouse-cursor: pointer; clicked => { root.toggle-theme(); } }
+        ActionButton { x: parent.width - 282px; y: 14px; width: 86px; label: "refresh"; compact: true; enabled: !root.busy && !root.dirty; clicked => { root.request-refresh(); } }
+        ActionButton { x: parent.width - 188px; y: 14px; width: 126px; label: "discard / reload"; compact: true; enabled: root.hardware-ready && !root.busy; clicked => { root.request-reset(); } }
+        Rectangle { x: parent.width - 54px; y: 14px; width: 36px; height: 34px; border-radius: Theme.radius; background: settings-area.has-hover || root.current-page == 5 ? Theme.accent-soft : transparent;
+            Image { x: (parent.width - 18px) / 2; y: (parent.height - 18px) / 2; width: 18px; height: 18px; source: @image-url("../assets/settings.svg"); image-fit: contain; }
+            settings-area := TouchArea { accessible-role: button; accessible-label: "app settings"; accessible-action-default => { root.open-config(); } mouse-cursor: pointer; clicked => { root.open-config(); } }
         }
     }
 
@@ -1074,7 +1315,7 @@ export component AppWindow inherits Window {
             NavItem { label: "buttons"; icon: @image-url("../assets/cursor.svg"); selected: root.current-page == 1; clicked => { root.navigate(1); } }
             NavItem { label: "sensitivity"; icon: @image-url("../assets/target.svg"); selected: root.current-page == 2; clicked => { root.navigate(2); } }
             NavItem { label: "performance"; icon: @image-url("../assets/pulse.svg"); selected: root.current-page == 3; clicked => { root.navigate(3); } }
-            NavItem { label: "advanced"; icon: @image-url("../assets/settings.svg"); selected: root.current-page == 4; clicked => { root.navigate(4); } }
+            NavItem { label: "advanced"; icon: @image-url("../assets/wrench.svg"); selected: root.current-page == 4; clicked => { root.navigate(4); } }
         }
         DeviceSelectorPanel {
             x: 12px; y: 182px; width: parent.width - 24px; height: 112px;
@@ -1082,18 +1323,12 @@ export component AppWindow inherits Window {
             select-device(index) => { root.select-device(index); }
         }
         ProfilePanel {
-            x: 12px; y: 304px; width: parent.width - 24px; height: 214px;
+            x: 12px; y: 304px; width: parent.width - 24px; height: parent.height - 318px;
             profiles: root.profiles; last-enabled-index: root.last-enabled-profile; interactive: root.hardware-ready && !root.busy;
             select-profile(index) => { root.select-profile(index); }
             add-profile => { root.add-profile(); }
             rename-profile(index, name) => { root.rename-profile(index, name); }
             hide-profile(index) => { root.pending-hide-profile = index; tail-hide-confirmation.show(); }
-        }
-        Rectangle {
-            x: 12px; y: parent.height - 64px; width: parent.width - 24px; height: 52px; border-radius: Theme.radius; background: Theme.accent-soft;
-            Rectangle { x: 10px; y: 13px; width: 7px; height: 7px; border-radius: 4px; background: root.busy ? Theme.warning : root.hardware-ready ? Theme.success : Theme.warning; }
-            Text { x: 24px; y: 8px; width: parent.width - 34px; text: root.lifecycle-text; color: Theme.text; font-size: 9px; font-weight: 700; overflow: elide; }
-            Text { x: 10px; y: 29px; width: parent.width - 20px; text: root.busy ? "controls temporarily locked" : root.hardware-ready ? "ready" : "waiting for mouse"; color: Theme.muted; font-size: 8px; overflow: elide; }
         }
     }
 
@@ -1113,8 +1348,7 @@ export component AppWindow inherits Window {
             set-binding-action(index, action) => { root.set-binding-action(index, action); }
         }
         if root.current-page == 2 : SensitivityPage {
-            width: parent.width; height: parent.height; dpi-stages: root.dpi-stages; logarithmic-scale: root.dpi-log-scale; dpi-min: root.dpi-min; dpi-max: root.dpi-max;
-            dpi-min-text <=> root.dpi-min-text; dpi-max-text <=> root.dpi-max-text;
+            width: parent.width; height: parent.height; dpi-stages: root.dpi-stages; dpi-min: root.dpi-min; dpi-max: root.dpi-max;
             interactive: root.hardware-ready && !root.busy && (root.preferences-ready || (root.ble-device && root.allow-explicit-defaults));
             motion-sync-readback <=> root.motion-sync-readback; ripple-control-readback <=> root.ripple-control-readback;
             angle-snap <=> root.angle-snap; lift-off-choice <=> root.lift-off-choice;
@@ -1122,8 +1356,7 @@ export component AppWindow inherits Window {
             drag-dpi(index, ratio) => { root.drag-dpi(index, ratio); }
             add-dpi-stage => { root.add-dpi-stage(); }
             remove-dpi-stage(index) => { root.remove-dpi-stage(index); }
-            toggle-dpi-scale => { root.toggle-dpi-scale(); }
-            apply-dpi-range(minimum, maximum) => { root.dpi-range-changed(minimum, maximum); }
+            open-settings => { root.navigate(5); }
             toggle-motion-sync(value) => { root.toggle-motion-sync(value); }
             toggle-ripple-control(value) => { root.toggle-ripple-control(value); }
             toggle-angle-snap(value) => { root.toggle-angle-snap(value); }
@@ -1162,8 +1395,13 @@ export component AppWindow inherits Window {
         }
         if root.current-page == 5 : SettingsPage {
             width: parent.width; height: parent.height; product-name-choice: root.product-name-choice; custom-product-name <=> root.custom-product-name;
+            logarithmic-scale: root.dpi-log-scale; dpi-min: root.dpi-min; dpi-max: root.dpi-max;
+            dpi-min-text <=> root.dpi-min-text; dpi-max-text <=> root.dpi-max-text;
             select-product-name(index) => { root.select-product-name(index); }
             custom-name-changed(name) => { root.custom-name-changed(name); }
+            select-appearance(value) => { root.select-appearance(value); }
+            toggle-dpi-scale => { root.toggle-dpi-scale(); }
+            apply-dpi-range(minimum, maximum) => { root.dpi-range-changed(minimum, maximum); }
         }
     }
 
