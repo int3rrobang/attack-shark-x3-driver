@@ -44,9 +44,9 @@ pub use offline_debug::{
 pub use operation::ProfileUpdate;
 pub use operation::{
     BaselineSource, DeviceEvent, DeviceStatus, DiscoveredDevice, DiscoveredEndpoint,
-    FullProfileRefreshOutcome, PowerCycleVerificationOutcome, ProfileResourceKind,
-    ProfileUpdateOutcome, ProfileVerificationOutcome, RefreshedProfile, ResourceSnapshot,
-    UpdatePolicy, VerificationMethod, WriteOutcome,
+    FullProfileRefreshOutcome, LinkOutcome, LinkPrecedence, PowerCycleVerificationOutcome,
+    ProfileResourceKind, ProfileUpdateOutcome, ProfileVerificationOutcome, RefreshedProfile,
+    ResourceSnapshot, UpdatePolicy, VerificationMethod, WriteOutcome,
 };
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use resources::buttons::{ButtonSlotDelta, SafeButtonAction, SafeButtonSlot};

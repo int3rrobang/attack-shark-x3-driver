@@ -8,11 +8,11 @@ mod output;
 use attack_shark_x3_manager::{
     BaselineSource, ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport, DeviceId,
     DeviceManager, DeviceStatus, DpiDelta, DpiState, DpiValue, FullProfileRefreshOutcome,
-    LiftOffDistance, PollingRate, PreferencesDelta, PreferencesFraming, PreferencesState,
-    ProfileId, ProfileResourceKind, ResourceSnapshot, SafeButtonAction, SafeButtonSlot,
-    SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind, TransportSelection,
-    UpdatePolicy, VerificationMethod, X3ButtonAction, encode_debug_buttons, encode_debug_dpi,
-    encode_debug_prefs,
+    LiftOffDistance, LinkPrecedence, PollingRate, PreferencesDelta, PreferencesFraming,
+    PreferencesState, ProfileId, ProfileResourceKind, ResourceSnapshot, SafeButtonAction,
+    SafeButtonSlot, SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind,
+    TransportSelection, UpdatePolicy, VerificationMethod, X3ButtonAction, encode_debug_buttons,
+    encode_debug_dpi, encode_debug_prefs,
 };
 use clap::Parser;
 use serde::Serialize;
@@ -22,9 +22,9 @@ use std::process::ExitCode;
 
 use args::{
     ActionArg, BaselineArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, DebugDpiArgs,
-    DebugPrefsArgs, DpiCommand, DpiSetArgs, LodArg, PrefsCommand, PrefsSetArgs, ProfileCommand,
-    ProfileSetArgs, RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg, ValidationArg,
-    VerifyMethodArg,
+    DebugPrefsArgs, DpiCommand, DpiSetArgs, KeepArg, LodArg, PrefsCommand, PrefsSetArgs,
+    ProfileCommand, ProfileSetArgs, RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg,
+    ValidationArg, VerifyMethodArg,
 };
 use output::Output;
 
@@ -38,7 +38,24 @@ enum VerificationAction {
 enum Action {
     Devices,
     Use {
-        device: DeviceId,
+        device: String,
+    },
+    Link {
+        source: String,
+        target: String,
+        keep: Option<LinkPrecedence>,
+    },
+    Rebind {
+        device: String,
+        transport: TransportKind,
+    },
+    Forget {
+        device: String,
+        force: bool,
+    },
+    Rename {
+        device: String,
+        name: String,
     },
     Status,
     ProfileGet {
@@ -154,7 +171,40 @@ fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
     match command {
         Command::Devices => Ok(Action::Devices),
         Command::Use { device } => Ok(Action::Use {
-            device: parse_device_id(device)?,
+            device: device.clone(),
+        }),
+        Command::Link {
+            source,
+            target,
+            keep,
+        } => Ok(Action::Link {
+            source: source.clone(),
+            target: target.clone(),
+            keep: keep.map(|keep| match keep {
+                KeepArg::Target => LinkPrecedence::KeepTarget,
+                KeepArg::Source => LinkPrecedence::KeepSource,
+                KeepArg::Merge => LinkPrecedence::Merge,
+            }),
+        }),
+        Command::Rebind { device } => Ok(Action::Rebind {
+            device: device.clone(),
+            transport: match cli.transport {
+                TransportArg::Auto => {
+                    return Err("rebind needs an explicit --transport wired|receiver".to_owned());
+                }
+                TransportArg::Wired => TransportKind::Wired,
+                TransportArg::Receiver => TransportKind::Receiver,
+                #[cfg(feature = "ble")]
+                TransportArg::Ble => TransportKind::Ble,
+            },
+        }),
+        Command::Forget { device, force } => Ok(Action::Forget {
+            device: device.clone(),
+            force: *force,
+        }),
+        Command::Rename { device, name } => Ok(Action::Rename {
+            device: device.clone(),
+            name: name.clone(),
         }),
         Command::Status => Ok(Action::Status),
         Command::Profile(command) => match command {
@@ -393,6 +443,7 @@ async fn dispatch(
             output.print(human, &devices)
         }
         Action::Use { device } => {
+            let device = resolve_device_arg(manager, &device)?;
             let resolved = manager
                 .resolve_device(Some(&device), selection)
                 .await
@@ -401,6 +452,70 @@ async fn dispatch(
                 .select_device(&resolved)
                 .map_err(|error| error.to_string())?;
             output.print(format!("Selected device {resolved}"), &resolved)
+        }
+        Action::Rebind { device, transport } => {
+            let device = resolve_device_arg(manager, &device)?;
+            manager
+                .rebind_missing_endpoint(&device, transport)
+                .await
+                .map_err(|error| error.to_string())?;
+            output.print(
+                format!(
+                    "Rebound {device} to the connected {} device",
+                    format_transport(transport)
+                ),
+                &device,
+            )
+        }
+        Action::Link {
+            source,
+            target,
+            keep,
+        } => {
+            let source = resolve_device_arg(manager, &source)?;
+            let target = resolve_device_arg(manager, &target)?;
+            let outcome = manager
+                .link_devices(&source, &target, keep.unwrap_or(LinkPrecedence::Refuse))
+                .map_err(|error| error.to_string())?;
+            let moved = outcome
+                .moved_transports
+                .iter()
+                .map(|transport| format_transport(*transport))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut human = format!(
+                "Linked {source} into {}; moved {moved}; {source} removed",
+                outcome.target
+            );
+            if outcome.discarded_evidence {
+                human.push_str("; the discarded side's saved configuration was removed");
+            }
+            output.print(human, &outcome)
+        }
+        Action::Forget { device, force } => {
+            let device = resolve_device_arg(manager, &device)?;
+            let forgotten = manager
+                .forget_device(&device, force)
+                .map_err(|error| error.to_string())?;
+            if !forgotten {
+                return Err(format!(
+                    "{device} carries saved configuration; pass --force to forget it anyway"
+                ));
+            }
+            output.print(format!("Forgot {device}"), &device)
+        }
+        Action::Rename { device, name } => {
+            let device = resolve_device_arg(manager, &device)?;
+            manager
+                .rename_device(&device, &name)
+                .map_err(|error| error.to_string())?;
+            let trimmed = name.trim();
+            let human = if trimmed.is_empty() {
+                format!("Cleared the name for {device}")
+            } else {
+                format!("Renamed {device} to {trimmed}")
+            };
+            output.print(human, &device)
         }
         Action::Status => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -665,12 +780,27 @@ async fn dispatch(
     }
 }
 
+/// Accepts a canonical `mouse-N` id or a unique display name.
+fn resolve_device_arg(manager: &DeviceManager, raw: &str) -> Result<DeviceId, String> {
+    if let Ok(id) = parse_device_id(raw)
+        && manager.device_identity(&id).is_ok()
+    {
+        return Ok(id);
+    }
+    manager
+        .find_device_by_name(raw)
+        .map_err(|error| error.to_string())
+}
+
 async fn resolve_hardware(
     manager: &DeviceManager,
     cli: &Cli,
     selection: TransportSelection,
 ) -> Result<DeviceId, String> {
-    let explicit = cli.device.as_deref().map(parse_device_id).transpose()?;
+    let explicit = match cli.device.as_deref() {
+        Some(raw) => Some(resolve_device_arg(manager, raw)?),
+        None => None,
+    };
     manager
         .resolve_device(explicit.as_ref(), selection)
         .await
@@ -679,12 +809,12 @@ async fn resolve_hardware(
 
 fn resolve_state_device(manager: &DeviceManager, cli: &Cli) -> Result<DeviceId, String> {
     if let Some(device) = cli.device.as_deref() {
-        return parse_device_id(device);
+        return resolve_device_arg(manager, device);
     }
     manager
         .selected_device()
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "no device selected; use `use <stable-id>` first".to_owned())
+        .ok_or_else(|| "no device selected; use `use <device>` first".to_owned())
 }
 
 fn run_debug(cli: &Cli, command: &DebugCommand, output: &Output) -> Result<(), String> {
@@ -1269,6 +1399,10 @@ fn action_name(action: &Action) -> &'static str {
             VerificationAction::ProfileReload => "verify profile reload",
             VerificationAction::PowerCycle => "verify power cycle",
         },
+        Action::Link { .. } => "link devices",
+        Action::Rebind { .. } => "rebind device endpoint",
+        Action::Forget { .. } => "forget device",
+        Action::Rename { .. } => "rename device",
         Action::Export => "export configuration",
         Action::Import { .. } => "import configuration",
         Action::StateSelected => "read selected device",
@@ -1282,6 +1416,95 @@ mod tests {
     use super::*;
     use args::BindCommand;
     use attack_shark_x3_manager::{ObservationSource, ObservedState, ResourceState, Timestamp};
+    #[test]
+    fn build_rebind_action_maps_device_and_rejects_auto_transport() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "--transport", "receiver", "rebind", "mouse-2"])
+                .expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        assert!(matches!(command, Command::Rebind { .. }));
+        let action = build_action(&cli, command).expect("build");
+        match action {
+            Action::Rebind { device, transport } => {
+                assert_eq!(device.as_str(), "mouse-2");
+                assert_eq!(transport, TransportKind::Receiver);
+            }
+            other => panic!("expected Rebind, got {other:?}"),
+        }
+
+        let auto = args::Cli::try_parse_from(["x3ctl", "rebind", "mouse-2"]).expect("parse");
+        let error = build_action(&auto, auto.command.as_ref().unwrap()).unwrap_err();
+        assert!(error.contains("--transport"), "got: {error}");
+    }
+    #[test]
+    fn build_link_action_maps_ids_and_keep_flag() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "link", "mouse-1", "mouse-2", "--keep", "source"])
+                .expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        assert!(matches!(command, Command::Link { .. }));
+        let action = build_action(&cli, command).expect("build");
+        match action {
+            Action::Link {
+                source,
+                target,
+                keep,
+            } => {
+                assert_eq!(source.as_str(), "mouse-1");
+                assert_eq!(target.as_str(), "mouse-2");
+                assert_eq!(keep, Some(LinkPrecedence::KeepSource));
+            }
+            other => panic!("expected Link, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_link_action_maps_merge_precedence() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "link", "mouse-1", "mouse-2", "--keep", "merge"])
+                .expect("parse");
+        let action = build_action(&cli, cli.command.as_ref().unwrap()).expect("build");
+        match action {
+            Action::Link { keep, .. } => assert_eq!(keep, Some(LinkPrecedence::Merge)),
+            other => panic!("expected Link, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_forget_and_rename_actions_carry_raw_args() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "forget", "mouse-3", "--force"]).expect("parse");
+        match build_action(&cli, cli.command.as_ref().unwrap()).expect("build") {
+            Action::Forget { device, force } => {
+                assert_eq!(device, "mouse-3");
+                assert!(force);
+            }
+            other => panic!("expected Forget, got {other:?}"),
+        }
+
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "rename", "mouse-2", "desk mouse"]).expect("parse");
+        match build_action(&cli, cli.command.as_ref().unwrap()).expect("build") {
+            Action::Rename { device, name } => {
+                assert_eq!(device, "mouse-2");
+                assert_eq!(name, "desk mouse");
+            }
+            other => panic!("expected Rename, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_link_action_defaults_to_refuse_precedence() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "link", "mouse-1", "mouse-2"]).expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        let action = build_action(&cli, command).expect("build");
+        match action {
+            Action::Link { keep, .. } => assert_eq!(keep, None),
+            other => panic!("expected Link, got {other:?}"),
+        }
+    }
+
     #[test]
     fn build_bind_action_maps_safe_slot_and_action() {
         let cli = args::Cli::try_parse_from([

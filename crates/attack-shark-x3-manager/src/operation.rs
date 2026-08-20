@@ -7,10 +7,8 @@ use attack_shark_x3::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    device::{DeviceEndpoint, DeviceIdentity},
-    state::{ResourceState, Verification},
-};
+use crate::device::{DeviceEndpoint, DeviceId, DeviceIdentity};
+use crate::state::{ResourceState, Verification};
 /// The verification performed after a write operation.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +124,34 @@ pub struct DiscoveredDevice {
     /// Transports on which the device was discovered this scan, sorted and
     /// without duplicates.
     pub transports: Vec<TransportKind>,
+}
+
+/// Which side keeps its saved configuration when both devices being linked
+/// carry configuration evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkPrecedence {
+    /// Refuse to link when both sides carry evidence (the default policy).
+    Refuse,
+    /// Discard the source's evidence; the target's configuration survives.
+    KeepTarget,
+    /// Move the source's evidence onto the target and discard the target's.
+    KeepSource,
+    /// Fill the target's missing profile/resource values from the source;
+    /// where both sides have a value, the target's wins.
+    Merge,
+}
+
+/// Result of an explicit cross-transport link.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkOutcome {
+    /// The surviving logical identity.
+    pub target: DeviceId,
+    /// Transports moved from the source into the target, sorted.
+    pub moved_transports: Vec<TransportKind>,
+    /// Whether saved configuration was discarded to complete the link.
+    pub discarded_evidence: bool,
 }
 
 /// Resource status read from one logical device identity.

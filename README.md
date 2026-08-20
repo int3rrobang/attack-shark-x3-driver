@@ -116,7 +116,7 @@ cargo run -p x3ctl -- <OPTIONS> <COMMAND>
 | Flag | Purpose |
 |:-----|:--------|
 | `--transport <auto\|wired\|receiver[\|ble]>` | Select transport (default: `auto`; `ble` requires `--features ble`) |
-| `--device <ID>` | Exact stable device ID from `x3ctl devices` |
+| `--device <ID>` | Stable device ID (`mouse-N`) or unique display name |
 | `--profile <N>` | Target profile number (default: `1`) |
 | `--stateless` | Keep state only in memory for this invocation |
 | `--dry-run` | Validate and print without hardware or state access |
@@ -135,6 +135,32 @@ cargo run -p x3ctl -- --transport receiver devices
 # Select a device for subsequent commands
 cargo run -p x3ctl -- use '<device-id>'
 ```
+
+### Device management
+
+Device arguments accept the canonical `mouse-N` id or a unique display name
+(set with `rename`, matched case-insensitively).
+
+```bash
+# Merge one saved identity into another after linking a second transport;
+# --keep target|source discards one side's saved configuration, --keep merge
+# fills the survivor's missing values from the other side (target wins conflicts)
+cargo run -p x3ctl -- link mouse-1 mouse-2 --keep merge
+
+# Re-point a stored endpoint at the connected device after its HID path
+# changed (e.g. the dongle moved to another USB port)
+cargo run -p x3ctl -- --transport receiver rebind mouse-2
+
+# Set the presentation name used for device lookup (blank clears it)
+cargo run -p x3ctl -- rename mouse-2 'Desk Mouse'
+
+# Remove a saved identity (refuses saved configuration without --force)
+cargo run -p x3ctl -- forget mouse-3
+```
+
+Discovery also self-cleans: an identity with no saved configuration whose
+every endpoint is now claimed by another identity is dropped automatically
+on the next scan (the residue of a port change resolved by `rebind`).
 
 ### Status
 

@@ -8,8 +8,11 @@ use attack_shark_x3::{ProfileId, ProfileMetadata, TransportKind};
 use crate::backend::{DeviceSession, RealSessionFactory, SessionFactory, SessionWrite};
 use crate::device::{DeviceId, DeviceIdentity, TransportSelection};
 use crate::error::ManagerError;
-use crate::operation::{DeviceStatus, DiscoveredDevice, DiscoveredEndpoint, ResourceSnapshot};
-use crate::state::{DeviceState, ProfileState, ResourceState, StateStore, Timestamp};
+use crate::operation::{
+    DeviceStatus, DiscoveredDevice, DiscoveredEndpoint, LinkOutcome, LinkPrecedence,
+    ResourceSnapshot,
+};
+use crate::state::{DeviceState, ProfileState, ResourceState, StateFile, StateStore, Timestamp};
 
 const BATTERY_READ_TIMEOUT: Duration = Duration::from_secs(20);
 const OPERATION_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
@@ -62,9 +65,6 @@ impl DeviceManager {
                     if let Some(id) = found {
                         let dev_state = state.devices.get_mut(&id).unwrap();
                         dev_state.identity.upsert_endpoint(disc.endpoint.clone());
-                        if dev_state.identity.display_name.is_none() {
-                            dev_state.identity.display_name = disc.endpoint.display_name.clone();
-                        }
                     } else {
                         let new_id = state.allocate_device_id()?;
                         let mut identity =
@@ -73,6 +73,7 @@ impl DeviceManager {
                         state.devices.insert(new_id, DeviceState::new(identity));
                     }
                 }
+                drop_claimed_shells(state);
                 Ok(())
             })
             .await?;
@@ -254,7 +255,12 @@ impl DeviceManager {
         Ok(())
     }
 
-    pub fn link_devices(&self, source: &DeviceId, target: &DeviceId) -> Result<(), ManagerError> {
+    pub fn link_devices(
+        &self,
+        source: &DeviceId,
+        target: &DeviceId,
+        precedence: LinkPrecedence,
+    ) -> Result<LinkOutcome, ManagerError> {
         if source == target {
             return Err(ManagerError::InvalidUpdate(
                 "cannot link device to itself".to_string(),
@@ -284,15 +290,29 @@ impl DeviceManager {
 
         let source_has_evidence = device_has_evidence(&source_state);
         let target_has_evidence = device_has_evidence(&target_state);
-        if source_has_evidence && target_has_evidence {
-            return Err(ManagerError::InvalidUpdate(format!(
-                "both devices have configuration evidence: cannot merge {source} into {target} without precedence"
-            )));
-        }
-        if source_has_evidence {
-            return Err(ManagerError::InvalidUpdate(format!(
-                "source device {source} has configuration evidence; explicit link would discard profile/resource state"
-            )));
+        let mut discard_source_evidence = false;
+        let mut discard_target_evidence = false;
+        match precedence {
+            LinkPrecedence::Refuse => {
+                if source_has_evidence && target_has_evidence {
+                    return Err(ManagerError::InvalidUpdate(format!(
+                        "both devices have configuration evidence: cannot merge {source} into \
+                         {target} without precedence; pass --keep target, --keep source, or \
+                         --keep merge"
+                    )));
+                }
+                if source_has_evidence {
+                    return Err(ManagerError::InvalidUpdate(format!(
+                        "source device {source} has configuration evidence; explicit link would \
+                         discard profile/resource state"
+                    )));
+                }
+            }
+            LinkPrecedence::KeepTarget => discard_source_evidence = source_has_evidence,
+            LinkPrecedence::KeepSource => {
+                discard_target_evidence = target_has_evidence;
+            }
+            LinkPrecedence::Merge => {}
         }
 
         let source_endpoints = source_state.identity.endpoints.clone();
@@ -303,13 +323,128 @@ impl DeviceManager {
         if target_entry.identity.display_name.is_none() {
             target_entry.identity.display_name = source_state.identity.display_name.clone();
         }
+        if discard_target_evidence {
+            target_entry.profile_metadata = source_state.profile_metadata.clone();
+            target_entry.profiles = source_state.profiles.clone();
+            target_entry.profile_names = source_state.profile_names.clone();
+        }
+        let mut merge_discarded = false;
+        if matches!(precedence, LinkPrecedence::Merge) {
+            merge_discarded |= fill_resource_gaps(
+                &mut target_entry.profile_metadata,
+                &source_state.profile_metadata,
+            );
+            for (profile_id, source_profile) in &source_state.profiles {
+                let target_profile = target_entry
+                    .profiles
+                    .entry(*profile_id)
+                    .or_insert_with(crate::state::ProfileState::empty);
+                merge_discarded |= fill_resource_gaps(&mut target_profile.dpi, &source_profile.dpi);
+                merge_discarded |= fill_resource_gaps(
+                    &mut target_profile.preferences,
+                    &source_profile.preferences,
+                );
+                merge_discarded |=
+                    fill_resource_gaps(&mut target_profile.buttons, &source_profile.buttons);
+                merge_discarded |= fill_resource_gaps(
+                    &mut target_profile.polling_rate,
+                    &source_profile.polling_rate,
+                );
+            }
+            for (profile_id, name) in &source_state.profile_names {
+                target_entry
+                    .profile_names
+                    .entry(*profile_id)
+                    .or_insert_with(|| name.clone());
+            }
+        }
 
         txn.state_mut().devices.remove(source);
         if txn.state().selected_device.as_ref() == Some(source) {
             txn.state_mut().selected_device = Some(target.clone());
         }
         txn.commit()?;
+        Ok(LinkOutcome {
+            target: target.clone(),
+            moved_transports: {
+                let mut transports: Vec<TransportKind> =
+                    source_state.identity.endpoints.keys().copied().collect();
+                transports.sort();
+                transports
+            },
+            discarded_evidence: discard_source_evidence
+                || discard_target_evidence
+                || merge_discarded,
+        })
+    }
+
+    /// Removes a logical identity from durable state.
+    ///
+    /// Refuses when the identity carries configuration evidence unless
+    /// `force` is set; clearing the selected device clears the selection.
+    pub fn forget_device(&self, device: &DeviceId, force: bool) -> Result<bool, ManagerError> {
+        let mut txn = self.store.transaction()?;
+        let state = txn
+            .state_mut()
+            .devices
+            .get(device)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+        if device_has_evidence(state) && !force {
+            return Ok(false);
+        }
+        txn.state_mut().devices.remove(device);
+        if txn.state().selected_device.as_ref() == Some(device) {
+            txn.state_mut().selected_device = None;
+        }
+        txn.commit()?;
+        Ok(true)
+    }
+
+    /// Sets the presentation-only display name; a blank name clears it.
+    pub fn rename_device(&self, device: &DeviceId, name: &str) -> Result<(), ManagerError> {
+        let trimmed = name.trim();
+        let display_name = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        };
+        let mut txn = self.store.transaction()?;
+        txn.state_mut()
+            .devices
+            .get_mut(device)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+            .identity
+            .display_name = display_name;
+        txn.commit()?;
         Ok(())
+    }
+
+    /// Resolves a case-insensitive unique display name to its logical identity.
+    pub fn find_device_by_name(&self, name: &str) -> Result<DeviceId, ManagerError> {
+        let state = self.store.load()?;
+        let needle = name.trim().to_lowercase();
+        let matches: Vec<&DeviceId> = state
+            .devices
+            .values()
+            .filter(|device| {
+                device
+                    .identity
+                    .display_name
+                    .as_ref()
+                    .is_some_and(|display| display.to_lowercase() == needle)
+            })
+            .map(|device| &device.identity.id)
+            .collect();
+        match matches.as_slice() {
+            [id] => Ok((*id).clone()),
+            [] => Err(ManagerError::InvalidUpdate(format!(
+                "no device with display name {name:?}"
+            ))),
+            _ => Err(ManagerError::AmbiguousDevice {
+                selection: TransportSelection::Auto,
+                candidates: matches.iter().map(|id| (*id).clone()).collect(),
+            }),
+        }
     }
 
     pub async fn rebind_missing_endpoint(
@@ -934,6 +1069,69 @@ impl DeviceManager {
     }
 }
 
+/// Fills a resource from another snapshot only when the target is completely
+/// empty; mixing a copied slot with an existing slot could pair evidence from
+/// different devices into an inconsistent state. Returns whether populated
+/// source evidence was skipped because the target already had data.
+fn fill_resource_gaps<T: Clone>(target: &mut ResourceState<T>, source: &ResourceState<T>) -> bool {
+    if target.desired.is_none() && target.observed.is_none() {
+        *target = source.clone();
+        return false;
+    }
+    source.desired.is_some() || source.observed.is_some()
+}
+
+/// Drops evidence-free identity shells whose every endpoint locator is also
+/// claimed by a *surviving* (non-shell) identity — the residue of a locator
+/// change that a later rebind resolved onto the original identity. Mutually
+/// claiming shells keep each other alive: pruning never removes the last
+/// owner of a locator.
+fn drop_claimed_shells(state: &mut StateFile) {
+    let is_shell = |id: &DeviceId, dev: &DeviceState| {
+        !device_has_evidence(dev)
+            && !dev.identity.endpoints.is_empty()
+            && dev.identity.endpoints.iter().all(|(transport, ep)| {
+                state.devices.iter().any(|(other_id, other)| {
+                    *other_id != *id
+                        && other
+                            .identity
+                            .endpoint(*transport)
+                            .is_some_and(|other_ep| other_ep.locator == ep.locator)
+                })
+            })
+    };
+    let shell_ids: Vec<DeviceId> = state
+        .devices
+        .iter()
+        .filter(|(id, dev)| is_shell(id, dev))
+        .map(|(id, _)| id.clone())
+        .collect();
+    let claimed_by_survivor = |id: &DeviceId, dev: &DeviceState| {
+        dev.identity.endpoints.iter().all(|(transport, ep)| {
+            state.devices.iter().any(|(other_id, other)| {
+                *other_id != *id
+                    && !shell_ids.contains(other_id)
+                    && other
+                        .identity
+                        .endpoint(*transport)
+                        .is_some_and(|other_ep| other_ep.locator == ep.locator)
+            })
+        })
+    };
+    let doomed: Vec<DeviceId> = state
+        .devices
+        .iter()
+        .filter(|(id, dev)| shell_ids.contains(*id) && claimed_by_survivor(id, dev))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in doomed {
+        state.devices.remove(&id);
+        if state.selected_device.as_ref() == Some(&id) {
+            state.selected_device = None;
+        }
+    }
+}
+
 fn device_has_evidence(state: &DeviceState) -> bool {
     if state.profile_metadata.desired.is_some() || state.profile_metadata.observed.is_some() {
         return true;
@@ -970,7 +1168,7 @@ mod tests {
         DeviceEndpoint, DeviceId, DeviceIdentity, DeviceLocator, TransportSelection,
     };
     use crate::error::ManagerError;
-    use crate::operation::DiscoveredEndpoint;
+    use crate::operation::{DiscoveredEndpoint, LinkPrecedence};
     use crate::state::{
         ApplicationVerification, DesiredSource, DesiredState, DeviceState, StatePaths, StateStore,
         Verification,
@@ -1804,7 +2002,9 @@ mod tests {
             store.clone(),
             Arc::new(ScriptedFakeFactory::new()),
         );
-        manager.link_devices(&id_source, &id_target).unwrap();
+        manager
+            .link_devices(&id_source, &id_target, LinkPrecedence::Refuse)
+            .unwrap();
 
         let state = store.load().unwrap();
         assert!(
@@ -1856,7 +2056,9 @@ mod tests {
             store.clone(),
             Arc::new(ScriptedFakeFactory::new()),
         );
-        let err = manager.link_devices(&id_source, &id_target).unwrap_err();
+        let err = manager
+            .link_devices(&id_source, &id_target, LinkPrecedence::Refuse)
+            .unwrap_err();
         assert!(matches!(err, ManagerError::InvalidUpdate(_)));
         let state = store.load().unwrap();
         assert!(state.devices.contains_key(&id_source));
@@ -1890,8 +2092,395 @@ mod tests {
             store.clone(),
             Arc::new(ScriptedFakeFactory::new()),
         );
-        let err = manager.link_devices(&id_a, &id_b).unwrap_err();
+        let err = manager
+            .link_devices(&id_a, &id_b, LinkPrecedence::Refuse)
+            .unwrap_err();
         assert!(matches!(err, ManagerError::InvalidUpdate(_)));
+    }
+
+    /// Inserts desired profile-1 DPI with a distinctive stage so tests can
+    /// tell whose configuration evidence survived a link.
+    fn insert_dpi_evidence(store: &StateStore, id: &DeviceId, stage: u16) {
+        let mut txn = store.transaction().unwrap();
+        let dev = txn.state_mut().devices.get_mut(id).unwrap();
+        dev.profiles
+            .insert(attack_shark_x3::ProfileId::new(1).unwrap(), {
+                let mut ps = crate::state::ProfileState::empty();
+                ps.dpi.desired = Some(DesiredState {
+                    value: attack_shark_x3::DpiState::captured_empty_profile_one(
+                        vec![attack_shark_x3::DpiValue::new(stage).unwrap()],
+                        attack_shark_x3::StageIndex::new(1).unwrap(),
+                    )
+                    .unwrap(),
+                    source: DesiredSource::UserWrite,
+                    verification: Verification::not_sent(),
+                    updated_at: crate::state::Timestamp { unix_seconds: 1 },
+                });
+                ps
+            });
+        txn.commit().unwrap();
+    }
+
+    #[tokio::test]
+    async fn link_with_keep_target_discards_source_evidence() {
+        let store = StateStore::memory();
+        let wired = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            None,
+            "/dev/hidraw0",
+            None,
+        )
+        .unwrap();
+        let receiver = DeviceEndpoint::usb(
+            TransportKind::Receiver,
+            0x1d57,
+            0xfa60,
+            None,
+            "/dev/hidraw1",
+            None,
+        )
+        .unwrap();
+        let id_target = insert_device_with_endpoint(&store, wired);
+        let id_source = insert_device_with_endpoint(&store, receiver);
+        insert_dpi_evidence(&store, &id_source, 800);
+        insert_dpi_evidence(&store, &id_target, 1600);
+
+        let manager = DeviceManager::with_store_and_factory(
+            store.clone(),
+            Arc::new(ScriptedFakeFactory::new()),
+        );
+        let outcome = manager
+            .link_devices(&id_source, &id_target, LinkPrecedence::KeepTarget)
+            .unwrap();
+        assert_eq!(outcome.target, id_target);
+        assert_eq!(outcome.moved_transports, vec![TransportKind::Receiver]);
+        assert!(outcome.discarded_evidence);
+
+        let state = store.load().unwrap();
+        assert!(!state.devices.contains_key(&id_source));
+        let target = state.devices.get(&id_target).unwrap();
+        assert!(target.identity.has_endpoint(TransportKind::Receiver));
+        let profile = &target.profiles[&attack_shark_x3::ProfileId::new(1).unwrap()];
+        let desired = profile.dpi.desired.as_ref().unwrap();
+        assert_eq!(desired.value.stages[0].get(), 1600, "target DPI survives");
+    }
+
+    #[tokio::test]
+    async fn link_with_keep_source_transplants_evidence_to_target() {
+        let store = StateStore::memory();
+        let wired = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            None,
+            "/dev/hidraw0",
+            None,
+        )
+        .unwrap();
+        let receiver = DeviceEndpoint::usb(
+            TransportKind::Receiver,
+            0x1d57,
+            0xfa60,
+            None,
+            "/dev/hidraw1",
+            None,
+        )
+        .unwrap();
+        let id_target = insert_device_with_endpoint(&store, wired);
+        let id_source = insert_device_with_endpoint(&store, receiver);
+        insert_dpi_evidence(&store, &id_source, 800);
+        insert_dpi_evidence(&store, &id_target, 1600);
+
+        let manager = DeviceManager::with_store_and_factory(
+            store.clone(),
+            Arc::new(ScriptedFakeFactory::new()),
+        );
+        let outcome = manager
+            .link_devices(&id_source, &id_target, LinkPrecedence::KeepSource)
+            .unwrap();
+        assert!(outcome.discarded_evidence);
+
+        let state = store.load().unwrap();
+        assert!(!state.devices.contains_key(&id_source));
+        let target = state.devices.get(&id_target).unwrap();
+        assert!(target.identity.has_endpoint(TransportKind::Receiver));
+        let profile = &target.profiles[&attack_shark_x3::ProfileId::new(1).unwrap()];
+        let desired = profile.dpi.desired.as_ref().unwrap();
+        assert_eq!(
+            desired.value.stages[0].get(),
+            800,
+            "source DPI transplanted onto the target"
+        );
+    }
+
+    #[tokio::test]
+    async fn link_with_merge_fills_target_gaps_from_source() {
+        let store = StateStore::memory();
+        let wired = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            None,
+            "/dev/hidraw0",
+            None,
+        )
+        .unwrap();
+        let receiver = DeviceEndpoint::usb(
+            TransportKind::Receiver,
+            0x1d57,
+            0xfa60,
+            None,
+            "/dev/hidraw1",
+            None,
+        )
+        .unwrap();
+        let id_target = insert_device_with_endpoint(&store, wired);
+        let id_source = insert_device_with_endpoint(&store, receiver);
+        insert_dpi_evidence(&store, &id_source, 800);
+        insert_dpi_evidence(&store, &id_target, 1600);
+
+        let manager = DeviceManager::with_store_and_factory(
+            store.clone(),
+            Arc::new(ScriptedFakeFactory::new()),
+        );
+        let outcome = manager
+            .link_devices(&id_source, &id_target, LinkPrecedence::Merge)
+            .unwrap();
+        assert!(
+            outcome.discarded_evidence,
+            "the source's conflicting profile-1 DPI was skipped"
+        );
+
+        let state = store.load().unwrap();
+        assert!(!state.devices.contains_key(&id_source));
+        let target = state.devices.get(&id_target).unwrap();
+        let profile_one = &target.profiles[&attack_shark_x3::ProfileId::new(1).unwrap()];
+        let desired = profile_one.dpi.desired.as_ref().unwrap();
+        assert_eq!(
+            desired.value.stages[0].get(),
+            1600,
+            "target's own value wins the conflict"
+        );
+    }
+
+    #[tokio::test]
+    async fn link_with_merge_never_mixes_slots_across_devices() {
+        let store = StateStore::memory();
+        let id_target = insert_device_with_endpoint(&store, wired_endpoint("/dev/hidraw0"));
+        let id_source = insert_device_with_endpoint(&store, receiver_endpoint("/dev/hidraw1"));
+        // Target: observed-only evidence. Source: desired+observed pair.
+        {
+            let mut txn = store.transaction().unwrap();
+            let dev = txn.state_mut().devices.get_mut(&id_target).unwrap();
+            dev.profiles
+                .insert(attack_shark_x3::ProfileId::new(1).unwrap(), {
+                    let mut ps = crate::state::ProfileState::empty();
+                    ps.dpi.observed = Some(crate::state::ObservedState {
+                        value: attack_shark_x3::DpiState::captured_empty_profile_one(
+                            vec![attack_shark_x3::DpiValue::new(1600).unwrap()],
+                            attack_shark_x3::StageIndex::new(1).unwrap(),
+                        )
+                        .unwrap(),
+                        source: crate::state::ObservationSource::UsbReadback,
+                        observed_at: crate::state::Timestamp { unix_seconds: 1 },
+                    });
+                    ps
+                });
+            txn.commit().unwrap();
+        }
+        insert_dpi_evidence(&store, &id_source, 800);
+
+        let manager = DeviceManager::with_store_and_factory(
+            store.clone(),
+            Arc::new(ScriptedFakeFactory::new()),
+        );
+        let outcome = manager
+            .link_devices(&id_source, &id_target, LinkPrecedence::Merge)
+            .unwrap();
+        assert!(outcome.discarded_evidence);
+
+        let state = store.load().unwrap();
+        let profile =
+            &state.devices[&id_target].profiles[&attack_shark_x3::ProfileId::new(1).unwrap()];
+        assert!(
+            profile.dpi.desired.is_none(),
+            "source desired must not pair with the target's unrelated observation"
+        );
+        let observed = profile.dpi.observed.as_ref().unwrap();
+        assert_eq!(observed.value.stages[0].get(), 1600);
+    }
+
+    #[tokio::test]
+    async fn pruning_keeps_mutually_claiming_shells_alive() {
+        let store = StateStore::memory();
+        let endpoint = receiver_endpoint(r"\\?\hid#shared-receiver");
+        let first = insert_device_with_endpoint(&store, endpoint.clone());
+        let second = insert_device_with_endpoint(&store, endpoint.clone());
+        let manager = DeviceManager::with_store_and_factory(
+            store.clone(),
+            Arc::new(ScriptedFakeFactory::new().with_endpoint(
+                DiscoveredEndpoint {
+                    endpoint,
+                    connected: true,
+                },
+                ScriptedFakeSession::usb(),
+            )),
+        );
+
+        manager
+            .list_devices(TransportSelection::Auto)
+            .await
+            .unwrap();
+        let state = store.load().unwrap();
+        assert!(
+            state.devices.contains_key(&first) && state.devices.contains_key(&second),
+            "pruning must not remove the last owner of a locator"
+        );
+    }
+
+    #[tokio::test]
+    async fn association_does_not_overwrite_cleared_display_name() {
+        let store = StateStore::memory();
+        let endpoint = DeviceEndpoint::usb(
+            TransportKind::Receiver,
+            0x1d57,
+            0xfa60,
+            None,
+            r"\\?\hid#named-receiver",
+            Some("2.4G Wireless Device"),
+        )
+        .unwrap();
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let manager = DeviceManager::with_store_and_factory(
+            store.clone(),
+            Arc::new(ScriptedFakeFactory::new().with_endpoint(
+                DiscoveredEndpoint {
+                    endpoint,
+                    connected: true,
+                },
+                ScriptedFakeSession::usb(),
+            )),
+        );
+        manager.rename_device(&id, "").unwrap();
+
+        manager
+            .list_devices(TransportSelection::Auto)
+            .await
+            .unwrap();
+        let state = store.load().unwrap();
+        assert!(
+            state.devices[&id].identity.display_name.is_none(),
+            "a cleared name must survive discovery even when the endpoint advertises one"
+        );
+    }
+
+    #[tokio::test]
+    async fn forget_device_refuses_evidence_without_force() {
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint("/dev/hidraw0");
+        let id = insert_device_with_endpoint(&store, endpoint);
+        insert_dpi_evidence(&store, &id, 800);
+        let manager = DeviceManager::with_store_and_factory(
+            store.clone(),
+            Arc::new(ScriptedFakeFactory::new()),
+        );
+
+        let forgotten = manager.forget_device(&id, false).unwrap();
+        assert!(!forgotten, "evidence-bearing device must be protected");
+        assert!(store.load().unwrap().devices.contains_key(&id));
+
+        let forgotten = manager.forget_device(&id, true).unwrap();
+        assert!(forgotten);
+        assert!(!store.load().unwrap().devices.contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn forget_device_clears_selection() {
+        let store = StateStore::memory();
+        let id = insert_device_with_endpoint(&store, wired_endpoint("/dev/hidraw0"));
+        let mut txn = store.transaction().unwrap();
+        txn.state_mut().selected_device = Some(id.clone());
+        txn.commit().unwrap();
+        let manager = DeviceManager::with_store_and_factory(
+            store.clone(),
+            Arc::new(ScriptedFakeFactory::new()),
+        );
+
+        manager.forget_device(&id, false).unwrap();
+        let state = store.load().unwrap();
+        assert!(!state.devices.contains_key(&id));
+        assert_eq!(state.selected_device, None);
+    }
+
+    #[tokio::test]
+    async fn rename_device_sets_and_clears_display_name() {
+        let store = StateStore::memory();
+        let id = insert_device_with_endpoint(&store, wired_endpoint("/dev/hidraw0"));
+        let manager = DeviceManager::with_store_and_factory(
+            store.clone(),
+            Arc::new(ScriptedFakeFactory::new()),
+        );
+
+        manager.rename_device(&id, "  Desk Mouse  ").unwrap();
+        assert_eq!(
+            manager.find_device_by_name("desk mouse").unwrap(),
+            id,
+            "name lookup is case-insensitive and trimmed"
+        );
+
+        manager.rename_device(&id, "   ").unwrap();
+        assert!(
+            store.load().unwrap().devices[&id]
+                .identity
+                .display_name
+                .is_none()
+        );
+        assert!(manager.find_device_by_name("desk mouse").is_err());
+    }
+
+    #[tokio::test]
+    async fn find_device_by_name_rejects_ambiguous_names() {
+        let store = StateStore::memory();
+        let first = insert_device_with_endpoint(&store, wired_endpoint("/dev/hidraw0"));
+        let second = insert_device_with_endpoint(&store, wired_endpoint("/dev/hidraw1"));
+        let manager =
+            DeviceManager::with_store_and_factory(store, Arc::new(ScriptedFakeFactory::new()));
+        manager.rename_device(&first, "Mouse").unwrap();
+        manager.rename_device(&second, "mouse").unwrap();
+
+        let err = manager.find_device_by_name("mouse").unwrap_err();
+        assert!(matches!(err, ManagerError::AmbiguousDevice { .. }));
+    }
+
+    #[tokio::test]
+    async fn association_drops_evidence_free_claimed_shells() {
+        let store = StateStore::memory();
+        let endpoint = receiver_endpoint(r"\\?\hid#shared-receiver");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        insert_dpi_evidence(&store, &id, 800);
+        let shell = insert_device_with_endpoint(&store, endpoint.clone());
+        let manager = DeviceManager::with_store_and_factory(
+            store.clone(),
+            Arc::new(ScriptedFakeFactory::new().with_endpoint(
+                DiscoveredEndpoint {
+                    endpoint,
+                    connected: true,
+                },
+                ScriptedFakeSession::usb(),
+            )),
+        );
+
+        let devices = manager
+            .list_devices(TransportSelection::Auto)
+            .await
+            .unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].identity.id, id);
+        let state = store.load().unwrap();
+        assert!(state.devices.contains_key(&id));
+        assert!(!state.devices.contains_key(&shell), "claimed shell dropped");
     }
 
     #[tokio::test]
@@ -2023,7 +2612,9 @@ mod tests {
 
         let ble = DeviceEndpoint::ble("ble-new", None).unwrap();
         let id_ble = insert_device_with_endpoint(&store, ble.clone());
-        manager.link_devices(&id_ble, &id).unwrap();
+        manager
+            .link_devices(&id_ble, &id, LinkPrecedence::Refuse)
+            .unwrap();
         let after_link = manager.device_identity(&id).unwrap();
         assert_eq!(after_link.id, id);
         assert!(after_link.has_endpoint(TransportKind::Wired));
