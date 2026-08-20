@@ -18,8 +18,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     settle("metadata read").await;
     let original_profile = handle.read_profile(original_metadata.current()).await?;
     settle("profile read").await;
+    // Live polling rate: alias is wire side effect only; the returned rate is from the
+    // current live image. Preceding read_profile(current) establishes the live image
+    // for profile-scoped comparison in this same MouseHandle sequence.
     let original_rate = handle
-        .read_polling_rate(original_metadata.current())
+        .read_live_polling_rate(original_metadata.current())
         .await?;
     settle("polling-rate read").await;
     print_snapshot("backup", original_rate, &original_profile);
@@ -30,11 +33,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("performing final readback and comparing it with the backup");
     let final_metadata = handle.read_profile_metadata().await?;
-    settle("final metadata read").await;
     let final_profile = handle.read_profile(original_metadata.current()).await?;
     settle("final profile read").await;
+    // Same safe association: reload complete target profile before live-rate read.
     let final_rate = handle
-        .read_polling_rate(original_metadata.current())
+        .read_live_polling_rate(original_metadata.current())
         .await?;
     settle("final polling-rate read").await;
 

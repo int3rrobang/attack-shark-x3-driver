@@ -140,14 +140,6 @@ pub fn encode_debug_prefs(state: &PreferencesState, framing: PreferencesFraming)
     )
 }
 
-/// Descriptive alias for [`encode_debug_prefs`].
-pub fn encode_debug_preferences(
-    state: &PreferencesState,
-    framing: PreferencesFraming,
-) -> OfflinePacket {
-    encode_debug_prefs(state, framing)
-}
-
 /// Alias named after the corresponding `debug prefs` command.
 pub fn debug_prefs(state: &PreferencesState, framing: PreferencesFraming) -> OfflinePacket {
     encode_debug_prefs(state, framing)

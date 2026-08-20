@@ -7,7 +7,7 @@ Icons: https://lucide.dev (ISC License)
 distributed under the ISC License below.
 
 The remaining icon SVGs in `assets/` (`home.svg`, `settings.svg`, `cursor.svg`,
-`target.svg`, `pulse.svg`, `edit.svg`, `eye-off.svg`) are stylistically
+`target.svg`, `pulse.svg`) are stylistically
 consistent with Lucide / Feather and may be derived from them; if you intend to
 redistribute this application, apply the same attribution to any of those that
 originated from Lucide or Feather.

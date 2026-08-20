@@ -1,0 +1,425 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "x3-battery-level-01-min",
+      "evidence": "disassembly+live-confirmed",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "0310400101",
+      "decoded": { "kind": "BatteryChanged", "level": 10 }
+    },
+    {
+      "name": "x3-battery-level-02",
+      "evidence": "disassembly+live-confirmed",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "0310400102",
+      "decoded": { "kind": "BatteryChanged", "level": 20 }
+    },
+    {
+      "name": "x3-battery-level-03",
+      "evidence": "disassembly+live-confirmed",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "0310400103",
+      "decoded": { "kind": "BatteryChanged", "level": 30 }
+    },
+    {
+      "name": "x3-battery-level-04",
+      "evidence": "disassembly+live-confirmed",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "0310400104",
+      "decoded": { "kind": "BatteryChanged", "level": 40 }
+    },
+    {
+      "name": "x3-battery-level-05",
+      "evidence": "disassembly+live-confirmed",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "0310400105",
+      "decoded": { "kind": "BatteryChanged", "level": 50 }
+    },
+    {
+      "name": "x3-battery-level-06",
+      "evidence": "disassembly+live-confirmed",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "0310400106",
+      "decoded": { "kind": "BatteryChanged", "level": 60 }
+    },
+    {
+      "name": "x3-battery-level-07",
+      "evidence": "disassembly+live-confirmed",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "0310400107",
+      "decoded": { "kind": "BatteryChanged", "level": 70 }
+    },
+    {
+      "name": "x3-battery-level-08",
+      "evidence": "disassembly+live-confirmed",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "0310400108",
+      "decoded": { "kind": "BatteryChanged", "level": 80 }
+    },
+    {
+      "name": "x3-battery-level-09-live-capture",
+      "evidence": "live-confirmed",
+      "source": "docs/transports/usb-hid.md#x3-through-the-fa60-receiver",
+      "packetHex": "0310400109",
+      "decoded": { "kind": "BatteryChanged", "level": 90 }
+    },
+    {
+      "name": "x3-battery-level-10-max-captured",
+      "evidence": "capture-confirmed",
+      "source": "docs/protocols/battery.md#confirmed-x3-fa60-receiver-format",
+      "packetHex": "031040010a",
+      "decoded": { "kind": "BatteryChanged", "level": 100 }
+    },
+    {
+      "name": "x3-battery-reject-00-below-min",
+      "evidence": "disassembly",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "0310400100",
+      "decoded": null
+    },
+    {
+      "name": "x3-battery-reject-0b-above-max",
+      "evidence": "disassembly",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "031040010b",
+      "decoded": null
+    },
+    {
+      "name": "x3-battery-reject-ff-far-above-max",
+      "evidence": "disassembly",
+      "source": "docs/protocols/battery.md#x3-exe-decode",
+      "packetHex": "03104001ff",
+      "decoded": null
+    },
+    {
+      "name": "x11-battery-valid-00-min",
+      "evidence": "static-analysis",
+      "source": "docs/protocols/battery.md#x11-legacy-format",
+      "packetHex": "0355400100",
+      "decoded": { "kind": "BatteryChanged", "level": 0 }
+    },
+    {
+      "name": "x11-battery-valid-32-mid",
+      "evidence": "static-analysis",
+      "source": "docs/protocols/battery.md#x11-legacy-format",
+      "packetHex": "0355400132",
+      "decoded": { "kind": "BatteryChanged", "level": 50 }
+    },
+    {
+      "name": "x11-battery-valid-64-max",
+      "evidence": "static-analysis",
+      "source": "docs/protocols/battery.md#x11-legacy-format",
+      "packetHex": "0355400164",
+      "decoded": { "kind": "BatteryChanged", "level": 100 }
+    },
+    {
+      "name": "x11-battery-reject-65-above-100",
+      "evidence": "static-analysis",
+      "source": "docs/protocols/battery.md#x11-legacy-format",
+      "packetHex": "0355400165",
+      "decoded": null
+    },
+    {
+      "name": "x11-battery-reject-ff-far-above-100",
+      "evidence": "static-analysis",
+      "source": "docs/protocols/battery.md#x11-legacy-format",
+      "packetHex": "03554001ff",
+      "decoded": null
+    },
+    {
+      "name": "battery-malformed-short-length-4",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#raw_report",
+      "packetHex": "03104001",
+      "decoded": null
+    },
+    {
+      "name": "battery-malformed-empty",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#raw_report",
+      "packetHex": "",
+      "decoded": null
+    },
+    {
+      "name": "battery-malformed-wrong-report-id",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#raw_report",
+      "packetHex": "021040010a",
+      "decoded": null
+    },
+    {
+      "name": "battery-malformed-wrong-model-x3",
+      "evidence": "implementation",
+      "source": "docs/protocols/battery.md#confirmed-x3-fa60-receiver-format",
+      "packetHex": "031140010a",
+      "decoded": null
+    },
+    {
+      "name": "battery-malformed-wrong-presence-flag",
+      "evidence": "implementation",
+      "source": "docs/protocols/battery.md#confirmed-x3-fa60-receiver-format",
+      "packetHex": "031041010a",
+      "decoded": null
+    },
+    {
+      "name": "battery-malformed-wrong-status-flag",
+      "evidence": "implementation",
+      "source": "docs/protocols/battery.md#confirmed-x3-fa60-receiver-format",
+      "packetHex": "031040020a",
+      "decoded": null
+    },
+    {
+      "name": "battery-malformed-wrong-x11-model",
+      "evidence": "implementation",
+      "source": "docs/protocols/battery.md#x11-legacy-format",
+      "packetHex": "0356400164",
+      "decoded": null
+    },
+    {
+      "name": "battery-valid-with-trailing-padding-accepted",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#raw_report",
+      "packetHex": "031040010a00ff",
+      "decoded": { "kind": "BatteryChanged", "level": 100 }
+    },
+    {
+      "name": "dpi-button-stage-01-min",
+      "evidence": "live-confirmed",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0300100100",
+      "decoded": { "kind": "ActiveDpiStageChanged", "stage": 1 }
+    },
+    {
+      "name": "dpi-button-stage-02-captured",
+      "evidence": "live-confirmed",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0300100200",
+      "decoded": { "kind": "ActiveDpiStageChanged", "stage": 2 }
+    },
+    {
+      "name": "dpi-button-stage-08-max",
+      "evidence": "live-confirmed",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0300100800",
+      "decoded": { "kind": "ActiveDpiStageChanged", "stage": 8 }
+    },
+    {
+      "name": "dpi-button-reject-stage-00",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0300100000",
+      "decoded": null
+    },
+    {
+      "name": "dpi-button-reject-stage-09-above-max",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0300100900",
+      "decoded": null
+    },
+    {
+      "name": "dpi-button-reject-trailing-nonzero",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0300100201",
+      "decoded": null
+    },
+    {
+      "name": "secondary-profile-01-min",
+      "evidence": "implementation",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0300200100",
+      "decoded": { "kind": "SecondaryProfileChanged", "profile": 1 }
+    },
+    {
+      "name": "secondary-profile-05-max",
+      "evidence": "implementation",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0300200500",
+      "decoded": { "kind": "SecondaryProfileChanged", "profile": 5 }
+    },
+    {
+      "name": "secondary-profile-reject-00",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#profile_event",
+      "packetHex": "0300200000",
+      "decoded": null
+    },
+    {
+      "name": "secondary-profile-reject-06-above-max",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#profile_event",
+      "packetHex": "0300200600",
+      "decoded": null
+    },
+    {
+      "name": "connection-connected-true",
+      "evidence": "implementation",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0310500000",
+      "decoded": { "kind": "ConnectionChanged", "connected": true }
+    },
+    {
+      "name": "connection-disconnected-false",
+      "evidence": "implementation",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0310500100",
+      "decoded": { "kind": "ConnectionChanged", "connected": false }
+    },
+    {
+      "name": "connection-reject-state-02",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0310500200",
+      "decoded": null
+    },
+    {
+      "name": "connection-reject-trailing-nonzero",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0310500001",
+      "decoded": null
+    },
+    {
+      "name": "dpi-index-01-min",
+      "evidence": "implementation",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0300600100",
+      "decoded": { "kind": "DpiIndexChanged", "index": 1 }
+    },
+    {
+      "name": "dpi-index-10-max",
+      "evidence": "implementation",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0300600a00",
+      "decoded": { "kind": "DpiIndexChanged", "index": 10 }
+    },
+    {
+      "name": "dpi-index-reject-00",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0300600000",
+      "decoded": null
+    },
+    {
+      "name": "dpi-index-reject-0b-above-max",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0300600b00",
+      "decoded": null
+    },
+    {
+      "name": "led-mode-00-min",
+      "evidence": "implementation",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0300700000",
+      "decoded": { "kind": "LedModeChanged", "mode": 0 }
+    },
+    {
+      "name": "led-mode-07-max",
+      "evidence": "implementation",
+      "source": "docs/transports/usb-hid.md#auxiliary-report-0x03-input-events",
+      "packetHex": "0300700700",
+      "decoded": { "kind": "LedModeChanged", "mode": 7 }
+    },
+    {
+      "name": "led-mode-reject-08-above-max",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0300700800",
+      "decoded": null
+    },
+    {
+      "name": "led-mode-reject-trailing-nonzero",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0300700001",
+      "decoded": null
+    },
+    {
+      "name": "profile-sync-zero-indexed-00-maps-to-1",
+      "evidence": "live-confirmed",
+      "source": "docs/transports/usb-hid.md#profile-sync-0x8000",
+      "packetHex": "0300800000",
+      "decoded": { "kind": "ProfileSync", "profile": 1 }
+    },
+    {
+      "name": "profile-sync-zero-indexed-04-maps-to-5",
+      "evidence": "live-confirmed",
+      "source": "docs/transports/usb-hid.md#profile-sync-0x8000",
+      "packetHex": "0300800400",
+      "decoded": { "kind": "ProfileSync", "profile": 5 }
+    },
+    {
+      "name": "profile-sync-reject-05-above-max",
+      "evidence": "live-confirmed",
+      "source": "docs/transports/usb-hid.md#profile-sync-0x8000",
+      "packetHex": "0300800500",
+      "decoded": null
+    },
+    {
+      "name": "profile-sync-reject-trailing-nonzero",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#zero_indexed_profile_event",
+      "packetHex": "0300800001",
+      "decoded": null
+    },
+    {
+      "name": "unknown-event-9999",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0399990000",
+      "decoded": null
+    },
+    {
+      "name": "unknown-event-1234",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0334120000",
+      "decoded": null
+    },
+    {
+      "name": "unsupported-wakeup-0708-remains-unknown",
+      "evidence": "implementation",
+      "source": "docs/protocols/README.md#0x07-wakeup-mode-unsupported",
+      "packetHex": "0308070100",
+      "decoded": null
+    },
+    {
+      "name": "unsupported-macro-0900-remains-unknown",
+      "evidence": "implementation",
+      "source": "docs/protocols/README.md#0x09-custom-macros-unsupported",
+      "packetHex": "0300090000",
+      "decoded": null
+    },
+    {
+      "name": "unsupported-event-1111",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#decode_input_report",
+      "packetHex": "0311110000",
+      "decoded": null
+    },
+    {
+      "name": "short-packet-4-bytes-rejected",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#raw_report",
+      "packetHex": "03001002",
+      "decoded": null
+    },
+    {
+      "name": "short-packet-1-byte-rejected",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#raw_report",
+      "packetHex": "03",
+      "decoded": null
+    },
+    {
+      "name": "wrong-report-id-02-rejected",
+      "evidence": "implementation",
+      "source": "crates/attack-shark-x3/src/protocol/input.rs#raw_report",
+      "packetHex": "0200100200",
+      "decoded": null
+    }
+  ]
+}

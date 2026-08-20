@@ -647,7 +647,7 @@ component OverviewPage inherits Rectangle {
         if !root.battery-text.is-empty : Text { x: parent.width - 206px; y: 46px; width: 180px; text: root.battery-text; color: Theme.text; font-size: 25px; font-weight: 700; horizontal-alignment: right; overflow: elide; }
         Text { x: parent.width - 206px; y: 86px; width: 180px; text: root.verification-text; color: Theme.muted; font-size: 9px; horizontal-alignment: right; wrap: word-wrap;
             Tooltip {
-                text: @markdown("What this means: applied — sent to the mouse; confirmed — the mouse reported it back; survives power-off — proven to stay after a full power cycle. Run a check in Advanced to raise the confidence.");
+                text: @markdown("What this means: applied — the mouse accepted the change; confirmed by the mouse — the mouse reported the setting; survives a full power-off — the setting stayed after reconnecting. Run a check in Advanced to raise the confidence.");
             }
         }
     }
@@ -948,12 +948,12 @@ component AdvancedPage inherits Rectangle {
             Card {
                 width: parent.width; height: 170px;
                 Text { x: 18px; y: 15px; text: "save checks"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 40px; width: parent.width - 36px; text: root.ble-device ? "Bluetooth saves can confirm delivery but cannot read settings back." : "Choose how USB saves are checked."; color: root.ble-device ? Theme.warning : Theme.muted; font-size: 10px; wrap: word-wrap; }
+                Text { x: 18px; y: 40px; width: parent.width - 36px; text: root.ble-device ? "The mouse can acknowledge Bluetooth changes but can't confirm the settings." : "Choose how confidently the app confirms USB changes."; color: root.ble-device ? Theme.warning : Theme.muted; font-size: 10px; wrap: word-wrap; }
                 HorizontalLayout { x: 18px; y: 82px; width: 260px; height: 38px; spacing: 6px;
-                    ChoiceButton { label: "delivery only"; compact: true; selected: root.validation-choice == 0; enabled: root.interactive; clicked => { root.set-validation-choice(0); } }
-                    ChoiceButton { label: "confirm on mouse"; compact: true; selected: root.validation-choice == 1; enabled: root.interactive && !root.ble-device; clicked => { root.set-validation-choice(1); } }
+                    ChoiceButton { label: "device acknowledged"; compact: true; selected: root.validation-choice == 0; enabled: root.interactive; clicked => { root.set-validation-choice(0); } }
+                    ChoiceButton { label: "confirmed by mouse"; compact: true; selected: root.validation-choice == 1; enabled: root.interactive && !root.ble-device; clicked => { root.set-validation-choice(1); } }
                 }
-                Text { x: 294px; y: 87px; width: parent.width - 314px; text: root.validation-choice == 1 && !root.ble-device ? "confirmed by the mouse" : "delivery acknowledged"; color: Theme.text; font-size: 11px; font-weight: 650; }
+                Text { x: 294px; y: 87px; width: parent.width - 314px; text: root.validation-choice == 1 && !root.ble-device ? "confirmed by the mouse" : "applied (device acknowledged)"; color: Theme.text; font-size: 11px; font-weight: 650; }
                 Text { x: 18px; y: 137px; text: root.lifecycle-text; color: Theme.muted; font-size: 9px; overflow: elide; }
             }
             Card {
@@ -992,7 +992,7 @@ component AdvancedPage inherits Rectangle {
                 HorizontalLayout { x: 18px; y: 68px; width: 360px; height: 34px; spacing: 6px;
                     ActionButton { label: "import"; compact: true; enabled: !root.verification-running; clicked => { root.request-import(); } }
                     ActionButton { label: "export"; compact: true; enabled: !root.verification-running; clicked => { root.request-export(); } }
-                    ActionButton { label: "invalidate local state"; compact: true; destructive: true; enabled: !root.verification-running; clicked => { root.request-invalidate-state(); } }
+                    ActionButton { label: "clear saved status"; compact: true; destructive: true; enabled: !root.verification-running; clicked => { root.request-invalidate-state(); } }
                 }
             }
             Card {
@@ -1125,7 +1125,7 @@ component SaveConfirmationPopup inherits PopupWindow {
         border-radius: Theme.radius;
         drop-shadow-blur: 24px;
         drop-shadow-color: Theme.shadow;
-        Text { x: 20px; y: 16px; width: parent.width - 40px; text: "write this draft to the mouse?"; color: Theme.text; font-size: 16px; font-weight: 700; }
+        Text { x: 20px; y: 16px; width: parent.width - 40px; text: "save these changes to the mouse?"; color: Theme.text; font-size: 16px; font-weight: 700; }
         Rectangle {
             x: 20px; y: 50px; width: parent.width - 40px; height: 112px;
             background: Theme.accent-soft;
@@ -1135,7 +1135,7 @@ component SaveConfirmationPopup inherits PopupWindow {
             Text { x: 12px; y: 8px; width: parent.width - 24px; text: "PHYSICAL BUTTON CHANGES"; color: Theme.accent; font-size: 9px; font-weight: 700; }
             Text { x: 12px; y: 28px; width: parent.width - 24px; height: parent.height - 36px; text: root.button-change-summary; color: Theme.text; font-size: 12px; font-weight: 650; wrap: word-wrap; }
         }
-        Text { x: 20px; y: 174px; width: parent.width - 40px; height: 58px; text: "Save writes every changed draft setting. Changed physical button assignments can disable or repurpose mouse buttons."; color: Theme.warning; font-size: 11px; wrap: word-wrap; }
+        Text { x: 20px; y: 174px; width: parent.width - 40px; height: 58px; text: "Save applies every changed setting. Changed physical button assignments can disable or repurpose mouse buttons."; color: Theme.warning; font-size: 11px; wrap: word-wrap; }
         ActionButton { x: 20px; y: parent.height - 56px; width: 158px; label: "confirm save"; primary: true; clicked => { root.confirm(); } }
         ActionButton { x: parent.width - 116px; y: parent.height - 56px; width: 96px; label: "cancel"; compact: true; clicked => { root.cancel(); } }
     }
@@ -1334,7 +1334,7 @@ export component AppWindow inherits Window {
 
     Rectangle {
         x: 220px; y: 62px; width: parent.width - 220px; height: parent.height - 106px; background: Theme.canvas;
-        if root.current-page == 0 : OverviewPage {
+        OverviewPage { visible: root.current-page == 0;
             width: parent.width; height: parent.height;
             profile-summary: root.profile-summary; active-dpi-text: root.active-dpi-text; active-stage-text: root.active-stage-text;
             polling-rate-text: root.polling-rate-text; verification-text: root.verification-text; hardware-ready: root.hardware-ready;
@@ -1343,11 +1343,11 @@ export component AppWindow inherits Window {
             dismiss-all-profiles-refresh => { root.dismiss-all-profiles-refresh(); }
             navigate(page) => { root.navigate(page); }
         }
-        if root.current-page == 1 : ButtonsPage {
+        ButtonsPage { visible: root.current-page == 1;
             width: parent.width; height: parent.height; bindings: root.bindings; binding-actions: root.binding-actions; interactive: root.hardware-ready && !root.busy;
             set-binding-action(index, action) => { root.set-binding-action(index, action); }
         }
-        if root.current-page == 2 : SensitivityPage {
+        SensitivityPage { visible: root.current-page == 2;
             width: parent.width; height: parent.height; dpi-stages: root.dpi-stages; dpi-min: root.dpi-min; dpi-max: root.dpi-max;
             interactive: root.hardware-ready && !root.busy && (root.preferences-ready || (root.ble-device && root.allow-explicit-defaults));
             motion-sync-readback <=> root.motion-sync-readback; ripple-control-readback <=> root.ripple-control-readback;
@@ -1362,7 +1362,7 @@ export component AppWindow inherits Window {
             toggle-angle-snap(value) => { root.toggle-angle-snap(value); }
             set-lift-off(value) => { root.set-lift-off(value); }
         }
-        if root.current-page == 3 : PerformancePage {
+        PerformancePage { visible: root.current-page == 3;
             width: parent.width; height: parent.height; selected-rate-hz <=> root.selected-rate-hz;
             interactive: root.hardware-ready && !root.busy && (root.preferences-ready || (root.ble-device && root.allow-explicit-defaults));
             rate-interactive: root.hardware-ready && !root.busy && root.polling-rate-ready && !root.ble-device;
@@ -1375,7 +1375,7 @@ export component AppWindow inherits Window {
             set-sleep-text(value) => { root.set-sleep-text(value); }
             set-deep-sleep-text(value) => { root.set-deep-sleep-text(value); }
         }
-        if root.current-page == 4 : AdvancedPage {
+        AdvancedPage { visible: root.current-page == 4;
             width: parent.width; height: parent.height; transport-label: root.transport-label; device-name: root.device-name; device-id-text: root.device-id-text; device-product-text: root.device-product-text; metadata-summary: root.metadata-summary; lifecycle-text: root.lifecycle-text;
             validation-choice: root.validation-choice; interactive: root.hardware-ready && !root.busy; preferences-ready: root.preferences-ready; ble-device: root.ble-device; all-profiles-observed: root.all-profiles-observed;
             baseline-choice <=> root.baseline-choice; allow-explicit-defaults <=> root.allow-explicit-defaults; advanced-preferences <=> root.advanced-preferences;
@@ -1393,7 +1393,7 @@ export component AppWindow inherits Window {
             request-verify-profile => { root.request-verify-profile(); }
             request-verify-power-cycle => { root.request-verify-power-cycle(); }
         }
-        if root.current-page == 5 : SettingsPage {
+        SettingsPage { visible: root.current-page == 5;
             width: parent.width; height: parent.height; product-name-choice: root.product-name-choice; custom-product-name <=> root.custom-product-name;
             logarithmic-scale: root.dpi-log-scale; dpi-min: root.dpi-min; dpi-max: root.dpi-max;
             dpi-min-text <=> root.dpi-min-text; dpi-max-text <=> root.dpi-max-text;

@@ -6,7 +6,7 @@ use crate::{
     device::{DeviceId, TransportSelection},
     state::SCHEMA_VERSION,
 };
-use attack_shark_x3::{ProfileId, TransportKind};
+use attack_shark_x3::{ProfileId, ProtocolError, TransportKind};
 
 /// Errors returned while loading, validating, or storing durable manager state.
 #[derive(Debug, Error)]
@@ -150,6 +150,12 @@ pub enum ManagerError {
     },
 
     /// A normalized readback differs from the requested value.
+    ///
+    /// For USB profile metadata, `actual == target` is required for success;
+    /// a mismatch is persisted as a mismatch observation and never reports
+    /// success. For polling rate, report `0x06` carries the live image rate
+    /// and is only associated after loading the target profile in the same
+    /// guarded session.
     #[error("confirmation mismatch for {resource} on profile {profile:?}")]
     VerificationMismatch {
         resource: &'static str,
@@ -168,7 +174,102 @@ pub enum ManagerError {
     )]
     RefreshRestoreFailed { refresh: String, restore: String },
 
+    /// A protocol-level validation or construction failure with operation context.
+    ///
+    /// The user-facing [`Display`] intentionally omits the technical [`ProtocolError`]
+    /// detail to keep normal UI copy concise; the typed source remains available via
+    /// [`std::error::Error::source`] and `Debug` for diagnostics and JSON output.
+    #[error("invalid update for {operation}")]
+    Protocol {
+        operation: &'static str,
+        #[source]
+        source: ProtocolError,
+    },
+
     /// The requested update is invalid before reaching a transport.
     #[error("invalid update: {0}")]
     InvalidUpdate(String),
+
+    /// A per-device operation could not acquire its lock within the timeout.
+    #[error(
+        "device {device} is busy: operation {operation} timed out after {timeout:?} waiting for lock at {path}"
+    )]
+    DeviceOperationBusy {
+        device: DeviceId,
+        operation: &'static str,
+        timeout: Duration,
+        path: PathBuf,
+    },
+}
+#[cfg(test)]
+mod tests {
+    use super::ManagerError;
+    use attack_shark_x3::ProtocolError;
+    use std::error::Error;
+
+    #[test]
+    fn protocol_error_preserves_typed_source_and_operation() {
+        let source = ProtocolError::InvalidProfile { value: 99 };
+        let err = ManagerError::Protocol {
+            operation: "profile metadata",
+            source,
+        };
+        assert!(matches!(
+            err,
+            ManagerError::Protocol {
+                operation: "profile metadata",
+                ..
+            }
+        ));
+        let chained = err.source().expect("protocol error must have source");
+        let typed = chained
+            .downcast_ref::<ProtocolError>()
+            .expect("source must be ProtocolError");
+        assert_eq!(*typed, ProtocolError::InvalidProfile { value: 99 });
+    }
+
+    #[test]
+    fn protocol_display_hides_technical_source_but_debug_shows_it() {
+        let source = ProtocolError::InvalidPollingRate { value: 999 };
+        let err = ManagerError::Protocol {
+            operation: "dpi state",
+            source,
+        };
+        let display = format!("{err}");
+        assert_eq!(display, "invalid update for dpi state");
+        assert!(
+            !display.contains("999"),
+            "Display must not leak technical source detail: {display}"
+        );
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains("InvalidPollingRate"),
+            "Debug must retain source: {debug}"
+        );
+        assert!(debug.contains("dpi state"));
+    }
+
+    #[test]
+    fn protocol_operation_context_is_preserved() {
+        let err = ManagerError::Protocol {
+            operation: "dpi: merge delta",
+            source: ProtocolError::InvalidStageCount { count: 0 },
+        };
+        if let ManagerError::Protocol { operation, source } = &err {
+            assert_eq!(*operation, "dpi: merge delta");
+            assert_eq!(*source, ProtocolError::InvalidStageCount { count: 0 });
+        } else {
+            panic!("expected Protocol variant");
+        }
+        // source chaining via Error::source returns ProtocolError
+        let src = err.source().unwrap();
+        assert!(src.downcast_ref::<ProtocolError>().is_some());
+    }
+
+    #[test]
+    fn invalid_update_string_variant_still_available() {
+        let err = ManagerError::InvalidUpdate("custom message".to_owned());
+        assert_eq!(format!("{err}"), "invalid update: custom message");
+        assert!(err.source().is_none());
+    }
 }

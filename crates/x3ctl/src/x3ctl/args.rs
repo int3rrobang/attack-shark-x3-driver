@@ -126,6 +126,17 @@ pub enum TransportArg {
     Ble,
 }
 
+/// Which side keeps its saved configuration when both linked identities carry evidence.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum KeepArg {
+    /// Keep the target's saved configuration; discard the source's.
+    Target,
+    /// Move the source's saved configuration onto the target.
+    Source,
+    /// Fill the target's missing values from the source; the target wins conflicts.
+    Merge,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub enum LodArg {
     One,
@@ -203,6 +214,33 @@ pub enum Command {
     Devices,
     /// Select a discoverable exact device ID.
     Use { device: String },
+    /// Merge one saved identity into another, moving its endpoints.
+    Link {
+        /// Identity to merge away.
+        source: String,
+        /// Identity that survives and receives the source's endpoints.
+        target: String,
+        /// Which side keeps its saved configuration when both carry evidence.
+        #[arg(long, value_enum)]
+        keep: Option<KeepArg>,
+    },
+    /// Re-point a stored endpoint at the connected device after its locator changed.
+    Rebind { device: String },
+    /// Remove a saved identity from state.
+    Forget {
+        /// Identity (mouse-N or unique display name) to remove.
+        device: String,
+        /// Remove even when the identity carries saved configuration.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Set the presentation name used for device lookup.
+    Rename {
+        /// Identity (mouse-N or unique display name) to rename.
+        device: String,
+        /// New name; blank clears it.
+        name: String,
+    },
     /// Read device status.
     Status,
     /// Read or activate a profile.

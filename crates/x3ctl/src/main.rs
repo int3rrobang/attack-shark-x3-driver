@@ -5,25 +5,26 @@ mod args;
 #[path = "x3ctl/output.rs"]
 mod output;
 
-use std::path::PathBuf;
-use std::process::ExitCode;
-
 use attack_shark_x3_manager::{
     BaselineSource, ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport, DeviceId,
     DeviceManager, DeviceStatus, DpiDelta, DpiState, DpiValue, FullProfileRefreshOutcome,
-    LiftOffDistance, PollingRate, PreferencesDelta, PreferencesFraming, PreferencesState,
-    ProfileId, ProfileResourceKind, ResourceSnapshot, SafeButtonAction, SafeButtonSlot,
-    SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind, TransportSelection,
-    UpdatePolicy, VerificationMethod, encode_debug_buttons, encode_debug_dpi, encode_debug_prefs,
+    LiftOffDistance, LinkPrecedence, PollingRate, PreferencesDelta, PreferencesFraming,
+    PreferencesState, ProfileId, ProfileResourceKind, ResourceSnapshot, SafeButtonAction,
+    SafeButtonSlot, SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind,
+    TransportSelection, UpdatePolicy, VerificationMethod, X3ButtonAction, encode_debug_buttons,
+    encode_debug_dpi, encode_debug_prefs,
 };
 use clap::Parser;
 use serde::Serialize;
+use std::fmt::Write as _;
+use std::path::PathBuf;
+use std::process::ExitCode;
 
 use args::{
     ActionArg, BaselineArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, DebugDpiArgs,
-    DebugPrefsArgs, DpiCommand, DpiSetArgs, LodArg, PrefsCommand, PrefsSetArgs, ProfileCommand,
-    ProfileSetArgs, RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg, ValidationArg,
-    VerifyMethodArg,
+    DebugPrefsArgs, DpiCommand, DpiSetArgs, KeepArg, LodArg, PrefsCommand, PrefsSetArgs,
+    ProfileCommand, ProfileSetArgs, RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg,
+    ValidationArg, VerifyMethodArg,
 };
 use output::Output;
 
@@ -37,7 +38,24 @@ enum VerificationAction {
 enum Action {
     Devices,
     Use {
-        device: DeviceId,
+        device: String,
+    },
+    Link {
+        source: String,
+        target: String,
+        keep: Option<LinkPrecedence>,
+    },
+    Rebind {
+        device: String,
+        transport: TransportKind,
+    },
+    Forget {
+        device: String,
+        force: bool,
+    },
+    Rename {
+        device: String,
+        name: String,
     },
     Status,
     ProfileGet {
@@ -153,7 +171,40 @@ fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
     match command {
         Command::Devices => Ok(Action::Devices),
         Command::Use { device } => Ok(Action::Use {
-            device: parse_device_id(device)?,
+            device: device.clone(),
+        }),
+        Command::Link {
+            source,
+            target,
+            keep,
+        } => Ok(Action::Link {
+            source: source.clone(),
+            target: target.clone(),
+            keep: keep.map(|keep| match keep {
+                KeepArg::Target => LinkPrecedence::KeepTarget,
+                KeepArg::Source => LinkPrecedence::KeepSource,
+                KeepArg::Merge => LinkPrecedence::Merge,
+            }),
+        }),
+        Command::Rebind { device } => Ok(Action::Rebind {
+            device: device.clone(),
+            transport: match cli.transport {
+                TransportArg::Auto => {
+                    return Err("rebind needs an explicit --transport wired|receiver".to_owned());
+                }
+                TransportArg::Wired => TransportKind::Wired,
+                TransportArg::Receiver => TransportKind::Receiver,
+                #[cfg(feature = "ble")]
+                TransportArg::Ble => TransportKind::Ble,
+            },
+        }),
+        Command::Forget { device, force } => Ok(Action::Forget {
+            device: device.clone(),
+            force: *force,
+        }),
+        Command::Rename { device, name } => Ok(Action::Rename {
+            device: device.clone(),
+            name: name.clone(),
         }),
         Command::Status => Ok(Action::Status),
         Command::Profile(command) => match command {
@@ -220,7 +271,7 @@ fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
             StateCommand::Invalidate => Ok(Action::StateInvalidate),
             StateCommand::Reset => Ok(Action::StateReset),
         },
-        Command::Debug(_) => Err("debug commands are handled offline".into()),
+        Command::Debug(_) => unreachable!("debug commands are handled offline before build_action"),
     }
 }
 
@@ -369,10 +420,16 @@ async fn dispatch(
                 devices
                     .iter()
                     .map(|device| {
+                        let transport_label = device
+                            .transports
+                            .iter()
+                            .map(|transport| format_transport(*transport))
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         format!(
                             "{} [{}] {}",
                             device.identity.id,
-                            format_transport(device.identity.transport),
+                            transport_label,
                             if device.connected {
                                 "connected"
                             } else {
@@ -386,6 +443,7 @@ async fn dispatch(
             output.print(human, &devices)
         }
         Action::Use { device } => {
+            let device = resolve_device_arg(manager, &device)?;
             let resolved = manager
                 .resolve_device(Some(&device), selection)
                 .await
@@ -394,6 +452,70 @@ async fn dispatch(
                 .select_device(&resolved)
                 .map_err(|error| error.to_string())?;
             output.print(format!("Selected device {resolved}"), &resolved)
+        }
+        Action::Rebind { device, transport } => {
+            let device = resolve_device_arg(manager, &device)?;
+            manager
+                .rebind_missing_endpoint(&device, transport)
+                .await
+                .map_err(|error| error.to_string())?;
+            output.print(
+                format!(
+                    "Rebound {device} to the connected {} device",
+                    format_transport(transport)
+                ),
+                &device,
+            )
+        }
+        Action::Link {
+            source,
+            target,
+            keep,
+        } => {
+            let source = resolve_device_arg(manager, &source)?;
+            let target = resolve_device_arg(manager, &target)?;
+            let outcome = manager
+                .link_devices(&source, &target, keep.unwrap_or(LinkPrecedence::Refuse))
+                .map_err(|error| error.to_string())?;
+            let moved = outcome
+                .moved_transports
+                .iter()
+                .map(|transport| format_transport(*transport))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut human = format!(
+                "Linked {source} into {}; moved {moved}; {source} removed",
+                outcome.target
+            );
+            if outcome.discarded_evidence {
+                human.push_str("; the discarded side's saved configuration was removed");
+            }
+            output.print(human, &outcome)
+        }
+        Action::Forget { device, force } => {
+            let device = resolve_device_arg(manager, &device)?;
+            let forgotten = manager
+                .forget_device(&device, force)
+                .map_err(|error| error.to_string())?;
+            if !forgotten {
+                return Err(format!(
+                    "{device} carries saved configuration; pass --force to forget it anyway"
+                ));
+            }
+            output.print(format!("Forgot {device}"), &device)
+        }
+        Action::Rename { device, name } => {
+            let device = resolve_device_arg(manager, &device)?;
+            manager
+                .rename_device(&device, &name)
+                .map_err(|error| error.to_string())?;
+            let trimmed = name.trim();
+            let human = if trimmed.is_empty() {
+                format!("Cleared the name for {device}")
+            } else {
+                format!("Renamed {device} to {trimmed}")
+            };
+            output.print(human, &device)
         }
         Action::Status => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -540,14 +662,14 @@ async fn dispatch(
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            output.print(
-                format!(
-                    "Set {} button to {}",
-                    slot_label(delta.slot()),
-                    action_label(delta.action())
-                ),
-                &outcome,
-            )
+            let mut human = String::new();
+            let _ = write!(
+                human,
+                "Set {} button to {}",
+                slot_label(delta.slot()),
+                bind_set_action_human(delta.action())
+            );
+            output.print(human, &outcome)
         }
         Action::Battery => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -658,12 +780,27 @@ async fn dispatch(
     }
 }
 
+/// Accepts a canonical `mouse-N` id or a unique display name.
+fn resolve_device_arg(manager: &DeviceManager, raw: &str) -> Result<DeviceId, String> {
+    if let Ok(id) = parse_device_id(raw)
+        && manager.device_identity(&id).is_ok()
+    {
+        return Ok(id);
+    }
+    manager
+        .find_device_by_name(raw)
+        .map_err(|error| error.to_string())
+}
+
 async fn resolve_hardware(
     manager: &DeviceManager,
     cli: &Cli,
     selection: TransportSelection,
 ) -> Result<DeviceId, String> {
-    let explicit = cli.device.as_deref().map(parse_device_id).transpose()?;
+    let explicit = match cli.device.as_deref() {
+        Some(raw) => Some(resolve_device_arg(manager, raw)?),
+        None => None,
+    };
     manager
         .resolve_device(explicit.as_ref(), selection)
         .await
@@ -672,12 +809,12 @@ async fn resolve_hardware(
 
 fn resolve_state_device(manager: &DeviceManager, cli: &Cli) -> Result<DeviceId, String> {
     if let Some(device) = cli.device.as_deref() {
-        return parse_device_id(device);
+        return resolve_device_arg(manager, device);
     }
     manager
         .selected_device()
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "no device selected; use `use <stable-id>` first".to_owned())
+        .ok_or_else(|| "no device selected; use `use <device>` first".to_owned())
 }
 
 fn run_debug(cli: &Cli, command: &DebugCommand, output: &Output) -> Result<(), String> {
@@ -814,9 +951,7 @@ fn parse_dpi_stages(raw: &Option<String>) -> Result<Option<Vec<DpiValue>>, Strin
         let dpi = DpiValue::try_from(value).map_err(|error| error.to_string())?;
         values.push(dpi);
     }
-    if values.is_empty() {
-        return Err("DPI stages must not be empty".into());
-    }
+    debug_assert!(!values.is_empty(), "empty DPI stages already rejected");
     if values.len() > 8 {
         return Err("DPI supports at most eight stages".into());
     }
@@ -936,58 +1071,230 @@ fn format_buttons_human(profile: ProfileId, snapshot: &ResourceSnapshot<ButtonsS
         if slot.action == 0 && slot.modifier == 0 && slot.key_code == 0 {
             continue;
         }
-        let name = button_action_name(slot.action);
-        text.push_str(&format!(
-            "\n  [{index:2}] action=0x{action:02x} ({name}) mod=0x{mod:02x} key=0x{key:02x}",
-            action = slot.action,
-            mod = slot.modifier,
-            key = slot.key_code,
-        ));
+        let readable = assignment_human_readable(*slot);
+        let slot_title = match index {
+            0 => "left",
+            1 => "right",
+            2 => "middle",
+            3 => "dpi",
+            6 => "forward",
+            7 => "backward",
+            _ => "",
+        };
+        if slot_title.is_empty() {
+            let _ = write!(text, "\n  [{index:2}] slot {index}: {readable}");
+        } else {
+            let _ = write!(text, "\n  [{index:2}] {slot_title}: {readable}");
+        }
     }
     text
 }
 
-fn button_action_name(action: u8) -> &'static str {
-    match action {
-        0x01 => "disable",
-        0x02 => "left-click",
-        0x03 => "right-click",
-        0x04 => "middle-click",
-        0x05 => "backward",
-        0x06 => "forward",
-        0x07 => "double-click",
-        0x08 => "fire-button",
-        0x09 => "scroll-up",
-        0x0a => "scroll-down",
-        0x0d => "dpi-cycle",
-        0x0e => "dpi-plus",
-        0x0f => "dpi-minus",
-        0x10 => "easy-aim",
-        0x11 => "shortcut",
-        0x12 => "macro",
-        0x15 => "media-player",
-        0x16 => "previous-track",
-        0x17 => "next-track",
-        0x18 => "play-pause",
-        0x19 => "stop",
-        0x1a => "mute",
-        0x1b => "volume-up",
-        0x1c => "volume-down",
-        0x1d => "calculator",
-        0x1e => "email",
-        0x20 => "browser-forward",
-        0x21 => "browser-backward",
-        0x22 => "browser-stop",
-        0x23 => "my-computer",
-        0x24 => "browser-refresh",
-        0x25 => "browser-home",
-        0x26 => "browser-search",
-        0x34 => "profile-cycle",
-        0x35 => "profile-plus",
-        0x36 => "profile-minus",
-        0x3c => "wheel-scroll-up",
-        _ => "unknown",
+fn assignment_human_readable(assignment: ButtonAssignment) -> String {
+    // Friendly preset names that share the 0x11 shortcut encoding but deserve
+    // effect-first labels like "copy (Ctrl+C)" for ordinary output.
+    let preset = match assignment.as_bytes() {
+        [0x11, 0x01, 0x1b] => Some(("cut", "Ctrl", "X")),
+        [0x11, 0x01, 0x06] => Some(("copy", "Ctrl", "C")),
+        [0x11, 0x01, 0x19] => Some(("paste", "Ctrl", "V")),
+        [0x11, 0x01, 0x12] => Some(("open", "Ctrl", "O")),
+        [0x11, 0x01, 0x16] => Some(("save", "Ctrl", "S")),
+        [0x11, 0x01, 0x09] => Some(("find", "Ctrl", "F")),
+        [0x11, 0x01, 0x1c] => Some(("redo", "Ctrl", "Y")),
+        [0x11, 0x01, 0x04] => Some(("select-all", "Ctrl", "A")),
+        [0x11, 0x01, 0x13] => Some(("print", "Ctrl", "P")),
+        [0x11, 0x04, 0x3d] => Some(("close-window", "Alt", "F4")),
+        [0x11, 0x04, 0x2b] => Some(("swap-windows", "Alt", "Tab")),
+        [0x11, 0x08, 0x07] => Some(("show-desktop", "Win", "D")),
+        [0x11, 0x08, 0x15] => Some(("run-command", "Win", "R")),
+        [0x11, 0x08, 0x0f] => Some(("lock-pc", "Win", "L")),
+        [0x11, 0x0a, 0x16] => Some(("screen-capture", "Win+Shift", "S")),
+        [0x11, 0x03, 0x12] => Some(("browser-favorites", "Ctrl+Shift", "O")),
+        _ => None,
+    };
+    if let Some((name, mods, key)) = preset {
+        let mut out = String::new();
+        let _ = write!(out, "{name} ({mods}+{key})");
+        return out;
     }
+    match assignment.decode_x3_action() {
+        Ok(action) => match action {
+            X3ButtonAction::Disable => "disable".to_owned(),
+            X3ButtonAction::LeftClick => "left-click".to_owned(),
+            X3ButtonAction::RightClick => "right-click".to_owned(),
+            X3ButtonAction::MiddleClick => "middle-click".to_owned(),
+            X3ButtonAction::Backward => "backward".to_owned(),
+            X3ButtonAction::Forward => "forward".to_owned(),
+            X3ButtonAction::DoubleClick => "double-click".to_owned(),
+            X3ButtonAction::FireButton => "fire-button".to_owned(),
+            X3ButtonAction::ScrollUp => "scroll-up".to_owned(),
+            X3ButtonAction::ScrollDown => "scroll-down".to_owned(),
+            X3ButtonAction::DpiCycle => "dpi-cycle".to_owned(),
+            X3ButtonAction::DpiPlus => "dpi-plus".to_owned(),
+            X3ButtonAction::DpiMinus => "dpi-minus".to_owned(),
+            X3ButtonAction::ProfileCycle => "profile-cycle".to_owned(),
+            X3ButtonAction::ProfilePlus => "profile-plus".to_owned(),
+            X3ButtonAction::ProfileMinus => "profile-minus".to_owned(),
+            X3ButtonAction::MediaPlayer => "media-player".to_owned(),
+            X3ButtonAction::PreviousTrack => "previous-track".to_owned(),
+            X3ButtonAction::NextTrack => "next-track".to_owned(),
+            X3ButtonAction::PlayPause => "play-pause".to_owned(),
+            X3ButtonAction::Stop => "stop".to_owned(),
+            X3ButtonAction::Mute => "mute".to_owned(),
+            X3ButtonAction::VolumeUp => "volume-up".to_owned(),
+            X3ButtonAction::VolumeDown => "volume-down".to_owned(),
+            X3ButtonAction::Calculator => "calculator".to_owned(),
+            X3ButtonAction::Email => "email".to_owned(),
+            X3ButtonAction::BrowserForward => "browser-forward".to_owned(),
+            X3ButtonAction::BrowserBackward => "browser-backward".to_owned(),
+            X3ButtonAction::BrowserStop => "browser-stop".to_owned(),
+            X3ButtonAction::MyComputer => "my-computer".to_owned(),
+            X3ButtonAction::BrowserRefresh => "browser-refresh".to_owned(),
+            X3ButtonAction::BrowserHome => "browser-home".to_owned(),
+            X3ButtonAction::BrowserSearch => "browser-search".to_owned(),
+            X3ButtonAction::KeyboardShortcut { modifiers, key } => {
+                let mods = modifiers_human(modifiers.bits());
+                let key_name = hid_key_human(key.get());
+                if mods.is_empty() {
+                    key_name
+                } else {
+                    let mut out = String::new();
+                    let _ = write!(out, "{mods}+{key_name}");
+                    out
+                }
+            }
+            X3ButtonAction::Macro { reference } => {
+                let mut out = String::new();
+                let _ = write!(out, "macro {reference}");
+                out
+            }
+        },
+        Err(_) => match assignment.action {
+            0x10 => "easy-aim".to_owned(),
+            0x3c => "wheel-scroll-up".to_owned(),
+            _ => "unknown".to_owned(),
+        },
+    }
+}
+
+fn modifiers_human(bits: u8) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    if bits & 0x01 != 0 {
+        out.push_str("Ctrl");
+        first = false;
+    }
+    if bits & 0x02 != 0 {
+        if !first {
+            out.push('+');
+        }
+        out.push_str("Shift");
+        first = false;
+    }
+    if bits & 0x04 != 0 {
+        if !first {
+            out.push('+');
+        }
+        out.push_str("Alt");
+        first = false;
+    }
+    if bits & 0x08 != 0 {
+        if !first {
+            out.push('+');
+        }
+        out.push_str("Win");
+    }
+    out
+}
+
+fn hid_key_human(usage: u8) -> String {
+    match usage {
+        0x04 => "A".to_owned(),
+        0x05 => "B".to_owned(),
+        0x06 => "C".to_owned(),
+        0x07 => "D".to_owned(),
+        0x08 => "E".to_owned(),
+        0x09 => "F".to_owned(),
+        0x0a => "G".to_owned(),
+        0x0b => "H".to_owned(),
+        0x0c => "I".to_owned(),
+        0x0d => "J".to_owned(),
+        0x0e => "K".to_owned(),
+        0x0f => "L".to_owned(),
+        0x10 => "M".to_owned(),
+        0x11 => "N".to_owned(),
+        0x12 => "O".to_owned(),
+        0x13 => "P".to_owned(),
+        0x14 => "Q".to_owned(),
+        0x15 => "R".to_owned(),
+        0x16 => "S".to_owned(),
+        0x17 => "T".to_owned(),
+        0x18 => "U".to_owned(),
+        0x19 => "V".to_owned(),
+        0x1a => "W".to_owned(),
+        0x1b => "X".to_owned(),
+        0x1c => "Y".to_owned(),
+        0x1d => "Z".to_owned(),
+        0x1e => "1".to_owned(),
+        0x1f => "2".to_owned(),
+        0x20 => "3".to_owned(),
+        0x21 => "4".to_owned(),
+        0x22 => "5".to_owned(),
+        0x23 => "6".to_owned(),
+        0x24 => "7".to_owned(),
+        0x25 => "8".to_owned(),
+        0x26 => "9".to_owned(),
+        0x27 => "0".to_owned(),
+        0x28 => "Enter".to_owned(),
+        0x29 => "Esc".to_owned(),
+        0x2a => "Backspace".to_owned(),
+        0x2b => "Tab".to_owned(),
+        0x2c => "Space".to_owned(),
+        0x2d => "-".to_owned(),
+        0x2e => "=".to_owned(),
+        0x2f => "[".to_owned(),
+        0x30 => "]".to_owned(),
+        0x31 => "\\".to_owned(),
+        0x32 => "#".to_owned(),
+        0x33 => ";".to_owned(),
+        0x34 => "'".to_owned(),
+        0x35 => "`".to_owned(),
+        0x36 => ",".to_owned(),
+        0x37 => ".".to_owned(),
+        0x38 => "/".to_owned(),
+        0x39 => "CapsLock".to_owned(),
+        0x3a => "F1".to_owned(),
+        0x3b => "F2".to_owned(),
+        0x3c => "F3".to_owned(),
+        0x3d => "F4".to_owned(),
+        0x3e => "F5".to_owned(),
+        0x3f => "F6".to_owned(),
+        0x40 => "F7".to_owned(),
+        0x41 => "F8".to_owned(),
+        0x42 => "F9".to_owned(),
+        0x43 => "F10".to_owned(),
+        0x44 => "F11".to_owned(),
+        0x45 => "F12".to_owned(),
+        0x49 => "Insert".to_owned(),
+        0x4a => "Home".to_owned(),
+        0x4b => "PageUp".to_owned(),
+        0x4c => "Delete".to_owned(),
+        0x4d => "End".to_owned(),
+        0x4e => "PageDown".to_owned(),
+        0x4f => "Right".to_owned(),
+        0x50 => "Left".to_owned(),
+        0x51 => "Down".to_owned(),
+        0x52 => "Up".to_owned(),
+        _ => {
+            let mut out = String::new();
+            let _ = write!(out, "key {usage}");
+            out
+        }
+    }
+}
+
+fn bind_set_action_human(action: SafeButtonAction) -> String {
+    assignment_human_readable(action.to_assignment())
 }
 
 fn slot_label(slot: SafeButtonSlot) -> &'static str {
@@ -998,60 +1305,6 @@ fn slot_label(slot: SafeButtonSlot) -> &'static str {
         SafeButtonSlot::Dpi => "dpi",
         SafeButtonSlot::Forward => "forward",
         SafeButtonSlot::Backward => "backward",
-    }
-}
-
-fn action_label(action: SafeButtonAction) -> &'static str {
-    match action {
-        SafeButtonAction::Disable => "disable",
-        SafeButtonAction::LeftClick => "left-click",
-        SafeButtonAction::RightClick => "right-click",
-        SafeButtonAction::MiddleClick => "middle-click",
-        SafeButtonAction::Backward => "backward",
-        SafeButtonAction::Forward => "forward",
-        SafeButtonAction::DoubleClick => "double-click",
-        SafeButtonAction::FireButton => "fire-button",
-        SafeButtonAction::ScrollUp => "scroll-up",
-        SafeButtonAction::ScrollDown => "scroll-down",
-        SafeButtonAction::DpiCycle => "dpi-cycle",
-        SafeButtonAction::DpiPlus => "dpi-plus",
-        SafeButtonAction::DpiMinus => "dpi-minus",
-        SafeButtonAction::ProfileCycle => "profile-cycle",
-        SafeButtonAction::ProfilePlus => "profile-plus",
-        SafeButtonAction::ProfileMinus => "profile-minus",
-        SafeButtonAction::MediaPlayer => "media-player",
-        SafeButtonAction::PreviousTrack => "previous-track",
-        SafeButtonAction::NextTrack => "next-track",
-        SafeButtonAction::PlayPause => "play-pause",
-        SafeButtonAction::Stop => "stop",
-        SafeButtonAction::Mute => "mute",
-        SafeButtonAction::VolumeUp => "volume-up",
-        SafeButtonAction::VolumeDown => "volume-down",
-        SafeButtonAction::Calculator => "calculator",
-        SafeButtonAction::Email => "email",
-        SafeButtonAction::BrowserForward => "browser-forward",
-        SafeButtonAction::BrowserBackward => "browser-backward",
-        SafeButtonAction::BrowserStop => "browser-stop",
-        SafeButtonAction::MyComputer => "my-computer",
-        SafeButtonAction::BrowserRefresh => "browser-refresh",
-        SafeButtonAction::BrowserHome => "browser-home",
-        SafeButtonAction::BrowserSearch => "browser-search",
-        SafeButtonAction::BrowserFavorites => "browser-favorites",
-        SafeButtonAction::Cut => "cut",
-        SafeButtonAction::Copy => "copy",
-        SafeButtonAction::Paste => "paste",
-        SafeButtonAction::Open => "open",
-        SafeButtonAction::Save => "save",
-        SafeButtonAction::Find => "find",
-        SafeButtonAction::Redo => "redo",
-        SafeButtonAction::SelectAll => "select-all",
-        SafeButtonAction::Print => "print",
-        SafeButtonAction::CloseWindow => "close-window",
-        SafeButtonAction::SwapWindows => "swap-windows",
-        SafeButtonAction::ShowDesktop => "show-desktop",
-        SafeButtonAction::RunCommand => "run-command",
-        SafeButtonAction::LockPc => "lock-pc",
-        SafeButtonAction::ScreenCapture => "screen-capture",
     }
 }
 
@@ -1095,10 +1348,14 @@ fn cli_profile_resource_name(resource: &ProfileResourceKind) -> &'static str {
 }
 
 fn format_status_human(status: &DeviceStatus) -> String {
+    let transport_label = status
+        .identity
+        .selected_endpoint()
+        .map(|endpoint| format_transport(endpoint.transport))
+        .unwrap_or("unknown");
     let mut text = format!(
         "Status for {}\n  transport: {}",
-        status.identity.id,
-        format_transport(status.identity.transport)
+        status.identity.id, transport_label
     );
     if let Some(battery) = status.battery {
         text.push_str(&format!("\n  battery:   {battery}%"));
@@ -1142,6 +1399,10 @@ fn action_name(action: &Action) -> &'static str {
             VerificationAction::ProfileReload => "verify profile reload",
             VerificationAction::PowerCycle => "verify power cycle",
         },
+        Action::Link { .. } => "link devices",
+        Action::Rebind { .. } => "rebind device endpoint",
+        Action::Forget { .. } => "forget device",
+        Action::Rename { .. } => "rename device",
         Action::Export => "export configuration",
         Action::Import { .. } => "import configuration",
         Action::StateSelected => "read selected device",
@@ -1154,6 +1415,96 @@ fn action_name(action: &Action) -> &'static str {
 mod tests {
     use super::*;
     use args::BindCommand;
+    use attack_shark_x3_manager::{ObservationSource, ObservedState, ResourceState, Timestamp};
+    #[test]
+    fn build_rebind_action_maps_device_and_rejects_auto_transport() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "--transport", "receiver", "rebind", "mouse-2"])
+                .expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        assert!(matches!(command, Command::Rebind { .. }));
+        let action = build_action(&cli, command).expect("build");
+        match action {
+            Action::Rebind { device, transport } => {
+                assert_eq!(device.as_str(), "mouse-2");
+                assert_eq!(transport, TransportKind::Receiver);
+            }
+            other => panic!("expected Rebind, got {other:?}"),
+        }
+
+        let auto = args::Cli::try_parse_from(["x3ctl", "rebind", "mouse-2"]).expect("parse");
+        let error = build_action(&auto, auto.command.as_ref().unwrap()).unwrap_err();
+        assert!(error.contains("--transport"), "got: {error}");
+    }
+    #[test]
+    fn build_link_action_maps_ids_and_keep_flag() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "link", "mouse-1", "mouse-2", "--keep", "source"])
+                .expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        assert!(matches!(command, Command::Link { .. }));
+        let action = build_action(&cli, command).expect("build");
+        match action {
+            Action::Link {
+                source,
+                target,
+                keep,
+            } => {
+                assert_eq!(source.as_str(), "mouse-1");
+                assert_eq!(target.as_str(), "mouse-2");
+                assert_eq!(keep, Some(LinkPrecedence::KeepSource));
+            }
+            other => panic!("expected Link, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_link_action_maps_merge_precedence() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "link", "mouse-1", "mouse-2", "--keep", "merge"])
+                .expect("parse");
+        let action = build_action(&cli, cli.command.as_ref().unwrap()).expect("build");
+        match action {
+            Action::Link { keep, .. } => assert_eq!(keep, Some(LinkPrecedence::Merge)),
+            other => panic!("expected Link, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_forget_and_rename_actions_carry_raw_args() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "forget", "mouse-3", "--force"]).expect("parse");
+        match build_action(&cli, cli.command.as_ref().unwrap()).expect("build") {
+            Action::Forget { device, force } => {
+                assert_eq!(device, "mouse-3");
+                assert!(force);
+            }
+            other => panic!("expected Forget, got {other:?}"),
+        }
+
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "rename", "mouse-2", "desk mouse"]).expect("parse");
+        match build_action(&cli, cli.command.as_ref().unwrap()).expect("build") {
+            Action::Rename { device, name } => {
+                assert_eq!(device, "mouse-2");
+                assert_eq!(name, "desk mouse");
+            }
+            other => panic!("expected Rename, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_link_action_defaults_to_refuse_precedence() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "link", "mouse-1", "mouse-2"]).expect("parse");
+        let command = cli.command.as_ref().unwrap();
+        let action = build_action(&cli, command).expect("build");
+        match action {
+            Action::Link { keep, .. } => assert_eq!(keep, None),
+            other => panic!("expected Link, got {other:?}"),
+        }
+    }
+
     #[test]
     fn build_bind_action_maps_safe_slot_and_action() {
         let cli = args::Cli::try_parse_from([
@@ -1410,10 +1761,137 @@ mod tests {
         assert!(!with_max.contains("Activated"), "{with_max}");
         assert!(with_max.contains("maximum"));
     }
+    #[test]
+    fn bind_human_labels_are_readable() {
+        assert_eq!(slot_label(SafeButtonSlot::Left), "left");
+        assert_eq!(slot_label(SafeButtonSlot::Dpi), "dpi");
+        assert_eq!(
+            bind_set_action_human(SafeButtonAction::ProfileCycle),
+            "profile-cycle"
+        );
+        assert_eq!(
+            bind_set_action_human(SafeButtonAction::LeftClick),
+            "left-click"
+        );
+        assert_eq!(
+            bind_set_action_human(SafeButtonAction::ScreenCapture),
+            "screen-capture (Win+Shift+S)"
+        );
+        let human = format!(
+            "Set {} button to {}",
+            slot_label(SafeButtonSlot::Left),
+            bind_set_action_human(SafeButtonAction::ProfileCycle)
+        );
+        assert_eq!(human, "Set left button to profile-cycle");
+    }
+    #[test]
+    fn bind_get_human_is_readable_and_hex_free() {
+        let profile = ProfileId::try_from(1).unwrap();
+        let mut slots = [ButtonAssignment::default(); 18];
+        slots[0] = ButtonAssignment::new(0x02, 0x00, 0x00);
+        slots[3] = ButtonAssignment::new(0x34, 0x00, 0x00);
+        slots[4] = ButtonAssignment::new(0x11, 0x01, 0x06);
+        slots[7] = ButtonAssignment::new(0x06, 0x00, 0x00);
+        // unknown raw to verify fallback without hex
+        slots[8] = ButtonAssignment::new(0xff, 0x00, 0x00);
+        let state = ButtonsState::new(profile, slots);
+        let snapshot = ResourceSnapshot {
+            resource: ResourceState {
+                desired: None,
+                observed: Some(ObservedState {
+                    value: state,
+                    source: ObservationSource::UsbReadback,
+                    observed_at: Timestamp { unix_seconds: 0 },
+                }),
+            },
+        };
+        let human = format_buttons_human(profile, &snapshot);
+        assert!(human.starts_with("Buttons for profile 1"), "{human}");
+        assert!(human.contains("left: left-click"), "{human}");
+        assert!(human.contains("dpi: profile-cycle"), "{human}");
+        assert!(human.contains("backward: forward"), "{human}");
+        // shortcut preset must show effect name and Ctrl label
+        assert!(human.contains("copy (Ctrl+C)"), "{human}");
+        assert!(human.contains("unknown"), "{human}");
+        // ordinary output must not contain raw hex fragments
+        assert!(!human.contains("0x"), "{human}");
+        assert!(!human.contains("mod="), "{human}");
+        assert!(!human.contains("key=0x"), "{human}");
+    }
 
     #[test]
+    fn bind_get_human_shows_generic_shortcut_and_macro_readably() {
+        let profile = ProfileId::try_from(2).unwrap();
+        let mut slots = [ButtonAssignment::default(); 18];
+        // Generic Ctrl+Shift+T shortcut
+        slots[0] = ButtonAssignment::new(0x11, 0x03, 0x17);
+        // Generic macro reference 7
+        slots[1] = ButtonAssignment::new(0x12, 0x00, 0x07);
+        // easy-aim legacy
+        slots[2] = ButtonAssignment::new(0x10, 0x00, 0x00);
+        let state = ButtonsState::new(profile, slots);
+        let snapshot = ResourceSnapshot {
+            resource: ResourceState {
+                desired: None,
+                observed: Some(ObservedState {
+                    value: state,
+                    source: ObservationSource::UsbReadback,
+                    observed_at: Timestamp { unix_seconds: 0 },
+                }),
+            },
+        };
+        let human = format_buttons_human(profile, &snapshot);
+        assert!(human.contains("Ctrl+Shift+T"), "{human}");
+        assert!(human.contains("macro 7"), "{human}");
+        assert!(human.contains("easy-aim"), "{human}");
+        assert!(!human.contains("0x"), "{human}");
+    }
+
+    #[test]
+    fn bind_set_human_leads_with_slot_and_readable_shortcut() {
+        let delta = ButtonSlotDelta::new(SafeButtonSlot::Forward, SafeButtonAction::Copy);
+        let mut human = String::new();
+        let _ = write!(
+            human,
+            "Set {} button to {}",
+            slot_label(delta.slot()),
+            bind_set_action_human(delta.action())
+        );
+        assert_eq!(human, "Set forward button to copy (Ctrl+C)");
+        assert!(!human.contains("0x"), "{human}");
+        assert!(human.starts_with("Set forward button to"));
+    }
+
+    #[test]
+    fn bind_set_human_for_parameterless_has_no_hex() {
+        let delta = ButtonSlotDelta::new(SafeButtonSlot::Dpi, SafeButtonAction::DpiPlus);
+        let mut human = String::new();
+        let _ = write!(
+            human,
+            "Set {} button to {}",
+            slot_label(delta.slot()),
+            bind_set_action_human(delta.action())
+        );
+        assert_eq!(human, "Set dpi button to dpi-plus");
+        assert!(!human.contains("0x"));
+    }
+
+    #[test]
+    fn modifiers_and_keys_are_human_readable() {
+        assert_eq!(modifiers_human(0x01), "Ctrl");
+        assert_eq!(modifiers_human(0x03), "Ctrl+Shift");
+        assert_eq!(modifiers_human(0x0a), "Shift+Win");
+        assert_eq!(hid_key_human(0x04), "A");
+        assert_eq!(hid_key_human(0x2b), "Tab");
+        assert_eq!(hid_key_human(0x3d), "F4");
+        // fallback without hex
+        let fallback = hid_key_human(0xff);
+        assert!(fallback.contains("key"), "{fallback}");
+        assert!(!fallback.contains("0x"), "{fallback}");
+    }
+    #[test]
     fn import_human_says_saved_locally_not_sent() {
-        let device = DeviceId::new("receiver:1d57:fa60:serial:x").unwrap();
+        let device = DeviceId::new("mouse-1").unwrap();
         let human = format_import_human(&device);
         assert!(human.contains("Saved settings locally"), "{human}");
         assert!(human.contains("not sent to mouse"), "{human}");
@@ -1422,27 +1900,6 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("imported configuration")
         );
-    }
-
-    #[test]
-    fn bind_human_labels_are_readable() {
-        assert_eq!(slot_label(SafeButtonSlot::Left), "left");
-        assert_eq!(slot_label(SafeButtonSlot::Dpi), "dpi");
-        assert_eq!(
-            action_label(SafeButtonAction::ProfileCycle),
-            "profile-cycle"
-        );
-        assert_eq!(action_label(SafeButtonAction::LeftClick), "left-click");
-        assert_eq!(
-            action_label(SafeButtonAction::ScreenCapture),
-            "screen-capture"
-        );
-        let human = format!(
-            "Set {} button to {}",
-            slot_label(SafeButtonSlot::Left),
-            action_label(SafeButtonAction::ProfileCycle)
-        );
-        assert_eq!(human, "Set left button to profile-cycle");
     }
 
     #[test]

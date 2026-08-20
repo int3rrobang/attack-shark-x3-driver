@@ -55,33 +55,23 @@ A frontend. Depends on `attack-shark-x3-manager` with `default-features = false`
 - `main.rs` contains argument parsing (via `clap` derive), action construction, dispatch, and output formatting. The `x3ctl/args.rs` module defines the CLI structure; `x3ctl/output.rs` handles `--output human|json` formatting.
 - The CLI builds a typed `Action` from parsed arguments, then calls `DeviceManager` methods. It does not contain protocol logic, state management, or driver code.
 - Global flags: `--stateless`, `--dry-run`, `--replace-defaults`, `--output human|json`, `--transport auto|wired|receiver`, `--device <ID>`, `--profile <N>`.
-- Commands: `devices`, `use`, `status`, `profile get|set`, `dpi get|set`, `rate get|set`, `prefs get|set`, `bind get|set`, `battery`, `verify`, `export`, `import`, `state selected|invalidate`, `debug dpi|prefs|buttons`.
+- Commands: `devices`, `use`, `link`, `rebind`, `rename`, `forget`, `status`, `profile get|set`, `dpi get|set`, `rate get|set`, `prefs get|set`, `bind get|set`, `battery`, `verify`, `export`, `import`, `state selected|invalidate`, `debug dpi|prefs|buttons`. Device arguments accept a canonical `mouse-N` id or a unique display name.
 - `#![forbid(unsafe_code)]` is enforced crate-wide.
 
 ### `x3-gui` — Slint desktop frontend
 
 The desktop frontend. Depends on `attack-shark-x3-manager` with `default-features = false`.
+`serde` is retained only for `app_settings` (`gui-preferences.json`); no protocol or manager state is duplicated.
 
-- `src/main.rs` is the entire application: a Slint UI thread plus a dedicated
-  manager worker thread that owns a current-thread Tokio runtime and the
-  `DeviceManager`. The UI pushes `Command`s over a channel; the worker applies
-  them and posts `UiEvent`s back through `slint::invoke_from_event_loop`.
-- `ui/app-window.slint` defines the six-page window (overview, buttons,
-  sensitivity, performance, device, settings) and the shared `Theme`; `assets/`
-  holds the artwork.
-- Holds no protocol codec logic. It edits drafts and calls `DeviceManager`
-  deltas (`update_dpi_delta`, `update_button_slot`, `update_polling_rate`) with
-  transport or readback verification.
-- At runtime the GUI discovers USB (`wired`/`receiver`) and BLE devices. BLE shows saved desired
-  settings (not live readback) and supports profile activation with ACK-only evidence; most
-  configuration writes, `profile refresh-all`, polling-rate changes, and both verification workflows
-  remain USB-only because configuration readback is unsupported over BLE. The GUI also
-  rejects combining polling-rate changes with DPI or button changes in one apply, so the report
-  `0x06` preflight stays isolated.
-- Deviations from workspace norms: the only crate using Tokio, and it
-  `allow`s `unsafe_code` for Slint's generated item-tree glue (the sole
-  carve-out from the workspace `forbid`).
-
+- `src/main.rs` bootstraps Slint, installs callbacks, and owns the `Command` queue and `UiEvent` projection. It never touches protocol codecs or hardware directly.
+- `src/worker.rs` owns the manager worker thread: a current-thread Tokio runtime plus the `DeviceManager`. The UI pushes `Command`s over a channel; the worker applies them through the single composite `DeviceManager::apply_profile_update` path and posts `UiEvent`s back via `slint::invoke_from_event_loop`.
+- `src/presentation.rs` is pure display helpers (labels, status strings, validation shims) with no hardware or lock access.
+- `src/projection.rs` projects `LiveSnapshot`/`DeviceListEntry` into Slint models and handles draft-preserving versus draft-replacing snapshot application.
+- `src/app_settings.rs` persists GUI-only preferences to a sibling `gui-preferences.json` with its own `schemaVersion = 1` (beside `state.json`, no `state.lock` or hardware access, atomic coalescing write).
+- `ui/app-window.slint` defines the six-page window (overview, buttons, sensitivity, performance, device, settings) and the shared `Theme`; `assets/` holds artwork. Pages are kept resident (visibility toggles, not recreation) only where user-relevant — draft and scroll state survive navigation, but pages are not duplicated or speculatively preloaded beyond what the UI needs.
+- Holds no protocol codec logic. Drafts are validated through `presentation` helpers and applied as typed deltas via the composite manager operation; polling-rate changes are never coalesced with DPI or button changes so the report `0x06` preflight stays isolated.
+- At runtime the GUI discovers USB (`wired`/`receiver`) and BLE devices. BLE shows saved desired settings (not live readback) and supports profile activation with ACK-only evidence; most configuration writes, `profile refresh-all`, polling-rate changes, and both verification workflows remain USB-only because configuration readback is unsupported over BLE.
+- Deviations from workspace norms: the only crate using Tokio, and it `allow`s `unsafe_code` for Slint's generated item-tree glue (the sole carve-out from the workspace `forbid`).
 ## Feature matrix
 
 | Feature | `attack-shark-x3` | `attack-shark-x3-manager` | `x3ctl` | `x3-gui` |
@@ -135,29 +125,43 @@ Run focused tests while developing, then run the full workspace suite before com
 
 ## Manager, state, and verification invariants
 
-### Durable state model
+### Device identity — schema 4 logical model
 
-The manager persists device configuration to a JSON state file protected by a short-lived cross-process file lock (`fs2`). It never auto-applies desired state at startup, device discovery, or GUI launch; applying state is always an explicit user operation.
+Schema 4 uses a manager-generated stable key `mouse-N` (`DeviceId`, `N >= 1`, canonical without leading zeros, allocated via `StateFile::next_device_number`). No serial or HID path is exposed as identity.
+
+- `DeviceEndpoint` is an endpoint locator, not an identity. USB keeps `DeviceLocator::UsbPath` (the current verbatim HID path for `hidapi` open) plus `vendor_id`/`product_id` and optional `serial_number` metadata (trimmed, blank → `None`). BLE keeps `DeviceLocator::BlePlatformId`. Serial is metadata only and never used to compose `DeviceId`.
+- `DeviceIdentity` owns `BTreeMap<TransportKind, DeviceEndpoint>` and an optional `preferred_transport`. Human `display_name` is presentation only.
+- `StateFile` is `state.json` (schemaVersion 4) beside derived `state.lock` (cross-process `fs2` lock). GUI preferences are **not** in this file — see `x3-gui` crate boundary; they live in sibling `gui-preferences.json` schema 1 with coalescing atomic writes and no hardware/lock access.
+- **Exact endpoint rediscovery is automatic.** `DeviceManager::list_devices` associates discovered endpoints by exact `(transport, locator)` equality and upserts the endpoint in place. No new `mouse-N` is allocated for a known locator, and an existing identity's `display_name` is never overwritten by discovery (so `rename` to a blank name stays cleared); fresh identities take the endpoint's advertised name.
+- **Cross-transport linkage is explicit.** Discovery never auto-merges transports by VID/PID, name, or serial. Adding a second transport to an existing logical mouse requires `DeviceManager::link_devices(source, target, precedence)` which moves all endpoints from `source` into `target` only when transports do not overlap. `LinkPrecedence::Refuse` (the default) fails when the source carries configuration evidence or when both sides carry it; `KeepTarget` discards the source's evidence; `KeepSource` transplants the source's evidence onto the target, replacing the target's; `Merge` copies a resource from the source only when the target has neither desired nor observed data for it (never mixing slots across devices) and reports skipped source evidence via `LinkOutcome::discarded_evidence`. There is no stable-serial or automatic-link claim.
+- **Controlled unique replug can update the locator.** `DeviceManager::rebind_missing_endpoint` (and sync `try_rebind_with_candidates`) replaces a missing endpoint's locator when exactly one connected candidate exists for that transport with the same VID/PID (USB) and no stored locator matches. Ambiguity refuses to guess: zero candidates or multiple candidates return `ManagerError::InvalidUpdate` describing the candidate count, and `resolve_device` without an explicit `--device` and without a valid selected device returns `AmbiguousDevice` when multiple connected logical identities exist.
+- **Evidence-free shells claimed elsewhere are auto-dropped.** Each discovery association removes identities that carry no configuration evidence and whose every endpoint locator is now held by a *surviving* (non-shell) identity — the residue of a port change that a later rebind resolved onto the original identity. Mutually claiming shells keep each other alive: pruning never removes the last owner of a locator, and identities with evidence are never auto-dropped. Manual removal is `DeviceManager::forget_device` (CLI `forget`, refuses evidence-bearing identities without `--force`).
+- **Display names are presentation plus a lookup key.** `rename` sets `identity.display_name` (blank clears it); every device-accepting CLI argument resolves a canonical `mouse-N` id first, then a unique case-insensitive display name. The stable `mouse-N` key never changes.
+- **Receiver is treated as permanently paired absent contrary evidence.** PID `fa60` identifies the shared receiver, not the mouse model; the receiver endpoint is not auto-unpaired on disconnect. Removal requires explicit state management, not transport disappearance.
+- Validation: `DeviceIdentity::validate` checks endpoint-key coherence, non-blank locators, and trims; `StateFile::validate` calls it and rejects unknown `SCHEMA_VERSION`. Checked `serde` deserialization rejects non-canonical `mouse-N`, unknown schema versions, and incoherent endpoints with backup preservation for GUI preferences; see coverage notes below.
+
+### Durable resource state
+
+The manager persists device configuration to that `state.json` file protected by the short-lived cross-process file lock. It never auto-applies desired state at startup, device discovery, or GUI launch; applying state is always an explicit user operation.
 
 - `ResourceState<T>` carries `desired: Option<DesiredState<T>>` and `observed: Option<ObservedState<T>>`. Both are optional; an empty resource is valid.
 - `DesiredState<T>` records the value, `DesiredSource` (`UserWrite`, `Imported`, `ExplicitDefaults`), `Verification`, and `updated_at` timestamp.
 - `ObservedState<T>` records the value, `ObservationSource` (`UsbReadback`), and `observed_at` timestamp.
 - `Verification` carries `ApplicationVerification` (write acknowledgement or readback evidence) and `PersistenceVerification` (whether the value survived a power cycle).
-- `SCHEMA_VERSION` is bumped on every incompatible state change. The loader rejects unknown versions.
+- `SCHEMA_VERSION` is bumped on every incompatible state change. The loader rejects unknown versions (currently 4; schema 3 documents are rejected with no migration).
 
-### Write pipeline
+### Write pipeline — composite `apply_profile_update`
 
-A resource write generally follows this sequence:
-1. Merge the caller's delta into the existing baseline (or `--replace-defaults` baseline).
-2. Send the complete packet over the transport.
-3. On USB: readback the affected fields and compare. Record `ApplicationVerification::ReadbackVerified`.
-4. On BLE: record `ApplicationVerification::Acknowledged` (no readback path exists).
-5. Persist the updated desired state and verification evidence to the state file under the cross-process lock.
-6. Return a `WriteOutcome<T>` with the final state and evidence.
+A resource write goes through the single composite `DeviceManager::apply_profile_update(device, profile, ProfileUpdate, UpdatePolicy)` which owns one `DeviceOperationGuard` and one transport session for non-rate resources. The GUI `worker` and CLI both use this path; there is no frontend-specific polling isolation.
 
-The cross-process lock guards the state-file read-modify-write, not the transport I/O itself. Different resources may vary in their exact sequencing; consult the implementation.
+1. Validate the update is non-empty and that polling-rate is never mixed with DPI/preferences/buttons (rejected before any hardware open).
+2. If the update contains only `polling_rate`, run the mandatory `0x06` preflight (see next section) and write the rate last; no other resources are touched.
+3. Otherwise open one session and, for each present field in `ProfileUpdate { dpi, preferences, buttons }`, load the baseline (`Live` re-read or `Stored` per policy; BLE forced stored-baseline with `--replace-defaults` when needed), merge deltas, send the complete packet, collect `SessionWrite` evidence, and coalesce button slots into one write.
+4. On USB: readback the affected fields and compare. Record `ApplicationVerification::ReadbackVerified` on match, `Mismatch` otherwise. On BLE: record `Acknowledged` (no readback path).
+5. Persist the updated desired state and verification evidence to the state file under the cross-process lock (one `mutate_async` for all non-rate outcomes).
+6. Return a `ProfileUpdateOutcome { dpi, preferences, buttons, polling_rate }` where only included resources are `Some(WriteOutcome<T>)`.
 
-### Polling-rate (report `0x06`) write model — mandatory invariant
+The cross-process lock guards the state-file read-modify-write, not the transport I/O itself. Per-operation locks (`*.operation.lock` per `mouse-N`) guard transport I/O.
 
 Report `0x06` **skips the profile loader**; byte 2 is a save alias, not a load
 target. The deferred writer serializes the complete *live* image into the slot
@@ -209,7 +213,7 @@ If a new feature needs protocol knowledge, implement it in `attack-shark-x3` or 
 ## Protocol implementation conventions
 
 - The device supports 1–8 configurable DPI stages (`StageIndex` 1..=8, `DpiValue` 50..=26000 step 50). The physical DPI button is a separate auxiliary HID input report `03 00 10 <stage> 00` (six positions observed in captures); do not conflate the two.
-- Targeted reads for `0x04`/`0x05`/`0x08` load the target working profile via byte 2 / selector byte 4 and can change live behavior without necessarily changing persistent `0x0c` current metadata. Report `0x06` skips that loader: it is a live-rate read and a save-alias write (byte 2 names the slot the deferred writer serializes the complete live image into).
+- Targeted reads for `0x04`/`0x05`/`0x08` load the target working profile via byte 2 / selector byte 4 and can change live behavior without necessarily changing persistent `0x0c` current metadata. Report `0x06` skips that loader: it is a live-rate read and a save-alias write (byte 2 names the slot the deferred writer serializes the complete live image into). `MouseHandle::read_live_polling_rate(alias)` treats the alias as a wire side effect — the returned rate is always the live image, verified by `last_polling_alias` side-effect tests.
 - USB configuration readback is supported via the armed `0xa0` selector (`MouseHandle::read_*` on `wired`/`receiver`); BLE has no configuration readback path and returns ACK-only `10 50 00 <report>`.
 - Battery level on X3/M600 FA60 is 1–10 (×10 = percentage) per X3.exe disassembly and `03 10 40 01 <level>` captures; reject 0 and >10. X11 legacy is 0–100 directly.
 - Preserve established X11 wired/adapter output unless the task explicitly changes it with independent evidence.
@@ -218,9 +222,10 @@ If a new feature needs protocol knowledge, implement it in `attack-shark-x3` or 
 - Low-level experimental tools may expose raw writes, but production-facing APIs must validate ranges and block known-dangerous operations.
 - Do not rename unknown fields based only on host UI labels. Describe how bytes are used when semantics are unresolved.
 - Do not describe RF slots as firmware versions or profile "personas."
-- Report `0x07` (wakeup mode) and `0x09` (custom macros) remain unsupported in the Rust driver/manager/`x3ctl`/GUI — format known from static analysis/captures, no exposed API, no fixtures, no claim of device effect.
-- Codec integration tests live under `crates/attack-shark-x3/tests/` using golden fixtures from `fixtures/protocol/` (`dpi.json`, `preferences.json`, `buttons.json`, `profile.json`). No fixtures yet for `0x06` polling rate, `0x07`, `0x09`, battery/input (`0x03` family), or checksum negative cases beyond live ACK tables; do not claim coverage that does not exist. Add one when modifying a codec.
-## Evidence labels
+- Report `0x07` (wakeup mode) and `0x09` (custom macros) remain explicitly unsupported in the Rust driver/manager/`x3ctl`/GUI — format known from static analysis/captures, no exposed API, no claim of device effect, explicitly tested as ignored/rejected (`fixtures/protocol/input.json` `unsupported-wakeup-0708`/`unsupported-macro-0900` with `decoded:null` and `tests/input_codec.rs::unknown_and_unsupported_reports_remain_unsupported`), not implemented.
+- Checked `serde`: `StateFile`, `DeviceId` (`mouse-N` canonical), `DeviceEndpoint` coherence, and `GuiPreferences` reject unknown `schemaVersion`, non-canonical identities, and incoherent locators; invalid documents are not silently migrated.
+- Live polling alias: the polling-rate read path is tested as side-effect-only via `ScriptedFakeSession::last_polling_alias`; a bare alias read without a preceding `read_profile(target)` is never profile-scoped proof.
+- Coverage: `0x04`/`0x05`/`0x08`/`0x0c` have golden fixtures (`fixtures/protocol/dpi.json`, `preferences.json`, `buttons.json`, `profile.json`); `0x03` input events have evidence-labeled golden integration via `fixtures/protocol/input.json` + `tests/input_codec.rs` (`golden_fixtures_decode_as_labeled`, battery/malformed/unsupported including `0x07`/`0x09` rejected); 16-bit checksums have boundary/wrapping integration via `tests/checksum_codec.rs`; `0x06` polling rate has no golden fixture (live-alias side-effect only via `last_polling_alias`); `0x07`/`0x09` remain explicitly unsupported with no fixtures and are tested as ignored/rejected, not implemented. Do not claim fixture coverage beyond this; add a fixture when modifying a codec.
 
 Use the vocabulary from `docs/README.md`:
 

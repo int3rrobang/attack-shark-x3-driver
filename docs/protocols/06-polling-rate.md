@@ -127,12 +127,13 @@ Data (Hex):
     06 09 01 01 fe 00 00 00 00
 ```
 
-Polling rate is **profile-scoped**, not global. `MouseHandle::read_polling_rate(profile)`
+Polling rate is **profile-scoped**, not global. `MouseHandle::read_live_polling_rate(alias)`
 arms the one-shot `0xa0` mailbox with a fresh `0x06` selector carrying the
-requested profile, waits for readiness, fetches the nine-byte report once, and
+supplied alias, waits for readiness, fetches the nine-byte report once, and
 validates the report ID, declared length, profile byte, rate code, complement,
 and padding. Malformed observations are rearmed and retried under the normal
-bounded read policy.
+bounded read policy. The alias is a wire side effect and never identifies rate
+content: the returned rate is always from the current live image.
 
 **Targeted-read vs. live-rate distinction:** `0x04`/`0x05`/`0x08` reads carry the one-based
 target in byte 2 and selector byte 4 and **load that target's working buffers**,
@@ -145,13 +146,17 @@ slot), so a `0x06` read is a **live-rate read** and a `0x06` write is a save-ali
 readback always reflects the profile that is *currently live* on the device.
 The readback's byte 2 mirrors the armed working alias/selector, not the loaded
 image; validating it is a wire-shape check, not a live-content proof. Reading a
-non-live profile therefore returns the live profile's rate, and the read's alias
-is mutated as a side effect. The manager reads
-the rate of the persistent current profile (see `status`), and callers must not
-treat a `0x06` read as a profile load or as persistence evidence.
+non-live alias therefore returns the live profile's rate, and the read's alias
+is mutated as a side effect. The manager's safe `DeviceManager::read_polling_rate(target)`
+opens one guarded session, loads the complete target profile via
+`read_profile(target)`, validates the snapshot, and only then calls
+`MouseHandle::read_live_polling_rate(alias)` and persists the value under the
+target profile, establishing a safe `read_profile(target)->live-rate`
+association (see also `status` for the persistent current profile). Callers must
+not treat a bare `read_live_polling_rate(alias)` as a profile load or as
+persistence evidence.
 **Driver primitives are unchecked.** The low-level methods carry no safety
 precondition — they emit the packet directly and are named to say so:
-
 - `MouseHandle::send_polling_rate_unchecked(profile, rate)` submits exactly
   one nine-byte feature report and completes on the transport-level
   acknowledgment (USB `SET_REPORT` transfer success or BLE parser ACK

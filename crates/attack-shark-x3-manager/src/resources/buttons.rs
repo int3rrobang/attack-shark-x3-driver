@@ -1,11 +1,5 @@
 use attack_shark_x3::{ButtonAssignment, ButtonsState, ProfileId, TransportKind};
 use serde::{Deserialize, Serialize};
-
-/// Physical button slot exposed by the safe public API.
-///
-/// Scroll slots (indices 4, 5) are intentionally excluded because direct
-/// scroll-wheel remaps may repeat until unplug or reboot on some firmware.
-/// Binding Scroll Up/Down as an action on another button is a normal
 /// binding; those action bytes stay out of the safe set until confirmed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -183,19 +177,15 @@ impl SafeButtonAction {
     }
 }
 
-use crate::backend::{DeviceSession, SessionWrite};
+use crate::backend::DeviceSession;
 use crate::device::DeviceId;
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::operation::{
     BaselineSource, ResourceSnapshot, UpdatePolicy, VerificationMethod, WriteOutcome,
 };
-use crate::state::{
-    ApplicationVerification, DesiredSource, DesiredState, ObservationSource, ObservedState,
-    PersistenceVerification, ResourceState, Verification,
-};
-#[allow(unused_imports)]
-pub use attack_shark_x3::protocol::buttons::BUTTON_SLOT_COUNT;
+use crate::resources::state::reconcile_observed;
+use crate::state::DesiredSource;
 
 /// A bounded, typed update to one safe button slot.
 ///
@@ -255,7 +245,7 @@ impl DeviceManager {
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<ResourceSnapshot<ButtonsState>, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "read_buttons").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(unsupported_read(transport));
@@ -270,21 +260,19 @@ impl DeviceManager {
         }
 
         let now = self.now();
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        let profile_state = device_state.profiles.entry(profile).or_default();
-        profile_state.buttons.observed = Some(ObservedState {
-            value: buttons,
-            source: ObservationSource::UsbReadback,
-            observed_at: now,
-        });
-        let resource = profile_state.buttons.clone();
-        transaction.state().validate()?;
-        transaction.commit()?;
+        let device_id = device.clone();
+        let resource = self
+            .store()
+            .mutate_async(move |state| {
+                let device_state = state
+                    .devices
+                    .get_mut(&device_id)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device_id.clone()))?;
+                let profile_state = device_state.profiles.entry(profile).or_default();
+                reconcile_observed(&mut profile_state.buttons, buttons, now);
+                Ok::<_, ManagerError>(profile_state.buttons.clone())
+            })
+            .await??;
 
         Ok(ResourceSnapshot { resource })
     }
@@ -307,126 +295,67 @@ impl DeviceManager {
         let slot_index = delta.slot_index();
         let assignment = delta.assignment();
 
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "update_button_slot").await?;
         let transport = session.transport();
         let mut baseline = match transport {
             TransportKind::Ble => {
-                self.load_stored_buttons_baseline(device, profile, policy.allow_explicit_defaults)?
+                self.load_stored_buttons_baseline(device, profile, policy.allow_explicit_defaults)
+                    .await?
             }
             TransportKind::Wired | TransportKind::Receiver => match policy.baseline {
                 BaselineSource::Live => session.read_buttons(profile).await?,
                 BaselineSource::Stored => {
-                    self.load_stored_buttons_baseline(device, profile, false)?
+                    self.load_stored_buttons_baseline(device, profile, false)
+                        .await?
                 }
             },
         };
-
-        if baseline.profile != profile {
-            return Err(ManagerError::InvalidUpdate(format!(
-                "button baseline targets profile {} instead of requested profile {}",
-                baseline.profile, profile
-            )));
-        }
         baseline.slots[slot_index] = assignment;
         self.write_buttons_with_session(device, session.as_ref(), baseline, policy.verification)
             .await
     }
 
-    async fn write_buttons_with_session(
+    pub(crate) async fn write_buttons_with_session(
         &self,
         device: &DeviceId,
         session: &dyn DeviceSession,
         requested: ButtonsState,
         verification: VerificationMethod,
     ) -> Result<WriteOutcome<ButtonsState>, ManagerError> {
-        let transport = session.transport();
         let result = session.write_buttons(requested, verification).await?;
-        let (application, observed) = match (transport, result) {
-            (
-                TransportKind::Wired | TransportKind::Receiver,
-                SessionWrite::ReadbackVerified(actual),
-            ) => {
-                if actual != requested || actual.profile != requested.profile {
-                    return Err(ManagerError::VerificationMismatch {
-                        resource: "buttons",
-                        profile: Some(requested.profile),
-                    });
-                }
-                (ApplicationVerification::ReadbackVerified, Some(actual))
-            }
-            (TransportKind::Wired | TransportKind::Receiver, SessionWrite::Acknowledged) => {
-                (ApplicationVerification::Acknowledged, None)
-            }
-            (TransportKind::Ble, SessionWrite::Acknowledged) => {
-                (ApplicationVerification::Acknowledged, None)
-            }
-            (TransportKind::Ble, SessionWrite::ReadbackVerified(_)) => {
-                return Err(ManagerError::InvalidUpdate(
-                    "BLE button writes cannot produce readback evidence".to_owned(),
-                ));
-            }
-        };
 
-        let verification = Verification {
-            application,
-            persistence: PersistenceVerification::Unknown,
-        };
-        self.persist_button_write(device, requested, observed, verification.clone())?;
-
-        Ok(WriteOutcome {
-            desired: requested,
-            observed,
-            verification,
-        })
-    }
-
-    fn persist_button_write(
-        &self,
-        device: &DeviceId,
-        requested: ButtonsState,
-        observed: Option<ButtonsState>,
-        verification: Verification,
-    ) -> Result<(), ManagerError> {
-        let profile = requested.profile;
         let now = self.now();
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        let profile_state = device_state.profiles.entry(profile).or_default();
-        profile_state.buttons = ResourceState {
-            desired: Some(DesiredState {
-                value: requested,
-                source: DesiredSource::UserWrite,
-                verification,
-                updated_at: now,
-            }),
-            observed: observed.map(|value| ObservedState {
-                value,
-                source: ObservationSource::UsbReadback,
-                observed_at: now,
-            }),
-        };
-        transaction.state().validate()?;
-        transaction.commit()?;
-        Ok(())
+        let device_id = device.clone();
+        let requested_for_store = requested;
+        let profile = requested_for_store.profile;
+        let outcome = self
+            .store()
+            .mutate_async(move |state| {
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.buttons,
+                    requested_for_store,
+                    result,
+                    now,
+                )
+            })
+            .await??;
+
+        crate::resources::state::finish_write(outcome, "buttons", profile)
     }
 
-    /// Loads the durable stored buttons baseline for a profile.
-    ///
-    /// Resolution order: the latest desired image, then the latest observed
     /// image, then [`ButtonsState::default_for_profile`] only when
     /// `allow_explicit_defaults` is enabled, and finally
     /// [`ManagerError::MissingBaseline`] when nothing is stored.
-    fn load_stored_buttons_baseline(
+    pub(crate) async fn load_stored_buttons_baseline(
         &self,
         device: &DeviceId,
         profile: ProfileId,
         allow_explicit_defaults: bool,
     ) -> Result<ButtonsState, ManagerError> {
-        let state = self.store().load()?;
+        let state = self.store().load_async().await?;
         let profile_state = state
             .devices
             .get(device)
@@ -463,12 +392,13 @@ fn unsupported_read(transport: TransportKind) -> ManagerError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BUTTON_SLOT_COUNT, ButtonSlotDelta, SafeButtonAction, SafeButtonSlot};
+    use super::{ButtonSlotDelta, SafeButtonAction, SafeButtonSlot};
     use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession};
     use crate::device::DeviceIdentity;
     use crate::manager::DeviceManager;
     use crate::operation::{BaselineSource, UpdatePolicy, VerificationMethod};
     use crate::state::{StatePaths, StateStore};
+    use attack_shark_x3::protocol::buttons::BUTTON_SLOT_COUNT;
     use attack_shark_x3::{
         ButtonAssignment, ButtonsState, DpiValue, PreferencesState, ProfileId, ProfileMetadata,
         StageIndex, TransportKind,
@@ -476,18 +406,15 @@ mod tests {
     use std::sync::Arc;
 
     fn store(dir: &tempfile::TempDir) -> StateStore {
-        StateStore::open(StatePaths {
-            state_file: dir.path().join("state.json"),
-            lock_file: dir.path().join("state.lock"),
-        })
+        StateStore::open(StatePaths::new(dir.path().join("state.json")))
     }
 
     fn identity(transport: TransportKind) -> DeviceIdentity {
         match transport {
             TransportKind::Ble => {
-                DeviceIdentity::ble("test-device", Some("Test")).expect("valid BLE identity")
+                DeviceIdentity::test_ble("test-device", Some("Test")).expect("valid BLE identity")
             }
-            transport => DeviceIdentity::usb(
+            transport => DeviceIdentity::test_usb(
                 transport,
                 0x1d57,
                 0xfa61,
@@ -773,18 +700,19 @@ mod tests {
         ));
         let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
         manager.register_device(device.clone()).expect("register");
-        manager
-            .persist_button_write(
-                &device.id,
+        // Seed stored baseline via the central reconciliation path (record_ack)
+        // rather than the removed `persist_button_write` helper.
+        {
+            let mut txn = manager.store().transaction().expect("txn");
+            let device_state = txn.state_mut().devices.get_mut(&device.id).expect("device");
+            let profile_state = device_state.profiles.entry(profile).or_default();
+            crate::resources::state::record_ack(
+                &mut profile_state.buttons,
                 source,
-                None,
-                crate::Verification {
-                    application: crate::ApplicationVerification::Acknowledged,
-                    persistence: crate::PersistenceVerification::Unknown,
-                },
-            )
-            .expect("seed stored buttons baseline");
-
+                crate::state::Timestamp::default(),
+            );
+            txn.commit().expect("commit");
+        }
         let outcome = manager
             .update_button_slot(
                 &device.id,
@@ -841,5 +769,337 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn ack_preserves_historical_observed_and_resets_persistence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = ProfileId::new(1).expect("profile");
+        let device = identity(TransportKind::Wired);
+        let id = device.id.clone();
+        let initial = buttons(profile);
+        let factory = Arc::new(
+            ScriptedFakeFactory::new().with_identity(
+                device.clone(),
+                true,
+                ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                    target_profile: profile,
+                    persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
+                    dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
+                        vec![DpiValue::new(800).expect("dpi")],
+                        StageIndex::new(1).expect("stage"),
+                    )
+                    .expect("dpi"),
+                    preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+                    buttons: initial,
+                }),
+            ),
+        );
+        let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
+        manager.register_device(device.clone()).expect("register");
+        let first_outcome = manager
+            .update_button_slot(
+                &id,
+                profile,
+                ButtonSlotDelta::new(SafeButtonSlot::Backward, SafeButtonAction::ProfileCycle),
+                UpdatePolicy {
+                    verification: VerificationMethod::Readback,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .expect("first write");
+        let first_observed = first_outcome.observed.expect("readback");
+        let second_outcome = manager
+            .update_button_slot(
+                &id,
+                profile,
+                ButtonSlotDelta::new(SafeButtonSlot::Forward, SafeButtonAction::Disable),
+                UpdatePolicy::default(),
+            )
+            .await
+            .expect("second write ack");
+        assert!(second_outcome.observed.is_none());
+        assert_eq!(
+            second_outcome.verification.application,
+            crate::ApplicationVerification::Acknowledged
+        );
+        let state = manager.store().load().expect("load");
+        let resource = &state.devices[&id].profiles[&profile].buttons;
+        assert_eq!(resource.observed.as_ref().unwrap().value, first_observed);
+        assert_eq!(
+            resource.desired.as_ref().unwrap().verification.application,
+            crate::ApplicationVerification::Acknowledged
+        );
+        assert!(
+            resource
+                .desired
+                .as_ref()
+                .unwrap()
+                .verification
+                .persistence
+                .is_unknown()
+        );
+        assert!(
+            resource.observed.as_ref().unwrap().observed_at.unix_seconds
+                <= resource.desired.as_ref().unwrap().updated_at.unix_seconds
+        );
+        state.validate().expect("validate");
+        let mut cloned = resource.clone();
+        assert!(
+            !cloned
+                .try_mark_profile_reload_verified(crate::state::Timestamp { unix_seconds: 9999 })
+        );
+    }
+
+    #[tokio::test]
+    async fn read_mismatch_marks_mismatch_and_resets_persistence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = ProfileId::new(1).expect("profile");
+        let device = identity(TransportKind::Wired);
+        let id = device.id.clone();
+        let initial = buttons(profile);
+        let factory1 = Arc::new(
+            ScriptedFakeFactory::new().with_identity(
+                device.clone(),
+                true,
+                ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                    target_profile: profile,
+                    persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
+                    dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
+                        vec![DpiValue::new(800).expect("dpi")],
+                        StageIndex::new(1).expect("stage"),
+                    )
+                    .expect("dpi"),
+                    preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+                    buttons: initial,
+                }),
+            ),
+        );
+        let store_dir = store(&dir);
+        let manager1 = DeviceManager::with_store_and_factory(store_dir.clone(), factory1);
+        manager1.register_device(device.clone()).expect("register");
+        manager1
+            .update_button_slot(
+                &id,
+                profile,
+                ButtonSlotDelta::new(SafeButtonSlot::Backward, SafeButtonAction::ProfileCycle),
+                UpdatePolicy {
+                    verification: VerificationMethod::Readback,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .expect("seed");
+        let mut different = initial;
+        different.slots[0] = SafeButtonAction::Disable.to_assignment();
+        let factory2 = Arc::new(
+            ScriptedFakeFactory::new().with_identity(
+                device.clone(),
+                true,
+                ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                    target_profile: profile,
+                    persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
+                    dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
+                        vec![DpiValue::new(800).expect("dpi")],
+                        StageIndex::new(1).expect("stage"),
+                    )
+                    .expect("dpi"),
+                    preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+                    buttons: different,
+                }),
+            ),
+        );
+        let manager2 = DeviceManager::with_store_and_factory(store_dir.clone(), factory2);
+        let snap = manager2.read_buttons(&id, profile).await.expect("read");
+        assert_eq!(snap.resource.observed.as_ref().unwrap().value, different);
+        assert_eq!(
+            snap.resource
+                .desired
+                .as_ref()
+                .unwrap()
+                .verification
+                .application,
+            crate::ApplicationVerification::Mismatch
+        );
+        assert!(
+            snap.resource
+                .desired
+                .as_ref()
+                .unwrap()
+                .verification
+                .persistence
+                .is_unknown()
+        );
+        store_dir.load().unwrap().validate().unwrap();
+    }
+
+    #[tokio::test]
+    async fn button_slot_live_baseline_uses_one_session() {
+        use crate::backend::SessionFactory;
+        use crate::device::DeviceEndpoint;
+        use crate::operation::DiscoveredEndpoint;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingFactory {
+            inner: ScriptedFakeFactory,
+            opens: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait(?Send)]
+        impl SessionFactory for CountingFactory {
+            async fn list(
+                &self,
+                selection: crate::device::TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, crate::error::ManagerError> {
+                self.inner.list(selection).await
+            }
+
+            async fn open(
+                &self,
+                endpoint: &DeviceEndpoint,
+            ) -> Result<Box<dyn crate::backend::DeviceSession>, crate::error::ManagerError>
+            {
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                self.inner.open(endpoint).await
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = ProfileId::new(1).expect("profile");
+        let device = identity(TransportKind::Wired);
+        let id = device.id.clone();
+        let source = buttons(profile);
+        let session =
+            ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                target_profile: profile,
+                persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
+                dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
+                    vec![DpiValue::new(800).expect("dpi")],
+                    StageIndex::new(1).expect("stage"),
+                )
+                .expect("dpi"),
+                preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+                buttons: source,
+            });
+        let opens = Arc::new(AtomicUsize::new(0));
+        let inner = ScriptedFakeFactory::new().with_identity(device.clone(), true, session);
+        let factory = Arc::new(CountingFactory {
+            inner,
+            opens: opens.clone(),
+        });
+        let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
+        manager.register_device(device).expect("register");
+
+        let result = manager
+            .update_button_slot(
+                &id,
+                profile,
+                ButtonSlotDelta::new(SafeButtonSlot::Backward, SafeButtonAction::ProfileCycle),
+                UpdatePolicy::default(),
+            )
+            .await;
+        assert!(
+            !matches!(
+                result.as_ref().err(),
+                Some(crate::error::ManagerError::DeviceOperationBusy { .. })
+            ),
+            "live baseline must not trigger nested lock, got {result:?}"
+        );
+        result.unwrap();
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            1,
+            "live button slot update must open exactly one session"
+        );
+    }
+
+    #[tokio::test]
+    async fn button_slot_stored_baseline_uses_one_session() {
+        use crate::backend::SessionFactory;
+        use crate::device::DeviceEndpoint;
+        use crate::operation::DiscoveredEndpoint;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingFactory {
+            inner: ScriptedFakeFactory,
+            opens: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait(?Send)]
+        impl SessionFactory for CountingFactory {
+            async fn list(
+                &self,
+                selection: crate::device::TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, crate::error::ManagerError> {
+                self.inner.list(selection).await
+            }
+
+            async fn open(
+                &self,
+                endpoint: &DeviceEndpoint,
+            ) -> Result<Box<dyn crate::backend::DeviceSession>, crate::error::ManagerError>
+            {
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                self.inner.open(endpoint).await
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = ProfileId::new(1).expect("profile");
+        let device = identity(TransportKind::Wired);
+        let id = device.id.clone();
+        let source = buttons(profile);
+        let opens = Arc::new(AtomicUsize::new(0));
+        let inner = ScriptedFakeFactory::new().with_identity(
+            device.clone(),
+            true,
+            ScriptedFakeSession::usb(),
+        );
+        let factory = Arc::new(CountingFactory {
+            inner,
+            opens: opens.clone(),
+        });
+        let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
+        manager.register_device(device.clone()).expect("register");
+        {
+            let mut txn = manager.store().transaction().expect("txn");
+            let device_state = txn.state_mut().devices.get_mut(&id).expect("device");
+            let profile_state = device_state.profiles.entry(profile).or_default();
+            crate::resources::state::record_ack(
+                &mut profile_state.buttons,
+                source,
+                crate::state::Timestamp::default(),
+            );
+            txn.commit().expect("commit");
+        }
+        let result = manager
+            .update_button_slot(
+                &id,
+                profile,
+                ButtonSlotDelta::new(SafeButtonSlot::Backward, SafeButtonAction::ProfileCycle),
+                UpdatePolicy {
+                    baseline: BaselineSource::Stored,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await;
+        assert!(
+            !matches!(
+                result.as_ref().err(),
+                Some(crate::error::ManagerError::DeviceOperationBusy { .. })
+            ),
+            "stored baseline must not trigger nested lock, got {result:?}"
+        );
+        let outcome = result.unwrap();
+        assert_eq!(
+            outcome.desired.slots[7],
+            SafeButtonAction::ProfileCycle.to_assignment()
+        );
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            1,
+            "stored button slot update must open exactly one session"
+        );
     }
 }

@@ -3,12 +3,14 @@ use std::collections::BTreeMap;
 use attack_shark_x3::{ButtonsState, DpiState, PollingRate, PreferencesState, ProfileId};
 use serde::{Deserialize, Serialize};
 
+use crate::backend::SessionWrite;
 use crate::device::{DeviceId, DeviceIdentity};
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
+use crate::operation::WriteOutcome;
 use crate::state::{
-    DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS, ProfileState, ResourceState,
-    StateReset, Timestamp, Verification,
+    ApplicationVerification, DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS,
+    ProfileState, ResourceState, StateFile, StateReset, Timestamp, Verification,
 };
 
 /// A profile's portable configuration values.
@@ -101,6 +103,15 @@ impl DeviceManager {
         let mut transaction = self.store().transaction()?;
         let state = transaction.state_mut();
         let device_id = identity.id.clone();
+        if let Some(num) = device_id.number()
+            && state.next_device_number <= num
+        {
+            state.next_device_number = num.checked_add(1).ok_or_else(|| {
+                ManagerError::State(crate::error::StateError::invalid_state(
+                    "nextDeviceNumber overflow",
+                ))
+            })?;
+        }
         let device_state = state
             .devices
             .entry(device_id.clone())
@@ -109,7 +120,7 @@ impl DeviceManager {
         // document. Refresh it when importing over an existing stable ID.
         device_state.identity = identity.clone();
         if state.selected_device.is_none() {
-            state.selected_device = Some(device_id);
+            state.selected_device = Some(device_id.clone());
         }
 
         for (&profile, configuration) in &configuration.profiles {
@@ -142,7 +153,6 @@ impl DeviceManager {
             }
         }
 
-        state.validate()?;
         transaction.commit()?;
         Ok(())
     }
@@ -184,7 +194,6 @@ impl DeviceManager {
             .get_mut(device)
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
         device_state.profile_names.insert(profile, name);
-        transaction.state().validate()?;
         transaction.commit()?;
         Ok(())
     }
@@ -202,7 +211,6 @@ impl DeviceManager {
             .get_mut(device)
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
         device_state.profile_names.remove(&profile);
-        transaction.state().validate()?;
         transaction.commit()?;
         Ok(())
     }
@@ -216,8 +224,7 @@ impl DeviceManager {
             .devices
             .get_mut(device)
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        invalidate_device_state(device_state);
-        transaction.state().validate()?;
+        device_state.invalidate_persistence();
         transaction.commit()?;
         Ok(())
     }
@@ -274,18 +281,97 @@ fn set_imported<T>(resource: &mut ResourceState<T>, value: T, now: Timestamp) {
     });
 }
 
-fn invalidate_device_state(device: &mut DeviceState) {
-    device.profile_metadata.invalidate_persistence();
-    for profile in device.profiles.values_mut() {
-        invalidate_profile_state(profile);
-    }
+/// Records an ACK-only write while preserving historical observation.
+///
+/// Generic over any resource value; persistence is always reset to Unknown
+/// and the old observation is kept as history. Used uniformly by DPI,
+/// preferences, buttons and polling-rate.
+///
+/// Returns the [`Verification`] assigned to `self.desired`.
+pub(crate) fn record_ack<T>(
+    resource: &mut ResourceState<T>,
+    value: T,
+    now: Timestamp,
+) -> Verification {
+    resource.record_ack_write(value, DesiredSource::UserWrite, now)
 }
 
-fn invalidate_profile_state(profile: &mut ProfileState) {
-    profile.dpi.invalidate_persistence();
-    profile.preferences.invalidate_persistence();
-    profile.buttons.invalidate_persistence();
-    profile.polling_rate.invalidate_persistence();
+/// Records a write with immediate readback, setting verification truthfully.
+///
+/// Returns the [`Verification`] assigned to `self.desired`.
+pub(crate) fn record_readback<T: PartialEq>(
+    resource: &mut ResourceState<T>,
+    desired: T,
+    observed: T,
+    now: Timestamp,
+) -> Verification {
+    resource.record_readback_write(desired, observed, DesiredSource::UserWrite, now)
+}
+
+/// Reconciles a fresh observation for any resource.
+///
+/// With no desired value, only the observation is stored. With a desired
+/// value, verification is set to ReadbackVerified when equal/current,
+/// otherwise Mismatch, and persistence is always Unknown. Never infers
+/// profile-reload or power-cycle persistence.
+pub(crate) fn reconcile_observed<T: Clone + PartialEq>(
+    resource: &mut ResourceState<T>,
+    value: T,
+    now: Timestamp,
+) {
+    resource.reconcile_observation(value, now);
+}
+
+pub(crate) fn persist_write<T>(
+    state: &mut StateFile,
+    device: &DeviceId,
+    profile: ProfileId,
+    select: impl for<'a> FnOnce(&'a mut ProfileState) -> &'a mut ResourceState<T>,
+    desired: T,
+    write: SessionWrite<T>,
+    now: Timestamp,
+) -> Result<WriteOutcome<T>, ManagerError>
+where
+    T: Clone + PartialEq,
+{
+    let device_state = state
+        .devices
+        .get_mut(device)
+        .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+    let profile_state = device_state
+        .profiles
+        .entry(profile)
+        .or_insert_with(ProfileState::empty);
+    let resource = select(profile_state);
+    let (observed, verification) = match write {
+        SessionWrite::ReadbackVerified(readback) => {
+            let verification = record_readback(resource, desired.clone(), readback.clone(), now);
+            (Some(readback), verification)
+        }
+        SessionWrite::Acknowledged => {
+            let verification = record_ack(resource, desired.clone(), now);
+            (None, verification)
+        }
+    };
+    Ok(WriteOutcome {
+        desired,
+        observed,
+        verification,
+    })
+}
+
+pub(crate) fn finish_write<T>(
+    outcome: WriteOutcome<T>,
+    resource: &'static str,
+    profile: ProfileId,
+) -> Result<WriteOutcome<T>, ManagerError> {
+    if outcome.verification.application == ApplicationVerification::Mismatch {
+        return Err(ManagerError::VerificationMismatch {
+            resource,
+            profile: Some(profile),
+        });
+    }
+    Ok(outcome)
 }
 
 fn validate_configuration(configuration: &ConfigurationExport) -> Result<(), ManagerError> {
@@ -342,14 +428,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn store(dir: &tempfile::TempDir) -> StateStore {
-        StateStore::open(StatePaths {
-            state_file: dir.path().join("state.json"),
-            lock_file: dir.path().join("state.lock"),
-        })
+        StateStore::open(StatePaths::new(dir.path().join("state.json")))
     }
 
     fn identity() -> DeviceIdentity {
-        DeviceIdentity::usb(
+        DeviceIdentity::test_usb(
             TransportKind::Wired,
             0x1d57,
             0xfa61,
@@ -442,14 +525,24 @@ mod tests {
             },
             updated_at: timestamp,
         };
+        let observed_dpi = ObservedState {
+            value: dpi.clone(),
+            source: ObservationSource::UsbReadback,
+            observed_at: timestamp,
+        };
         let desired_preferences = DesiredState {
             value: preferences,
             source: DesiredSource::UserWrite,
             verification: Verification {
-                application: ApplicationVerification::Acknowledged,
+                application: ApplicationVerification::ReadbackVerified,
                 persistence: persistent.clone(),
             },
             updated_at: timestamp,
+        };
+        let observed_preferences = ObservedState {
+            value: preferences,
+            source: ObservationSource::UsbReadback,
+            observed_at: timestamp,
         };
         let desired_buttons = DesiredState {
             value: buttons,
@@ -465,6 +558,11 @@ mod tests {
             source: ObservationSource::UsbReadback,
             observed_at: timestamp,
         };
+        let observed_metadata = ObservedState {
+            value: ProfileMetadata::new(profile, profile).expect("metadata"),
+            source: ObservationSource::UsbReadback,
+            observed_at: timestamp,
+        };
         let mut transaction = store.transaction().expect("transaction");
         let device = transaction
             .state_mut()
@@ -476,23 +574,23 @@ mod tests {
                 value: ProfileMetadata::new(profile, profile).expect("metadata"),
                 source: DesiredSource::UserWrite,
                 verification: Verification {
-                    application: ApplicationVerification::Acknowledged,
+                    application: ApplicationVerification::ReadbackVerified,
                     persistence: persistent.clone(),
                 },
                 updated_at: timestamp,
             }),
-            observed: None,
+            observed: Some(observed_metadata),
         };
         device.profiles.insert(
             profile,
             crate::state::ProfileState {
                 dpi: ResourceState {
                     desired: Some(desired_dpi),
-                    observed: None,
+                    observed: Some(observed_dpi),
                 },
                 preferences: ResourceState {
                     desired: Some(desired_preferences),
-                    observed: None,
+                    observed: Some(observed_preferences),
                 },
                 buttons: ResourceState {
                     desired: Some(desired_buttons),
@@ -503,17 +601,20 @@ mod tests {
                         value: PollingRate::Hz1000,
                         source: DesiredSource::UserWrite,
                         verification: Verification {
-                            application: ApplicationVerification::Acknowledged,
+                            application: ApplicationVerification::ReadbackVerified,
                             persistence: persistent.clone(),
                         },
                         updated_at: timestamp,
                     }),
-                    observed: None,
+                    observed: Some(ObservedState {
+                        value: PollingRate::Hz1000,
+                        source: ObservationSource::UsbReadback,
+                        observed_at: timestamp,
+                    }),
                 },
             },
         );
         transaction.commit().expect("commit");
-
         manager.invalidate_state(&identity.id).expect("invalidate");
         let state = manager.store().load().expect("state");
         let device = &state.devices[&identity.id];
@@ -646,11 +747,11 @@ mod tests {
                 .is_empty()
         );
 
-        match manager.set_profile_name(&DeviceId::new("missing").expect("id"), profile, "X") {
+        match manager.set_profile_name(&DeviceId::new("mouse-2").expect("id"), profile, "X") {
             Err(ManagerError::DeviceNotFound(_)) => {}
             other => panic!("expected DeviceNotFound, got {other:?}"),
         }
-        match manager.profile_names(&DeviceId::new("missing").expect("id")) {
+        match manager.profile_names(&DeviceId::new("mouse-2").expect("id")) {
             Err(ManagerError::DeviceNotFound(_)) => {}
             other => panic!("expected DeviceNotFound, got {other:?}"),
         }
@@ -794,6 +895,186 @@ mod tests {
         }
     }
 
+    #[test]
+    fn central_reconciliation_is_consistent_across_all_four_resources() {
+        use crate::resources::state::{reconcile_observed, record_ack, record_readback};
+        use crate::state::{ResourceState, Timestamp};
+
+        fn ts(s: i64) -> Timestamp {
+            Timestamp { unix_seconds: s }
+        }
+
+        fn assert_ack_preserves_observed<T: Clone + PartialEq + std::fmt::Debug>(
+            mut resource: ResourceState<T>,
+            observed_value: T,
+            ack_value: T,
+        ) {
+            reconcile_observed(&mut resource, observed_value.clone(), ts(10));
+            let historical = resource.observed.clone().expect("observed seeded");
+            assert!(resource.desired.is_none());
+            record_ack(&mut resource, ack_value.clone(), ts(20));
+            assert_eq!(resource.desired.as_ref().unwrap().value, ack_value);
+            assert_eq!(
+                resource.desired.as_ref().unwrap().verification.application,
+                ApplicationVerification::Acknowledged
+            );
+            assert!(
+                resource
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .persistence
+                    .is_unknown()
+            );
+            assert_eq!(resource.observed, Some(historical));
+            reconcile_observed(&mut resource, ack_value.clone(), ts(22));
+            assert_eq!(
+                resource.desired.as_ref().unwrap().verification.application,
+                ApplicationVerification::ReadbackVerified
+            );
+            assert!(
+                resource
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .persistence
+                    .is_unknown()
+            );
+        }
+
+        fn assert_readback_and_mismatch<T: Clone + PartialEq + std::fmt::Debug>(
+            ack_value: T,
+            other_value: T,
+        ) {
+            let mut matched: ResourceState<T> = ResourceState::empty();
+            record_readback(&mut matched, ack_value.clone(), ack_value.clone(), ts(30));
+            assert_eq!(
+                matched.desired.as_ref().unwrap().verification.application,
+                ApplicationVerification::ReadbackVerified
+            );
+            assert_eq!(matched.observed.as_ref().unwrap().value, ack_value);
+            assert!(
+                matched
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .persistence
+                    .is_unknown()
+            );
+            assert!(matched.try_mark_profile_reload_verified(ts(31)));
+            assert!(
+                !matched
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .persistence
+                    .is_unknown()
+            );
+            reconcile_observed(&mut matched, ack_value.clone(), ts(32));
+            assert!(
+                matched
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .persistence
+                    .is_unknown()
+            );
+            assert!(matched.try_mark_power_cycle_verified(ts(33)));
+            assert_eq!(
+                matched.desired.as_ref().unwrap().verification.persistence,
+                PersistenceVerification::PowerCycleVerified {
+                    verified_at: ts(33)
+                }
+            );
+            let mut mismatched: ResourceState<T> = ResourceState::empty();
+            record_readback(
+                &mut mismatched,
+                ack_value.clone(),
+                other_value.clone(),
+                ts(30),
+            );
+            assert_eq!(
+                mismatched
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .application,
+                ApplicationVerification::Mismatch
+            );
+            assert_eq!(mismatched.observed.as_ref().unwrap().value, other_value);
+            assert!(!mismatched.try_mark_profile_reload_verified(ts(31)));
+            assert!(!mismatched.try_mark_power_cycle_verified(ts(31)));
+            let mut via_reconcile: ResourceState<T> = ResourceState::empty();
+            record_ack(&mut via_reconcile, ack_value.clone(), ts(40));
+            reconcile_observed(&mut via_reconcile, ack_value.clone(), ts(39));
+            assert_eq!(
+                via_reconcile
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .application,
+                ApplicationVerification::Mismatch
+            );
+            reconcile_observed(&mut via_reconcile, other_value.clone(), ts(41));
+            assert_eq!(
+                via_reconcile
+                    .desired
+                    .as_ref()
+                    .unwrap()
+                    .verification
+                    .application,
+                ApplicationVerification::Mismatch
+            );
+            assert!(!via_reconcile.try_mark_profile_reload_verified(ts(42)));
+            let mut empty: ResourceState<T> = ResourceState::empty();
+            reconcile_observed(&mut empty, other_value.clone(), ts(50));
+            assert!(empty.desired.is_none());
+            assert_eq!(empty.observed.as_ref().unwrap().value, other_value);
+        }
+
+        let profile = ProfileId::new(1).unwrap();
+        let dpi_a = DpiState::captured_empty_profile_one(
+            vec![DpiValue::new(800).unwrap()],
+            StageIndex::new(1).unwrap(),
+        )
+        .unwrap();
+        let dpi_b = DpiState::captured_empty_profile_one(
+            vec![DpiValue::new(1600).unwrap()],
+            StageIndex::new(1).unwrap(),
+        )
+        .unwrap();
+        assert_ack_preserves_observed(
+            ResourceState::<DpiState>::empty(),
+            dpi_a.clone(),
+            dpi_b.clone(),
+        );
+        assert_readback_and_mismatch(dpi_a.clone(), dpi_b.clone());
+        let pref_a = PreferencesState::new(profile, 1, 2, 3, [4, 5, 6], 7, 8);
+        let pref_b = PreferencesState::new(profile, 9, 8, 7, [6, 5, 4], 3, 2);
+        assert_ack_preserves_observed(ResourceState::<PreferencesState>::empty(), pref_a, pref_b);
+        assert_readback_and_mismatch(pref_a, pref_b);
+        let mut slots_a = [ButtonAssignment::default(); 18];
+        slots_a[0] = ButtonAssignment::new(0x01, 0x02, 0x03);
+        let btn_a = ButtonsState::new(profile, slots_a);
+        let mut slots_b = [ButtonAssignment::default(); 18];
+        slots_b[0] = ButtonAssignment::new(0x04, 0x05, 0x06);
+        let btn_b = ButtonsState::new(profile, slots_b);
+        assert_ack_preserves_observed(ResourceState::<ButtonsState>::empty(), btn_a, btn_b);
+        assert_readback_and_mismatch(btn_a, btn_b);
+        assert_ack_preserves_observed(
+            ResourceState::<PollingRate>::empty(),
+            PollingRate::Hz500,
+            PollingRate::Hz1000,
+        );
+        assert_readback_and_mismatch(PollingRate::Hz500, PollingRate::Hz1000);
+    }
     #[test]
     fn old_import_documents_without_profile_names_deserialize() {
         let dir = tempfile::tempdir().expect("tempdir");

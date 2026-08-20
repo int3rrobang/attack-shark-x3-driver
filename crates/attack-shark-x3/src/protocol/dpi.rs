@@ -251,7 +251,7 @@ impl DpiReport {
             LiftOffDistance::TwoMillimeters => 1,
         };
         bytes[4] = u8::from(state.sensor.ripple_control);
-        bytes[5] = enabled_stage_mask(state.stages.len())?;
+        bytes[5] = enabled_stage_mask_unchecked(state.stages.len());
         bytes[6] = u8::from(state.sensor.angle_snap);
         bytes[7] = u8::from(state.sensor.motion_sync);
 
@@ -429,34 +429,25 @@ fn decode_framing(transport: TransportKind, actual: usize) -> Result<DpiFraming,
 const fn expected_length_for_error(transport: TransportKind, actual: usize) -> usize {
     match transport {
         TransportKind::Ble => DPI_WIRED_LENGTH,
-        TransportKind::Wired | TransportKind::Receiver => {
-            if actual == DPI_WIRED_LENGTH || actual == DPI_RECEIVER_LENGTH {
-                DPI_WIRED_LENGTH
-            } else if actual < DPI_WIRED_LENGTH {
-                DPI_WIRED_LENGTH
-            } else if actual < DPI_RECEIVER_LENGTH {
-                DPI_RECEIVER_LENGTH
-            } else {
-                DPI_RECEIVER_LENGTH
-            }
-        }
+        TransportKind::Wired | TransportKind::Receiver => match actual {
+            0..=DPI_WIRED_LENGTH => DPI_WIRED_LENGTH,
+            _ => DPI_RECEIVER_LENGTH,
+        },
     }
 }
 
-fn enabled_stage_mask(stage_count: usize) -> Result<u8, ProtocolError> {
-    if !(1..=8).contains(&stage_count) {
-        return Err(ProtocolError::InvalidStageCount { count: stage_count });
-    }
-    Ok(if stage_count == 8 {
+fn enabled_stage_mask_unchecked(stage_count: usize) -> u8 {
+    debug_assert!((1..=8).contains(&stage_count));
+    if stage_count == 8 {
         u8::MAX
     } else {
         (1_u8 << stage_count) - 1
-    })
+    }
 }
 
 fn decode_stage_count(mask: u8) -> Result<usize, ProtocolError> {
     let count = mask.count_ones() as usize;
-    if count == 0 || enabled_stage_mask(count)? != mask {
+    if count == 0 || enabled_stage_mask_unchecked(count) != mask {
         return Err(ProtocolError::InvalidStageMask { mask });
     }
     Ok(count)

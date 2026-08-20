@@ -10,10 +10,8 @@ use crate::manager::DeviceManager;
 use crate::operation::{
     BaselineSource, ResourceSnapshot, UpdatePolicy, VerificationMethod, WriteOutcome,
 };
-use crate::state::{
-    ApplicationVerification, DesiredSource, DesiredState, ObservationSource, ObservedState,
-    PersistenceVerification, ProfileState, StateFile, StateTransaction, Verification,
-};
+use crate::resources::state::reconcile_observed;
+use crate::state::{DesiredSource, ProfileState, StateFile};
 
 /// Partial profile preferences to merge into a complete image.
 ///
@@ -55,10 +53,10 @@ impl PreferencesDelta {
 /// the complete live image under the target alias, so the safe path never
 /// emits it unless every non-rate section of the freshly read live profile
 /// exactly equals this desired image.
-struct CompleteDesiredImage {
-    dpi: DpiState,
-    preferences: PreferencesState,
-    buttons: ButtonsState,
+pub(crate) struct CompleteDesiredImage {
+    pub(crate) dpi: DpiState,
+    pub(crate) preferences: PreferencesState,
+    pub(crate) buttons: ButtonsState,
 }
 
 fn missing_section_baseline(resource: &'static str, profile: ProfileId) -> ManagerError {
@@ -82,7 +80,7 @@ impl DeviceManager {
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<ResourceSnapshot<PreferencesState>, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "read_preferences").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(unsupported("read_preferences", transport));
@@ -90,24 +88,22 @@ impl DeviceManager {
 
         let value = session.read_preferences(profile).await?;
         let now = self.now();
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        let profile_state = device_state
-            .profiles
-            .entry(profile)
-            .or_insert_with(ProfileState::empty);
-        profile_state.preferences.observed = Some(ObservedState {
-            value,
-            source: ObservationSource::UsbReadback,
-            observed_at: now,
-        });
-        let resource = profile_state.preferences.clone();
-        transaction.state().validate()?;
-        transaction.commit()?;
+        let device_id = device.clone();
+        let resource = self
+            .store()
+            .mutate_async(move |state| {
+                let device_state = state
+                    .devices
+                    .get_mut(&device_id)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device_id.clone()))?;
+                let profile_state = device_state
+                    .profiles
+                    .entry(profile)
+                    .or_insert_with(ProfileState::empty);
+                reconcile_observed(&mut profile_state.preferences, value, now);
+                Ok::<_, ManagerError>(profile_state.preferences.clone())
+            })
+            .await??;
 
         Ok(ResourceSnapshot { resource })
     }
@@ -131,52 +127,39 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "update_preferences").await?;
         let transport = session.transport();
 
-        if transport == TransportKind::Ble && !policy.allow_explicit_defaults {
-            {
-                let state = self.store().load()?;
-                if !has_preferences_baseline(&state, device, profile) {
-                    return Err(ManagerError::MissingBaseline {
-                        resource: "preferences",
-                        profile: Some(profile),
-                    });
-                }
-            }
-
-            let write = session
-                .write_preferences(desired, policy.verification)
-                .await?;
-            let mut transaction = self.store().transaction()?;
-            let outcome = persist_preferences_write(
-                &mut transaction,
-                device,
-                profile,
-                desired,
-                write,
-                self.now(),
-            )?;
-            transaction.state().validate()?;
-            transaction.commit()?;
-            return finish_preferences_write(outcome, profile);
+        if transport == TransportKind::Ble
+            && !policy.allow_explicit_defaults
+            && !has_preferences_baseline(&self.store().load_async().await?, device, profile)
+        {
+            return Err(ManagerError::MissingBaseline {
+                resource: "preferences",
+                profile: Some(profile),
+            });
         }
 
         let write = session
             .write_preferences(desired, policy.verification)
             .await?;
-        let mut transaction = self.store().transaction()?;
-        let outcome = persist_preferences_write(
-            &mut transaction,
-            device,
-            profile,
-            desired,
-            write,
-            self.now(),
-        )?;
-        transaction.state().validate()?;
-        transaction.commit()?;
-        finish_preferences_write(outcome, profile)
+        let now = self.now();
+        let device_id = device.clone();
+        let outcome = self
+            .store()
+            .mutate_async(move |state| {
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.preferences,
+                    desired,
+                    write,
+                    now,
+                )
+            })
+            .await??;
+        crate::resources::state::finish_write(outcome, "preferences", profile)
     }
 
     /// Applies a sparse preferences update after resolving a complete
@@ -203,30 +186,47 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) =
+            self.open_locked(device, "update_preferences_delta").await?;
         let baseline = match session.transport() {
-            TransportKind::Ble => self.load_stored_preferences_baseline(
-                device,
-                profile,
-                policy.allow_explicit_defaults,
-            )?,
+            TransportKind::Ble => {
+                self.load_stored_preferences_baseline(
+                    device,
+                    profile,
+                    policy.allow_explicit_defaults,
+                )
+                .await?
+            }
             TransportKind::Wired | TransportKind::Receiver => match policy.baseline {
                 BaselineSource::Live => session.read_preferences(profile).await?,
                 BaselineSource::Stored => {
-                    self.load_stored_preferences_baseline(device, profile, false)?
+                    self.load_stored_preferences_baseline(device, profile, false)
+                        .await?
                 }
             },
         };
-        if baseline.profile != profile {
-            return Err(ManagerError::InvalidUpdate(format!(
-                "preferences baseline targets profile {} instead of requested profile {}",
-                baseline.profile, profile
-            )));
-        }
 
         let desired = merge_preferences_delta(baseline, delta);
-        self.update_preferences(device, profile, desired, policy)
-            .await
+        let write = session
+            .write_preferences(desired, policy.verification)
+            .await?;
+        let now = self.now();
+        let device_id = device.clone();
+        let outcome = self
+            .store()
+            .mutate_async(move |state| {
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.preferences,
+                    desired,
+                    write,
+                    now,
+                )
+            })
+            .await??;
+        crate::resources::state::finish_write(outcome, "preferences", profile)
     }
 
     /// Resolves the complete preferences baseline from the durable store
@@ -238,13 +238,13 @@ impl DeviceManager {
     /// authorized by `allow_explicit_defaults`. With no usable stored
     /// baseline and no capture authorization, `ManagerError::MissingBaseline`
     /// is returned.
-    fn load_stored_preferences_baseline(
+    pub(crate) async fn load_stored_preferences_baseline(
         &self,
         device: &DeviceId,
         profile: ProfileId,
         allow_explicit_defaults: bool,
     ) -> Result<PreferencesState, ManagerError> {
-        let state = self.store().load()?;
+        let state = self.store().load_async().await?;
         let resource = state
             .devices
             .get(device)
@@ -272,43 +272,41 @@ impl DeviceManager {
         })
     }
 
-    /// Reads the live polling rate for the explicit profile and records USB
-    /// readback evidence.
+    /// Reads the live polling rate and records USB readback evidence.
     ///
-    /// Report `0x06` skips the profile loader, so the readback reflects the
-    /// profile that is currently live on the device; the result is validated
-    /// against the requested profile and the armed selector carries it.
+    /// Report `0x06` skips the profile loader: the supplied alias is a wire
+    /// side effect while the returned rate comes from the current live image.
+    /// This method first loads the complete target profile in the same guarded
+    /// session, then reads and persists the live rate under that profile.
     pub async fn read_polling_rate(
         &self,
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<ResourceSnapshot<PollingRate>, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "read_polling_rate").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
-            return Err(unsupported("read_polling_rate", transport));
+            return Err(unsupported("read_live_polling_rate", transport));
         }
-
-        let value = session.read_polling_rate(profile).await?;
+        session.read_profile(profile).await?;
+        let value = session.read_live_polling_rate(profile).await?;
         let now = self.now();
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        let profile_state = device_state
-            .profiles
-            .entry(profile)
-            .or_insert_with(ProfileState::empty);
-        profile_state.polling_rate.observed = Some(ObservedState {
-            value,
-            source: ObservationSource::UsbReadback,
-            observed_at: now,
-        });
-        let resource = profile_state.polling_rate.clone();
-        transaction.state().validate()?;
-        transaction.commit()?;
+        let device_id = device.clone();
+        let resource = self
+            .store()
+            .mutate_async(move |state| {
+                let device_state = state
+                    .devices
+                    .get_mut(&device_id)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device_id.clone()))?;
+                let profile_state = device_state
+                    .profiles
+                    .entry(profile)
+                    .or_insert_with(ProfileState::empty);
+                reconcile_observed(&mut profile_state.polling_rate, value, now);
+                Ok::<_, ManagerError>(profile_state.polling_rate.clone())
+            })
+            .await??;
 
         Ok(ResourceSnapshot { resource })
     }
@@ -334,7 +332,7 @@ impl DeviceManager {
         desired: PollingRate,
         policy: UpdatePolicy,
     ) -> Result<WriteOutcome<PollingRate>, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "update_polling_rate").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(ManagerError::ExplicitAuthorizationRequired {
@@ -347,7 +345,7 @@ impl DeviceManager {
         // before any hardware traffic: an observed-only targeted rate read is
         // not trustworthy provenance for a write that can persist the live
         // image under the target alias.
-        let image = self.require_complete_desired_image(device, profile)?;
+        let image = self.require_complete_desired_image(device, profile).await?;
 
         // Fresh complete profile read in the same session; every non-rate
         // section must exactly match the desired image.
@@ -364,38 +362,48 @@ impl DeviceManager {
 
         // Avoid a redundant 0x06 write when the live rate already matches:
         // the fresh read is honest matching observed evidence.
-        let current = session.read_polling_rate(profile).await?;
+        let current = session.read_live_polling_rate(profile).await?;
         if current == desired {
             let write = SessionWrite::ReadbackVerified(current);
-            let mut transaction = self.store().transaction()?;
-            let outcome = persist_polling_write(
-                &mut transaction,
-                device,
-                profile,
-                desired,
-                write,
-                self.now(),
-            )?;
-            transaction.state().validate()?;
-            transaction.commit()?;
-            return finish_polling_write(outcome, profile);
+            let now = self.now();
+            let device_id = device.clone();
+            let outcome = self
+                .store()
+                .mutate_async(move |state| {
+                    crate::resources::state::persist_write(
+                        state,
+                        &device_id,
+                        profile,
+                        |ps| &mut ps.polling_rate,
+                        desired,
+                        write,
+                        now,
+                    )
+                })
+                .await??;
+            return crate::resources::state::finish_write(outcome, "polling rate", profile);
         }
 
         let write = session
             .write_polling_rate_unchecked(profile, desired, policy.verification)
             .await?;
-        let mut transaction = self.store().transaction()?;
-        let outcome = persist_polling_write(
-            &mut transaction,
-            device,
-            profile,
-            desired,
-            write,
-            self.now(),
-        )?;
-        transaction.state().validate()?;
-        transaction.commit()?;
-        finish_polling_write(outcome, profile)
+        let now = self.now();
+        let device_id = device.clone();
+        let outcome = self
+            .store()
+            .mutate_async(move |state| {
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.polling_rate,
+                    desired,
+                    write,
+                    now,
+                )
+            })
+            .await??;
+        crate::resources::state::finish_write(outcome, "polling rate", profile)
     }
 
     /// Performs a direct, unverified BLE polling-rate write as the explicit
@@ -414,7 +422,9 @@ impl DeviceManager {
         desired: PollingRate,
         policy: UpdatePolicy,
     ) -> Result<WriteOutcome<PollingRate>, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self
+            .open_locked(device, "update_polling_rate_unverified_ble")
+            .await?;
         let transport = session.transport();
         if transport != TransportKind::Ble {
             return Err(ManagerError::UnsupportedOperation {
@@ -432,18 +442,23 @@ impl DeviceManager {
         let write = session
             .write_polling_rate_unchecked(profile, desired, policy.verification)
             .await?;
-        let mut transaction = self.store().transaction()?;
-        let outcome = persist_polling_write(
-            &mut transaction,
-            device,
-            profile,
-            desired,
-            write,
-            self.now(),
-        )?;
-        transaction.state().validate()?;
-        transaction.commit()?;
-        finish_polling_write(outcome, profile)
+        let now = self.now();
+        let device_id = device.clone();
+        let outcome = self
+            .store()
+            .mutate_async(move |state| {
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.polling_rate,
+                    desired,
+                    write,
+                    now,
+                )
+            })
+            .await??;
+        crate::resources::state::finish_write(outcome, "polling rate", profile)
     }
 
     /// Resolves the complete desired image a safe polling-rate write must be
@@ -453,12 +468,12 @@ impl DeviceManager {
     /// profile plus persistent profile metadata naming the target as the
     /// current profile. Each missing section is reported by name before any
     /// write.
-    fn require_complete_desired_image(
+    pub(crate) async fn require_complete_desired_image(
         &self,
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<CompleteDesiredImage, ManagerError> {
-        let state = self.store().load()?;
+        let state = self.store().load_async().await?;
         let device_state = state
             .devices
             .get(device)
@@ -523,7 +538,7 @@ const CAPTURED_EVIDENCE_HOST_COLOR: [u8; 3] = [0xff, 0x00, 0x00];
 const CAPTURED_EVIDENCE_SLEEP_TIMER: u8 = 5;
 const CAPTURED_EVIDENCE_DEBOUNCE: u8 = 0x00;
 
-fn captured_evidence_preferences(profile: ProfileId) -> PreferencesState {
+pub(crate) fn captured_evidence_preferences(profile: ProfileId) -> PreferencesState {
     PreferencesState::new(
         profile,
         CAPTURED_EVIDENCE_LIGHT_MODE,
@@ -535,7 +550,7 @@ fn captured_evidence_preferences(profile: ProfileId) -> PreferencesState {
     )
 }
 
-fn merge_preferences_delta(
+pub(crate) fn merge_preferences_delta(
     baseline: PreferencesState,
     delta: PreferencesDelta,
 ) -> PreferencesState {
@@ -550,7 +565,11 @@ fn merge_preferences_delta(
     )
 }
 
-fn has_preferences_baseline(state: &StateFile, device: &DeviceId, profile: ProfileId) -> bool {
+pub(crate) fn has_preferences_baseline(
+    state: &StateFile,
+    device: &DeviceId,
+    profile: ProfileId,
+) -> bool {
     state
         .devices
         .get(device)
@@ -559,144 +578,6 @@ fn has_preferences_baseline(state: &StateFile, device: &DeviceId, profile: Profi
             profile_state.preferences.desired.is_some()
                 || profile_state.preferences.observed.is_some()
         })
-}
-
-fn persist_preferences_write(
-    transaction: &mut StateTransaction<'_>,
-    device: &DeviceId,
-    profile: ProfileId,
-    desired: PreferencesState,
-    write: SessionWrite<PreferencesState>,
-    now: crate::state::Timestamp,
-) -> Result<WriteOutcome<PreferencesState>, ManagerError> {
-    let (observed, application) = match write {
-        SessionWrite::ReadbackVerified(readback) => {
-            let application = if readback == desired {
-                ApplicationVerification::ReadbackVerified
-            } else {
-                ApplicationVerification::Mismatch
-            };
-            (Some(readback), application)
-        }
-        SessionWrite::Acknowledged => (None, ApplicationVerification::Acknowledged),
-    };
-
-    let device_state = transaction
-        .state_mut()
-        .devices
-        .get_mut(device)
-        .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-    let profile_state = device_state
-        .profiles
-        .entry(profile)
-        .or_insert_with(ProfileState::empty);
-    profile_state.preferences.desired = Some(DesiredState {
-        value: desired,
-        source: DesiredSource::UserWrite,
-        verification: Verification {
-            application,
-            persistence: PersistenceVerification::Unknown,
-        },
-        updated_at: now,
-    });
-    if let Some(readback) = observed {
-        profile_state.preferences.observed = Some(ObservedState {
-            value: readback,
-            source: ObservationSource::UsbReadback,
-            observed_at: now,
-        });
-    }
-
-    Ok(WriteOutcome {
-        desired,
-        observed,
-        verification: Verification {
-            application,
-            persistence: PersistenceVerification::Unknown,
-        },
-    })
-}
-
-fn persist_polling_write(
-    transaction: &mut StateTransaction<'_>,
-    device: &DeviceId,
-    profile: ProfileId,
-    desired: PollingRate,
-    write: SessionWrite<PollingRate>,
-    now: crate::state::Timestamp,
-) -> Result<WriteOutcome<PollingRate>, ManagerError> {
-    let (observed, application) = match write {
-        SessionWrite::ReadbackVerified(readback) => {
-            let application = if readback == desired {
-                ApplicationVerification::ReadbackVerified
-            } else {
-                ApplicationVerification::Mismatch
-            };
-            (Some(readback), application)
-        }
-        SessionWrite::Acknowledged => (None, ApplicationVerification::Acknowledged),
-    };
-
-    let device_state = transaction
-        .state_mut()
-        .devices
-        .get_mut(device)
-        .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-    let profile_state = device_state
-        .profiles
-        .entry(profile)
-        .or_insert_with(ProfileState::empty);
-    profile_state.polling_rate.desired = Some(DesiredState {
-        value: desired,
-        source: DesiredSource::UserWrite,
-        verification: Verification {
-            application,
-            persistence: PersistenceVerification::Unknown,
-        },
-        updated_at: now,
-    });
-    if let Some(readback) = observed {
-        profile_state.polling_rate.observed = Some(ObservedState {
-            value: readback,
-            source: ObservationSource::UsbReadback,
-            observed_at: now,
-        });
-    }
-
-    Ok(WriteOutcome {
-        desired,
-        observed,
-        verification: Verification {
-            application,
-            persistence: PersistenceVerification::Unknown,
-        },
-    })
-}
-
-fn finish_preferences_write(
-    outcome: WriteOutcome<PreferencesState>,
-    profile: ProfileId,
-) -> Result<WriteOutcome<PreferencesState>, ManagerError> {
-    if outcome.verification.application == ApplicationVerification::Mismatch {
-        return Err(ManagerError::VerificationMismatch {
-            resource: "preferences",
-            profile: Some(profile),
-        });
-    }
-    Ok(outcome)
-}
-
-fn finish_polling_write(
-    outcome: WriteOutcome<PollingRate>,
-    profile: ProfileId,
-) -> Result<WriteOutcome<PollingRate>, ManagerError> {
-    if outcome.verification.application == ApplicationVerification::Mismatch {
-        return Err(ManagerError::VerificationMismatch {
-            resource: "polling rate",
-            profile: Some(profile),
-        });
-    }
-    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -717,14 +598,11 @@ mod tests {
     use std::sync::Arc;
 
     fn store(dir: &tempfile::TempDir) -> StateStore {
-        StateStore::open(StatePaths {
-            state_file: dir.path().join("state.json"),
-            lock_file: dir.path().join("state.lock"),
-        })
+        StateStore::open(StatePaths::new(dir.path().join("state.json")))
     }
 
     fn usb_identity() -> DeviceIdentity {
-        DeviceIdentity::usb(
+        DeviceIdentity::test_usb(
             TransportKind::Wired,
             0x1d57,
             0xfa61,
@@ -736,7 +614,7 @@ mod tests {
     }
 
     fn ble_identity() -> DeviceIdentity {
-        DeviceIdentity::ble("settings-ble-test", Some("Settings BLE test"))
+        DeviceIdentity::test_ble("settings-ble-test", Some("Settings BLE test"))
             .expect("valid BLE identity")
     }
 
@@ -807,6 +685,17 @@ mod tests {
         buttons: ButtonsState,
     ) {
         let mut transaction = store.transaction().unwrap();
+        // Ensure nextDeviceNumber respects allocation semantics for the shared
+        // mouse-999 fixture before commit.
+        if let Some(num) = identity.id.number()
+            && transaction.state().next_device_number <= num
+        {
+            transaction.state_mut().next_device_number = num + 1;
+            assert!(
+                transaction.state().next_device_number != 0,
+                "nextDeviceNumber overflow"
+            );
+        }
         let device_state = transaction
             .state_mut()
             .devices
@@ -837,6 +726,7 @@ mod tests {
             verification: Verification::not_sent(),
             updated_at: Timestamp::default(),
         });
+        transaction.state().validate().unwrap();
         transaction.commit().unwrap();
     }
 
@@ -1710,5 +1600,141 @@ mod tests {
             rate.observed.as_ref().unwrap().source,
             ObservationSource::UsbReadback
         );
+    }
+    #[tokio::test]
+    async fn read_polling_rate_loads_target_and_stores_under_target_not_live_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let target = ProfileId::new(2).unwrap();
+        let live_before = ProfileId::new(1).unwrap();
+        let (dpi, preferences, buttons) = complete_image(target);
+        // Per-profile rates: live_before = 125, target = 1000
+        let session = ScriptedFakeSession::usb()
+            .with_profile(matching_snapshot(target, dpi, preferences, buttons))
+            .with_polling_rate_for(live_before, PollingRate::Hz125)
+            .with_polling_rate_for(target, PollingRate::Hz1000)
+            .with_live_profile(live_before);
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            session.clone(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        let snapshot = manager.read_polling_rate(&device, target).await.unwrap();
+        assert_eq!(
+            snapshot.resource.observed.as_ref().unwrap().value,
+            PollingRate::Hz1000
+        );
+        assert_eq!(session.last_polling_alias(), Some(target));
+        let persisted = store.load().unwrap();
+        // Stored under target
+        assert_eq!(
+            persisted.devices[&device].profiles[&target]
+                .polling_rate
+                .observed
+                .as_ref()
+                .unwrap()
+                .value,
+            PollingRate::Hz1000
+        );
+        // Live alias 1 must not be contaminated with 1000
+        if let Some(other) = persisted.devices[&device].profiles.get(&live_before)
+            && let Some(obs) = other.polling_rate.observed.as_ref()
+        {
+            assert_ne!(
+                obs.value,
+                PollingRate::Hz1000,
+                "standalone live rate must not contaminate other profile"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn read_polling_rate_standalone_live_mismatch_cannot_contaminate() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let target = ProfileId::new(2).unwrap();
+        let other = ProfileId::new(1).unwrap();
+        let (dpi_target, pref_target, btn_target) = complete_image(target);
+        // Snapshot for target correctly describes target; live before is other with rate 500, target rate 1000
+        let session = ScriptedFakeSession::usb()
+            .with_profile(matching_snapshot(
+                other,
+                dpi_target.clone(),
+                pref_target,
+                btn_target,
+            ))
+            .with_profile(matching_snapshot(
+                target,
+                dpi_target.clone(),
+                pref_target,
+                btn_target,
+            ))
+            .with_polling_rate_for(other, PollingRate::Hz500)
+            .with_polling_rate_for(target, PollingRate::Hz1000)
+            .with_live_profile(other);
+        // Force live to other: after our safe path, we load target, so live becomes target and rate should be 1000, not 500
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            session.clone(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        // Directly read polling for target; should get target's rate, not live's 500
+        let snap = manager.read_polling_rate(&device, target).await.unwrap();
+        assert_eq!(
+            snap.resource.observed.as_ref().unwrap().value,
+            PollingRate::Hz1000
+        );
+        let persisted = store.load().unwrap();
+        assert_eq!(
+            persisted.devices[&device].profiles[&target]
+                .polling_rate
+                .observed
+                .as_ref()
+                .unwrap()
+                .value,
+            PollingRate::Hz1000
+        );
+        // Ensure other not polluted
+        if let Some(p) = persisted.devices[&device].profiles.get(&other)
+            && let Some(obs) = &p.polling_rate.observed
+        {
+            assert_ne!(obs.value, PollingRate::Hz1000);
+        }
+    }
+
+    #[tokio::test]
+    async fn read_polling_rate_ble_is_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = ble_identity();
+        let device = identity.id.clone();
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            ScriptedFakeSession::ble(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+        let err = manager
+            .read_polling_rate(&device, ProfileId::new(1).unwrap())
+            .await
+            .expect_err("BLE must be unsupported");
+        assert!(matches!(
+            err,
+            ManagerError::UnsupportedOperation {
+                operation: "read_live_polling_rate",
+                transport: TransportKind::Ble
+            }
+        ));
     }
 }

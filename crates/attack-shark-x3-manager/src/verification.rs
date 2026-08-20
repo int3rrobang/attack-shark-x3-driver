@@ -1,26 +1,26 @@
 use std::time::Duration;
 
 use attack_shark_x3::driver::ProfileSnapshot;
-use attack_shark_x3::{ProfileId, ProfileMetadata, TransportKind};
+use attack_shark_x3::{PollingRate, ProfileId, ProfileMetadata, TransportKind};
 use tokio::time::{Instant, sleep};
 
-use crate::device::{DeviceId, DeviceIdentity, TransportSelection};
+use crate::backend::SessionWrite;
+use crate::device::{DeviceEndpoint, DeviceId, TransportSelection};
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::operation::{PowerCycleVerificationOutcome, ProfileVerificationOutcome, WriteOutcome};
-use crate::state::{
-    ApplicationVerification, PersistenceVerification, ProfileState, ResourceState, Verification,
+use crate::state::{ApplicationVerification, PersistenceVerification, ProfileState, Verification};
+const POWER_CYCLE_POLL_INTERVAL: Duration = if cfg!(test) {
+    Duration::from_millis(1)
+} else {
+    Duration::from_millis(250)
 };
 
-#[cfg(not(test))]
-const POWER_CYCLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
-#[cfg(test)]
-const POWER_CYCLE_POLL_INTERVAL: Duration = Duration::from_millis(1);
-
-#[cfg(not(test))]
-const POWER_CYCLE_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(test)]
-const POWER_CYCLE_TIMEOUT: Duration = Duration::from_millis(20);
+const POWER_CYCLE_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_millis(20)
+} else {
+    Duration::from_secs(30)
+};
 
 impl DeviceManager {
     /// Verifies that a complete profile image survives a profile reload.
@@ -29,12 +29,19 @@ impl DeviceManager {
     /// readback. It reads the target image before changing the active profile,
     /// loads it again after switching away and back, and restores the original
     /// active profile before returning any result.
+    ///
+    /// The target profile is captured as a complete non-rate read followed
+    /// immediately by `read_live_polling_rate(target)` in the same locked
+    /// session, both before transitions and after reload. Every profile
+    /// metadata write requires exact `ReadbackVerified(expected)`; ACK or
+    /// mismatch aborts.
     pub async fn verify_profile_reload(
         &self,
         device: &DeviceId,
         target: ProfileId,
     ) -> Result<ProfileVerificationOutcome, ManagerError> {
-        let (_, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) =
+            self.open_locked(device, "verify_profile_reload").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(ManagerError::UnsupportedOperation {
@@ -57,38 +64,63 @@ impl DeviceManager {
         })?;
 
         // Capture the complete target image before any profile transition.
-        let initial = session.read_profile(target).await?;
-        let away_metadata = ProfileMetadata::new(away, original.maximum())
-            .map_err(|error| ManagerError::InvalidUpdate(error.to_string()))?;
+        // Safe capture is read_profile(target) then read_live_polling_rate(target) without interleaving.
+        let (initial_snapshot, initial_rate) =
+            read_complete_profile(session.as_ref(), target).await?;
+        let away_metadata = ProfileMetadata::new(away, original.maximum()).map_err(|source| {
+            ManagerError::Protocol {
+                operation: "profile metadata",
+                source,
+            }
+        })?;
 
         // If a transport reports an error after partially applying the change,
         // still make the best effort to restore the original profile. A
         // restoration error is always more important than the triggering error.
-        if let Err(error) = session.write_profile_metadata(away_metadata).await {
-            session.write_profile_metadata(original).await?;
+        if let Err(error) = write_exact_metadata(session.as_ref(), away_metadata).await {
+            write_exact_metadata(session.as_ref(), original).await?;
             return Err(error);
         }
 
         // Readback is kept separate from restoration so every path after the
         // first transition attempts to restore the original active profile.
-        let reloaded = async {
-            let target_metadata = ProfileMetadata::new(target, original.maximum())
-                .map_err(|error| ManagerError::InvalidUpdate(error.to_string()))?;
-            session.write_profile_metadata(target_metadata).await?;
-            session.read_profile(target).await
+        let target_metadata =
+            ProfileMetadata::new(target, original.maximum()).map_err(|source| {
+                ManagerError::Protocol {
+                    operation: "profile metadata",
+                    source,
+                }
+            })?;
+
+        let reloaded_result = async {
+            write_exact_metadata(session.as_ref(), target_metadata).await?;
+            read_complete_profile(session.as_ref(), target).await
         }
         .await;
-
-        let restore_result = session.write_profile_metadata(original).await;
+        let restore_result = write_exact_metadata(session.as_ref(), original).await;
+        // Restoration error remains higher priority.
         restore_result?;
-        let reloaded = reloaded?;
+        let (reloaded_snapshot, reloaded_rate) = reloaded_result?;
 
-        let mismatch = first_mismatch(&initial, &reloaded, target);
+        let mismatch = first_mismatch(
+            &initial_snapshot,
+            initial_rate,
+            &reloaded_snapshot,
+            reloaded_rate,
+        );
         let verified_at = self.now();
         let persistence = mismatch
             .is_none()
             .then_some(PersistenceVerification::ProfileReloadVerified { verified_at });
-        self.persist_profile_observation(device, target, &reloaded, persistence, verified_at)?;
+        self.persist_profile_observation(
+            device,
+            target,
+            &reloaded_snapshot,
+            reloaded_rate,
+            persistence,
+            verified_at,
+        )
+        .await?;
 
         if let Some(resource) = mismatch {
             return Err(ManagerError::VerificationMismatch {
@@ -105,18 +137,23 @@ impl DeviceManager {
         Ok(ProfileVerificationOutcome {
             profile: target,
             dpi: WriteOutcome {
-                desired: initial.dpi,
-                observed: Some(reloaded.dpi),
+                desired: initial_snapshot.dpi,
+                observed: Some(reloaded_snapshot.dpi),
                 verification: verification.clone(),
             },
             preferences: WriteOutcome {
-                desired: initial.preferences,
-                observed: Some(reloaded.preferences),
+                desired: initial_snapshot.preferences,
+                observed: Some(reloaded_snapshot.preferences),
                 verification: verification.clone(),
             },
             buttons: WriteOutcome {
-                desired: initial.buttons,
-                observed: Some(reloaded.buttons),
+                desired: initial_snapshot.buttons,
+                observed: Some(reloaded_snapshot.buttons),
+                verification: verification.clone(),
+            },
+            polling_rate: WriteOutcome {
+                desired: initial_rate,
+                observed: Some(reloaded_rate),
                 verification,
             },
         })
@@ -126,14 +163,20 @@ impl DeviceManager {
     /// physical power cycle.
     ///
     /// The open session is released before discovery polling begins. A
-    /// persistence claim is made only after the exact USB identity disappears,
-    /// returns, and produces a complete matching profile readback.
+    /// persistence claim is made only after the device disappears and a
+    /// same-model USB device (same VID/PID) returns and produces a complete
+    /// matching profile readback. This mouse exposes no serial number and the
+    /// HID path is a locator that can change on replug, so reconnect identity
+    /// is model-level, never per-unit.
+    ///
+    /// Capture uses read_profile then read_live_polling_rate in same session
+    /// before disconnect and after reconnect.
     pub async fn verify_power_cycle(
         &self,
         device: &DeviceId,
         target: ProfileId,
     ) -> Result<PowerCycleVerificationOutcome, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, guard) = self.open_locked(device, "verify_power_cycle").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(ManagerError::UnsupportedOperation {
@@ -144,33 +187,62 @@ impl DeviceManager {
 
         // Capture the complete target image while the original session is
         // still open, then release the handle before waiting for the user.
-        let initial = session.read_profile(target).await?;
+        let (initial_snapshot, initial_rate) =
+            read_complete_profile(session.as_ref(), target).await?;
         drop(session);
+        drop(guard);
 
-        self.wait_for_power_cycle_state(device, transport, false)
-            .await?;
-        let returned_identity = self
-            .wait_for_power_cycle_state(device, transport, true)
-            .await?
+        let state = self
+            .store()
+            .load_async()
+            .await
+            .map_err(ManagerError::State)?;
+        let old_endpoint = state
+            .devices
+            .get(device)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+            .identity
+            .endpoint(transport)
+            .cloned()
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        self.refresh_device_identity(device, returned_identity)?;
 
-        let (reopened_identity, reopened_session) = self.open_session(device).await?;
-        if reopened_identity.id != *device || reopened_session.transport() != transport {
+        self.wait_for_disappearance(device, transport, &old_endpoint)
+            .await?;
+        self.wait_for_reappearance_with_rebind(device, transport, &old_endpoint)
+            .await?;
+
+        let (_identity, reopened_session, _guard) = self
+            .open_locked(device, "verify_power_cycle_reopen")
+            .await?;
+        if reopened_session.transport() != transport {
             return Err(ManagerError::VerificationMismatch {
                 resource: "device identity",
                 profile: Some(target),
             });
         }
-        let reloaded = reopened_session.read_profile(target).await?;
+        let (reloaded_snapshot, reloaded_rate) =
+            read_complete_profile(reopened_session.as_ref(), target).await?;
         drop(reopened_session);
 
-        let mismatch = first_mismatch(&initial, &reloaded, target);
+        let mismatch = first_mismatch(
+            &initial_snapshot,
+            initial_rate,
+            &reloaded_snapshot,
+            reloaded_rate,
+        );
         let verified_at = self.now();
         let persistence = mismatch
             .is_none()
             .then_some(PersistenceVerification::PowerCycleVerified { verified_at });
-        self.persist_profile_observation(device, target, &reloaded, persistence, verified_at)?;
+        self.persist_profile_observation(
+            device,
+            target,
+            &reloaded_snapshot,
+            reloaded_rate,
+            persistence,
+            verified_at,
+        )
+        .await?;
 
         if let Some(resource) = mismatch {
             return Err(ManagerError::VerificationMismatch {
@@ -187,132 +259,157 @@ impl DeviceManager {
         Ok(PowerCycleVerificationOutcome {
             profile: target,
             dpi: WriteOutcome {
-                desired: initial.dpi,
-                observed: Some(reloaded.dpi),
+                desired: initial_snapshot.dpi,
+                observed: Some(reloaded_snapshot.dpi),
                 verification: verification.clone(),
             },
             preferences: WriteOutcome {
-                desired: initial.preferences,
-                observed: Some(reloaded.preferences),
+                desired: initial_snapshot.preferences,
+                observed: Some(reloaded_snapshot.preferences),
                 verification: verification.clone(),
             },
             buttons: WriteOutcome {
-                desired: initial.buttons,
-                observed: Some(reloaded.buttons),
+                desired: initial_snapshot.buttons,
+                observed: Some(reloaded_snapshot.buttons),
+                verification: verification.clone(),
+            },
+            polling_rate: WriteOutcome {
+                desired: initial_rate,
+                observed: Some(reloaded_rate),
                 verification,
             },
         })
     }
 
-    fn persist_profile_observation(
+    async fn persist_profile_observation(
         &self,
         device: &DeviceId,
         target: ProfileId,
         snapshot: &ProfileSnapshot,
+        polling_rate: PollingRate,
         persistence: Option<PersistenceVerification>,
         verified_at: crate::state::Timestamp,
     ) -> Result<(), ManagerError> {
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        let profile_state = device_state
-            .profiles
-            .entry(target)
-            .or_insert_with(ProfileState::empty);
-
-        set_observed(&mut profile_state.dpi, snapshot.dpi.clone(), verified_at);
-        set_observed(
-            &mut profile_state.preferences,
-            snapshot.preferences,
-            verified_at,
-        );
-        set_observed(&mut profile_state.buttons, snapshot.buttons, verified_at);
-
-        if let Some(persistence) = persistence.as_ref() {
-            mark_persistence(&mut profile_state.dpi, &snapshot.dpi, persistence);
-            mark_persistence(
-                &mut profile_state.preferences,
-                &snapshot.preferences,
-                persistence,
-            );
-            mark_persistence(&mut profile_state.buttons, &snapshot.buttons, persistence);
-        } else {
-            invalidate_persistence(&mut profile_state.dpi);
-            invalidate_persistence(&mut profile_state.preferences);
-            invalidate_persistence(&mut profile_state.buttons);
-        }
-        transaction.state().validate()?;
-        transaction.commit()?;
+        let device = device.clone();
+        let snapshot = snapshot.clone();
+        self.store()
+            .mutate_async(move |state| {
+                let profile_state = state
+                    .devices
+                    .get_mut(&device)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+                    .profiles
+                    .entry(target)
+                    .or_insert_with(ProfileState::empty);
+                profile_state
+                    .dpi
+                    .reconcile_observation(snapshot.dpi.clone(), verified_at);
+                profile_state
+                    .preferences
+                    .reconcile_observation(snapshot.preferences, verified_at);
+                profile_state
+                    .buttons
+                    .reconcile_observation(snapshot.buttons, verified_at);
+                profile_state
+                    .polling_rate
+                    .reconcile_observation(polling_rate, verified_at);
+                if let Some(persistence) = persistence {
+                    match persistence {
+                        PersistenceVerification::ProfileReloadVerified { verified_at } => {
+                            profile_state.try_mark_profile_reload_verified(verified_at);
+                        }
+                        PersistenceVerification::PowerCycleVerified { verified_at } => {
+                            profile_state.try_mark_power_cycle_verified(verified_at);
+                        }
+                        PersistenceVerification::Unknown => {}
+                    }
+                }
+                Ok::<_, ManagerError>(())
+            })
+            .await
+            .map_err(ManagerError::State)??;
         Ok(())
     }
-    async fn wait_for_power_cycle_state(
+    async fn wait_for_disappearance(
         &self,
         device: &DeviceId,
         transport: TransportKind,
-        expect_present: bool,
-    ) -> Result<Option<DeviceIdentity>, ManagerError> {
+        old_endpoint: &DeviceEndpoint,
+    ) -> Result<(), ManagerError> {
         let started = Instant::now();
         loop {
             let discovered = self
-                .list_devices(TransportSelection::Exact(transport))
+                .factory
+                .list(TransportSelection::Exact(transport))
                 .await?;
-            let exact = discovered.into_iter().find(|candidate| {
-                candidate.connected
-                    && candidate.identity.id == *device
-                    && candidate.identity.transport == transport
+            let still_present = discovered.iter().any(|candidate| {
+                candidate.connected && candidate.endpoint.locator == old_endpoint.locator
             });
-            let reached_state = if expect_present {
-                exact.is_some()
-            } else {
-                exact.is_none()
-            };
-            if reached_state {
-                return Ok(exact.map(|candidate| candidate.identity));
+            if !still_present {
+                return Ok(());
             }
-
             if started.elapsed() >= POWER_CYCLE_TIMEOUT {
-                return Err(if expect_present {
-                    ManagerError::PowerCycleReappearanceTimeout {
-                        device: device.clone(),
-                        timeout: POWER_CYCLE_TIMEOUT,
-                    }
-                } else {
-                    ManagerError::PowerCycleDisappearanceTimeout {
-                        device: device.clone(),
-                        timeout: POWER_CYCLE_TIMEOUT,
-                    }
+                return Err(ManagerError::PowerCycleDisappearanceTimeout {
+                    device: device.clone(),
+                    timeout: POWER_CYCLE_TIMEOUT,
                 });
             }
             sleep(POWER_CYCLE_POLL_INTERVAL).await;
         }
     }
 
-    fn refresh_device_identity(
+    async fn wait_for_reappearance_with_rebind(
         &self,
         device: &DeviceId,
-        identity: DeviceIdentity,
-    ) -> Result<(), ManagerError> {
-        if identity.id != *device {
-            return Err(ManagerError::DeviceNotFound(device.clone()));
+        transport: TransportKind,
+        old_endpoint: &DeviceEndpoint,
+    ) -> Result<DeviceEndpoint, ManagerError> {
+        let started = Instant::now();
+        loop {
+            let discovered = self
+                .factory
+                .list(TransportSelection::Exact(transport))
+                .await?;
+            if let Some(found) = discovered.iter().find(|candidate| {
+                candidate.connected && candidate.endpoint.locator == old_endpoint.locator
+            }) {
+                return Ok(found.endpoint.clone());
+            }
+            let mut candidates =
+                crate::device::rebind_candidates(discovered, transport, old_endpoint);
+            match candidates.len() {
+                0 => {}
+                1 => {
+                    let new_endpoint = candidates.pop().expect("length checked above");
+                    let device = device.clone();
+                    let endpoint = new_endpoint.clone();
+                    self.store()
+                        .mutate_async(move |state| {
+                            state
+                                .devices
+                                .get_mut(&device)
+                                .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+                                .identity
+                                .upsert_endpoint(endpoint);
+                            Ok::<_, ManagerError>(())
+                        })
+                        .await
+                        .map_err(ManagerError::State)??;
+                    return Ok(new_endpoint);
+                }
+                _ => {
+                    // Ambiguous: more than one same VID/PID candidate — do not guess.
+                    // Keep polling until timeout.
+                }
+            }
+            if started.elapsed() >= POWER_CYCLE_TIMEOUT {
+                return Err(ManagerError::PowerCycleReappearanceTimeout {
+                    device: device.clone(),
+                    timeout: POWER_CYCLE_TIMEOUT,
+                });
+            }
+            sleep(POWER_CYCLE_POLL_INTERVAL).await;
         }
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        if device_state.identity.transport != identity.transport {
-            return Err(ManagerError::VerificationMismatch {
-                resource: "device identity",
-                profile: None,
-            });
-        }
-        device_state.identity = identity;
-        transaction.commit()?;
-        Ok(())
     }
 }
 
@@ -326,14 +423,38 @@ fn alternate_profile(original: ProfileMetadata, target: ProfileId) -> Option<Pro
         .find(|candidate| *candidate != target)
 }
 
+async fn read_complete_profile(
+    session: &dyn crate::backend::DeviceSession,
+    target: ProfileId,
+) -> Result<(ProfileSnapshot, PollingRate), ManagerError> {
+    // Safe sequence: complete profile read immediately followed by live polling rate read
+    // in same locked session; report 0x06 alias is side-effect only.
+    let snapshot = session.read_profile(target).await?;
+    let rate = session.read_live_polling_rate(target).await?;
+    Ok((snapshot, rate))
+}
+
+pub(crate) async fn write_exact_metadata(
+    session: &dyn crate::backend::DeviceSession,
+    expected: ProfileMetadata,
+) -> Result<ProfileMetadata, ManagerError> {
+    match session.write_profile_metadata(expected).await? {
+        SessionWrite::ReadbackVerified(actual) if actual == expected => Ok(actual),
+        SessionWrite::ReadbackVerified(_) | SessionWrite::Acknowledged => {
+            Err(ManagerError::VerificationMismatch {
+                resource: "profile metadata",
+                profile: Some(expected.current()),
+            })
+        }
+    }
+}
+
 fn first_mismatch(
     initial: &ProfileSnapshot,
+    initial_rate: PollingRate,
     reloaded: &ProfileSnapshot,
-    target: ProfileId,
+    reloaded_rate: PollingRate,
 ) -> Option<&'static str> {
-    if reloaded.target_profile != target || initial.target_profile != target {
-        return Some("profile");
-    }
     if initial.persistent_metadata.maximum() != reloaded.persistent_metadata.maximum() {
         return Some("profile metadata");
     }
@@ -346,38 +467,10 @@ fn first_mismatch(
     if initial.buttons != reloaded.buttons {
         return Some("buttons");
     }
+    if initial_rate != reloaded_rate {
+        return Some("polling rate");
+    }
     None
-}
-fn set_observed<T>(
-    resource: &mut ResourceState<T>,
-    value: T,
-    observed_at: crate::state::Timestamp,
-) {
-    resource.observed = Some(crate::state::ObservedState {
-        value,
-        source: crate::state::ObservationSource::UsbReadback,
-        observed_at,
-    });
-}
-
-fn mark_persistence<T: Eq>(
-    resource: &mut ResourceState<T>,
-    readback: &T,
-    persistence: &PersistenceVerification,
-) {
-    if let Some(desired) = resource.desired.as_mut() {
-        if desired.value == *readback {
-            desired.verification.persistence = persistence.clone();
-        } else {
-            desired.verification.invalidate_persistence();
-        }
-    }
-}
-
-fn invalidate_persistence<T>(resource: &mut ResourceState<T>) {
-    if let Some(desired) = resource.desired.as_mut() {
-        desired.verification.invalidate_persistence();
-    }
 }
 #[cfg(test)]
 mod tests {
@@ -385,26 +478,27 @@ mod tests {
 
     use attack_shark_x3::driver::ProfileSnapshot;
     use attack_shark_x3::{
-        ButtonAssignment, ButtonsState, DpiState, DpiValue, PreferencesState, ProfileId,
-        ProfileMetadata, StageIndex, TransportKind,
+        ButtonAssignment, ButtonsState, DpiState, DpiValue, PollingRate, PreferencesState,
+        ProfileId, ProfileMetadata, StageIndex, TransportKind,
     };
 
     use super::DeviceManager;
-    use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession};
+    use crate::backend::{DeviceSession, ScriptedFakeFactory, ScriptedFakeSession, SessionWrite};
     use crate::device::DeviceIdentity;
     use crate::error::ManagerError;
-    use crate::operation::DiscoveredDevice;
+    use crate::operation::DiscoveredEndpoint;
     use crate::state::{
         ApplicationVerification, DesiredSource, DesiredState, PersistenceVerification,
         ProfileState, StateStore, Timestamp, Verification,
     };
+    use async_trait::async_trait;
 
     fn profile() -> ProfileId {
         ProfileId::new(1).expect("profile one is valid")
     }
 
     fn identity(path: &str) -> DeviceIdentity {
-        DeviceIdentity::usb(
+        DeviceIdentity::test_usb(
             TransportKind::Wired,
             0x1d57,
             0xfa61,
@@ -440,13 +534,29 @@ mod tests {
     fn manager_for(
         initial_identity: &DeviceIdentity,
         session: ScriptedFakeSession,
-        discovery_sequence: Vec<Vec<DiscoveredDevice>>,
+        discovery_sequence: Vec<Vec<DiscoveredEndpoint>>,
     ) -> (DeviceManager, Arc<ScriptedFakeFactory>) {
-        let factory = Arc::new(
-            ScriptedFakeFactory::new()
-                .with_identity(initial_identity.clone(), true, session)
-                .with_discovery_sequence(discovery_sequence),
+        let endpoint = initial_identity
+            .endpoints
+            .values()
+            .next()
+            .cloned()
+            .expect("initial must have endpoint");
+        let factory =
+            ScriptedFakeFactory::new().with_discovery_sequence(discovery_sequence.clone());
+        factory.add_endpoint(
+            DiscoveredEndpoint {
+                endpoint,
+                connected: true,
+            },
+            session.clone(),
         );
+        for seq in &discovery_sequence {
+            for disc in seq {
+                factory.add_endpoint(disc.clone(), session.clone());
+            }
+        }
+        let factory = Arc::new(factory);
         let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory.clone());
         manager
             .register_device(initial_identity.clone())
@@ -455,6 +565,15 @@ mod tests {
     }
 
     fn seed_desired(manager: &DeviceManager, device: &DeviceIdentity, expected: &ProfileSnapshot) {
+        seed_desired_with_rate(manager, device, expected, PollingRate::Hz1000);
+    }
+
+    fn seed_desired_with_rate(
+        manager: &DeviceManager,
+        device: &DeviceIdentity,
+        expected: &ProfileSnapshot,
+        rate: PollingRate,
+    ) {
         let mut transaction = manager.store().transaction().expect("state transaction");
         let profile_state = transaction
             .state_mut()
@@ -469,11 +588,17 @@ mod tests {
             persistence: PersistenceVerification::Unknown,
         };
         let updated_at = Timestamp { unix_seconds: 1 };
+        let observed_at = Timestamp { unix_seconds: 2 };
         profile_state.dpi.desired = Some(DesiredState {
             value: expected.dpi.clone(),
             source: DesiredSource::UserWrite,
             verification: verification.clone(),
             updated_at,
+        });
+        profile_state.dpi.observed = Some(crate::state::ObservedState {
+            value: expected.dpi.clone(),
+            source: crate::state::ObservationSource::UsbReadback,
+            observed_at,
         });
         profile_state.preferences.desired = Some(DesiredState {
             value: expected.preferences,
@@ -481,11 +606,32 @@ mod tests {
             verification: verification.clone(),
             updated_at,
         });
+        profile_state.preferences.observed = Some(crate::state::ObservedState {
+            value: expected.preferences,
+            source: crate::state::ObservationSource::UsbReadback,
+            observed_at,
+        });
         profile_state.buttons.desired = Some(DesiredState {
             value: expected.buttons,
             source: DesiredSource::UserWrite,
-            verification,
+            verification: verification.clone(),
             updated_at,
+        });
+        profile_state.buttons.observed = Some(crate::state::ObservedState {
+            value: expected.buttons,
+            source: crate::state::ObservationSource::UsbReadback,
+            observed_at,
+        });
+        profile_state.polling_rate.desired = Some(DesiredState {
+            value: rate,
+            source: DesiredSource::UserWrite,
+            verification: verification.clone(),
+            updated_at,
+        });
+        profile_state.polling_rate.observed = Some(crate::state::ObservedState {
+            value: rate,
+            source: crate::state::ObservationSource::UsbReadback,
+            observed_at,
         });
         transaction.commit().expect("commit desired state");
     }
@@ -495,13 +641,20 @@ mod tests {
         let initial_identity = identity(r"\\?\hid#power-cycle-old");
         let returned_identity = identity(r"\\?\hid#power-cycle-new");
         let expected = snapshot(800);
-        let returned = DiscoveredDevice {
-            identity: returned_identity.clone(),
+        let returned_endpoint = returned_identity
+            .endpoints
+            .values()
+            .next()
+            .cloned()
+            .unwrap();
+        let returned = DiscoveredEndpoint {
+            endpoint: returned_endpoint.clone(),
             connected: true,
         };
         let session = ScriptedFakeSession::usb()
             .with_metadata(expected.persistent_metadata)
-            .with_profile(expected.clone());
+            .with_profile(expected.clone())
+            .with_polling_rate(PollingRate::Hz1000);
         let (manager, factory) =
             manager_for(&initial_identity, session, vec![vec![], vec![returned]]);
         seed_desired(&manager, &initial_identity, &expected);
@@ -515,13 +668,22 @@ mod tests {
             outcome.dpi.verification.persistence,
             PersistenceVerification::PowerCycleVerified { .. }
         ));
-        assert_eq!(
-            manager
-                .device_identity(&initial_identity.id)
-                .expect("refreshed identity")
-                .locator,
-            returned_identity.locator
-        );
+        assert!(matches!(
+            outcome.polling_rate.verification.persistence,
+            PersistenceVerification::PowerCycleVerified { .. }
+        ));
+        assert_eq!(outcome.polling_rate.desired, PollingRate::Hz1000);
+        assert_eq!(outcome.polling_rate.observed, Some(PollingRate::Hz1000));
+        let refreshed = manager
+            .device_identity(&initial_identity.id)
+            .expect("refreshed identity");
+        let refreshed_locator = refreshed
+            .endpoint(TransportKind::Wired)
+            .unwrap()
+            .locator
+            .clone();
+        let expected_locator = returned_endpoint.locator.clone();
+        assert_eq!(refreshed_locator, expected_locator);
         let state = manager.store().load().expect("load state");
         let profile_state = &state.devices[&initial_identity.id].profiles[&expected.target_profile];
         assert_eq!(
@@ -532,12 +694,28 @@ mod tests {
                 .map(|observed| &observed.value),
             Some(&expected.dpi)
         );
+        assert_eq!(
+            profile_state
+                .polling_rate
+                .observed
+                .as_ref()
+                .map(|o| o.value),
+            Some(PollingRate::Hz1000)
+        );
         assert!(matches!(
             profile_state
                 .dpi
                 .desired
                 .as_ref()
                 .map(|desired| &desired.verification.persistence),
+            Some(PersistenceVerification::PowerCycleVerified { .. })
+        ));
+        assert!(matches!(
+            profile_state
+                .polling_rate
+                .desired
+                .as_ref()
+                .map(|d| &d.verification.persistence),
             Some(PersistenceVerification::PowerCycleVerified { .. })
         ));
         assert_eq!(
@@ -551,8 +729,8 @@ mod tests {
 
     #[tokio::test]
     async fn power_cycle_rejects_ble_without_discovery() {
-        let ble_identity =
-            DeviceIdentity::ble("power-cycle-ble-test", Some("BLE test mouse")).expect("BLE ID");
+        let ble_identity = DeviceIdentity::test_ble("power-cycle-ble-test", Some("BLE test mouse"))
+            .expect("BLE ID");
         let (manager, factory) = manager_for(&ble_identity, ScriptedFakeSession::ble(), Vec::new());
 
         let error = manager
@@ -569,18 +747,19 @@ mod tests {
         ));
         assert!(factory.list_calls().is_empty());
     }
-
     #[tokio::test]
     async fn power_cycle_times_out_when_exact_device_never_disappears() {
         let device = identity(r"\\?\hid#power-cycle-never-away");
         let expected = snapshot(800);
-        let present = DiscoveredDevice {
-            identity: device.clone(),
+        let endpoint = device.endpoints.values().next().cloned().unwrap();
+        let present = DiscoveredEndpoint {
+            endpoint,
             connected: true,
         };
         let session = ScriptedFakeSession::usb()
             .with_metadata(expected.persistent_metadata)
-            .with_profile(expected.clone());
+            .with_profile(expected.clone())
+            .with_polling_rate(PollingRate::Hz1000);
         let (manager, _) = manager_for(&device, session, vec![vec![present]]);
 
         let error = manager
@@ -600,7 +779,8 @@ mod tests {
         let expected = snapshot(800);
         let session = ScriptedFakeSession::usb()
             .with_metadata(expected.persistent_metadata)
-            .with_profile(expected.clone());
+            .with_profile(expected.clone())
+            .with_polling_rate(PollingRate::Hz1000);
         let (manager, _) = manager_for(&device, session, vec![vec![], vec![]]);
 
         let error = manager
@@ -619,13 +799,15 @@ mod tests {
         let device = identity(r"\\?\hid#power-cycle-mismatch");
         let expected = snapshot(800);
         let mismatched = snapshot(1600);
-        let returned = DiscoveredDevice {
-            identity: device.clone(),
+        let endpoint = device.endpoints.values().next().cloned().unwrap();
+        let returned = DiscoveredEndpoint {
+            endpoint,
             connected: true,
         };
         let session = ScriptedFakeSession::usb()
             .with_metadata(expected.persistent_metadata)
-            .with_profile_sequence(vec![expected.clone(), mismatched.clone()]);
+            .with_profile_sequence(vec![expected.clone(), mismatched.clone()])
+            .with_polling_rate(PollingRate::Hz1000);
         let (manager, _) = manager_for(&device, session, vec![vec![], vec![returned]]);
         seed_desired(&manager, &device, &expected);
 
@@ -633,7 +815,6 @@ mod tests {
             .verify_power_cycle(&device.id, expected.target_profile)
             .await
             .expect_err("changed DPI must fail complete verification");
-
         assert!(matches!(
             error,
             ManagerError::VerificationMismatch {
@@ -658,6 +839,272 @@ mod tests {
                 .as_ref()
                 .map(|desired| &desired.verification.persistence),
             Some(PersistenceVerification::Unknown)
+        ));
+    }
+
+    #[tokio::test]
+    async fn power_cycle_polling_only_mismatch_is_detected() {
+        let device = identity(r"\\?\hid#power-cycle-polling-mismatch");
+        let expected = snapshot(800);
+        let old_endpoint = device.endpoints.values().next().cloned().unwrap();
+        let new_identity = identity(r"\\?\hid#power-cycle-polling-mismatch-new");
+        let new_endpoint = new_identity.endpoints.values().next().cloned().unwrap();
+        let returned = DiscoveredEndpoint {
+            endpoint: new_endpoint.clone(),
+            connected: true,
+        };
+        let session_old = ScriptedFakeSession::usb()
+            .with_metadata(expected.persistent_metadata)
+            .with_profile(expected.clone())
+            .with_polling_rate_for(profile(), PollingRate::Hz1000);
+        let session_new = ScriptedFakeSession::usb()
+            .with_metadata(expected.persistent_metadata)
+            .with_profile(expected.clone())
+            .with_polling_rate_for(profile(), PollingRate::Hz500);
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_discovery_sequence(vec![vec![], vec![returned.clone()]]),
+        );
+        factory.add_endpoint(
+            DiscoveredEndpoint {
+                endpoint: old_endpoint.clone(),
+                connected: true,
+            },
+            session_old.clone(),
+        );
+        factory.add_endpoint(returned.clone(), session_new.clone());
+        let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory.clone());
+        manager.register_device(device.clone()).expect("register");
+        seed_desired(&manager, &device, &expected);
+        let err = manager
+            .verify_power_cycle(&device.id, profile())
+            .await
+            .expect_err("polling mismatch");
+        assert!(
+            matches!(err, ManagerError::VerificationMismatch { resource: "polling rate", profile: Some(p) } if p == profile())
+        );
+        let state = manager.store().load().expect("load state");
+        let ps = &state.devices[&device.id].profiles[&profile()];
+        assert_eq!(
+            ps.polling_rate.observed.as_ref().map(|o| o.value),
+            Some(PollingRate::Hz500)
+        );
+        assert!(matches!(
+            ps.polling_rate
+                .desired
+                .as_ref()
+                .map(|d| &d.verification.persistence),
+            Some(PersistenceVerification::Unknown)
+        ));
+    }
+
+    #[tokio::test]
+    async fn profile_reload_polling_mismatch_persists_and_invalidates() {
+        let initial = snapshot(800);
+        let reloaded = snapshot(800);
+        let mismatch =
+            super::first_mismatch(&initial, PollingRate::Hz1000, &reloaded, PollingRate::Hz500);
+        assert_eq!(mismatch, Some("polling rate"));
+
+        use std::sync::{Arc, Mutex};
+        struct AlternatingSession {
+            snapshot: ProfileSnapshot,
+            metadata: ProfileMetadata,
+            rates: Vec<PollingRate>,
+            idx: Arc<Mutex<usize>>,
+        }
+        #[async_trait(?Send)]
+        impl DeviceSession for AlternatingSession {
+            fn transport(&self) -> TransportKind {
+                TransportKind::Wired
+            }
+            async fn read_profile_metadata(&self) -> Result<ProfileMetadata, ManagerError> {
+                Ok(self.metadata)
+            }
+            async fn read_profile(
+                &self,
+                _profile: ProfileId,
+            ) -> Result<ProfileSnapshot, ManagerError> {
+                Ok(self.snapshot.clone())
+            }
+            async fn read_dpi(&self, _p: ProfileId) -> Result<DpiState, ManagerError> {
+                Ok(self.snapshot.dpi.clone())
+            }
+            async fn read_preferences(
+                &self,
+                _p: ProfileId,
+            ) -> Result<PreferencesState, ManagerError> {
+                Ok(self.snapshot.preferences)
+            }
+            async fn read_buttons(&self, _p: ProfileId) -> Result<ButtonsState, ManagerError> {
+                Ok(self.snapshot.buttons)
+            }
+            async fn read_live_polling_rate(
+                &self,
+                _alias: ProfileId,
+            ) -> Result<PollingRate, ManagerError> {
+                let mut i = self.idx.lock().unwrap();
+                let rate = self.rates[*i % self.rates.len()];
+                *i += 1;
+                Ok(rate)
+            }
+            async fn write_dpi(
+                &self,
+                s: DpiState,
+                _v: crate::operation::VerificationMethod,
+            ) -> Result<SessionWrite<DpiState>, ManagerError> {
+                Ok(SessionWrite::ReadbackVerified(s))
+            }
+            async fn write_preferences(
+                &self,
+                s: PreferencesState,
+                _v: crate::operation::VerificationMethod,
+            ) -> Result<SessionWrite<PreferencesState>, ManagerError> {
+                Ok(SessionWrite::ReadbackVerified(s))
+            }
+            async fn write_buttons(
+                &self,
+                s: ButtonsState,
+                _v: crate::operation::VerificationMethod,
+            ) -> Result<SessionWrite<ButtonsState>, ManagerError> {
+                Ok(SessionWrite::ReadbackVerified(s))
+            }
+            async fn write_polling_rate_unchecked(
+                &self,
+                _p: ProfileId,
+                r: PollingRate,
+                _v: crate::operation::VerificationMethod,
+            ) -> Result<SessionWrite<PollingRate>, ManagerError> {
+                Ok(SessionWrite::ReadbackVerified(r))
+            }
+            async fn write_profile_metadata(
+                &self,
+                m: ProfileMetadata,
+            ) -> Result<SessionWrite<ProfileMetadata>, ManagerError> {
+                Ok(SessionWrite::ReadbackVerified(m))
+            }
+            async fn read_battery(&self, _t: std::time::Duration) -> Result<u8, ManagerError> {
+                Ok(100)
+            }
+            fn subscribe_events(&self) -> crate::backend::SessionEvents {
+                crate::backend::SessionEvents { input: None }
+            }
+        }
+        struct AltFactory {
+            snapshot: ProfileSnapshot,
+            metadata: ProfileMetadata,
+            rates: Vec<PollingRate>,
+            idx: Arc<Mutex<usize>>,
+        }
+        #[async_trait(?Send)]
+        impl crate::backend::SessionFactory for AltFactory {
+            async fn list(
+                &self,
+                _s: crate::device::TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+                Ok(vec![])
+            }
+            async fn open(
+                &self,
+                _endpoint: &crate::device::DeviceEndpoint,
+            ) -> Result<Box<dyn DeviceSession>, ManagerError> {
+                Ok(Box::new(AlternatingSession {
+                    snapshot: self.snapshot.clone(),
+                    metadata: self.metadata,
+                    rates: self.rates.clone(),
+                    idx: self.idx.clone(),
+                }))
+            }
+        }
+        let device = identity(r"\\?\hid#reload-polling-mismatch-alt");
+        let expected = snapshot(800);
+        let metadata = ProfileMetadata::new(profile(), ProfileId::new(5).unwrap()).unwrap();
+        let factory = Arc::new(AltFactory {
+            snapshot: expected.clone(),
+            metadata,
+            rates: vec![
+                PollingRate::Hz1000,
+                PollingRate::Hz500,
+                PollingRate::Hz500,
+                PollingRate::Hz1000,
+            ],
+            idx: Arc::new(Mutex::new(0)),
+        });
+        let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory);
+        manager.register_device(device.clone()).expect("register");
+        seed_desired_with_rate(&manager, &device, &expected, PollingRate::Hz1000);
+        let err = manager
+            .verify_profile_reload(&device.id, profile())
+            .await
+            .expect_err("polling mismatch should be detected");
+        assert!(
+            matches!(err, ManagerError::VerificationMismatch { resource: "polling rate", profile: Some(p) } if p == profile())
+        );
+        let state = manager.store().load().expect("load state");
+        let ps = &state.devices[&device.id].profiles[&profile()];
+        assert_eq!(
+            ps.polling_rate.observed.as_ref().map(|o| o.value),
+            Some(PollingRate::Hz500)
+        );
+        assert!(matches!(
+            ps.polling_rate
+                .desired
+                .as_ref()
+                .map(|d| &d.verification.persistence),
+            Some(PersistenceVerification::Unknown)
+        ));
+    }
+
+    #[tokio::test]
+    async fn profile_reload_success_marks_all_resources() {
+        let device = identity(r"\\?\hid#reload-success-all");
+        let expected = snapshot(800);
+        let session = ScriptedFakeSession::usb()
+            .with_metadata(ProfileMetadata::new(profile(), ProfileId::new(5).unwrap()).unwrap())
+            .with_profile(expected.clone())
+            .with_polling_rate(PollingRate::Hz1000);
+        let (manager, _) = manager_for(&device, session, vec![]);
+        seed_desired_with_rate(&manager, &device, &expected, PollingRate::Hz1000);
+        let outcome = manager
+            .verify_profile_reload(&device.id, profile())
+            .await
+            .expect("should succeed");
+        assert!(matches!(
+            outcome.polling_rate.verification.persistence,
+            PersistenceVerification::ProfileReloadVerified { .. }
+        ));
+        let state = manager.store().load().expect("state");
+        let ps = &state.devices[&device.id].profiles[&profile()];
+        assert!(matches!(
+            ps.dpi.desired.as_ref().unwrap().verification.persistence,
+            PersistenceVerification::ProfileReloadVerified { .. }
+        ));
+        assert!(matches!(
+            ps.preferences
+                .desired
+                .as_ref()
+                .unwrap()
+                .verification
+                .persistence,
+            PersistenceVerification::ProfileReloadVerified { .. }
+        ));
+        assert!(matches!(
+            ps.buttons
+                .desired
+                .as_ref()
+                .unwrap()
+                .verification
+                .persistence,
+            PersistenceVerification::ProfileReloadVerified { .. }
+        ));
+        assert!(matches!(
+            ps.polling_rate
+                .desired
+                .as_ref()
+                .unwrap()
+                .verification
+                .persistence,
+            PersistenceVerification::ProfileReloadVerified { .. }
         ));
     }
 }

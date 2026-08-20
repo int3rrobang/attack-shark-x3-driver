@@ -65,19 +65,13 @@ attack-shark-x3-rust/
 │   ├── persistence-probe.ps1               # Wired true power-cycle persistence probe
 │   └── profile-switch-transport-probe.ps1  # Profile-switch transport comparison probe (wired/receiver)
 │   # historical scripts/fa61-test-suite.ps1 runner is not included — see docs/evidence/x3-fa61/captures/README.md
-└── fixtures/protocol/            # Protocol fixture JSONs
+└── fixtures/protocol/            # Protocol fixture JSONs (dpi, preferences, buttons, profile, input — evidence-labeled golden vectors; checksums via boundary integration)
 ```
 
-- **`attack-shark-x3`** — protocol codecs, USB HID and BLE GATT transport drivers,
-  DPI-button event subscription.
-- **`attack-shark-x3-manager`** — stateful operations: per-device durable state,
-  cross-process state lock, read-modify-write pipeline, provenance tracking,
-  verification workflows, and offline packet generation through `debug` commands.
-- **`x3ctl`** — the CLI binary. Talks to hardware through the manager crate;
-  `--stateless` keeps state only in memory for the current invocation.
-- **`x3-gui`** — the Slint desktop frontend. A UI thread renders the six-page
-  window; a manager worker thread owns `DeviceManager` and applies drafts (DPI,
-  safe button bindings, polling rate) with readback or transport verification.
+- **`attack-shark-x3`** — protocol codecs (DPI/prefs/buttons/profile golden fixtures plus `protocol::input` evidence-labeled golden integration via `fixtures/protocol/input.json` + `tests/input_codec.rs` and `protocol::checksum` boundary/wrapping integration via `tests/checksum_codec.rs`; `0x07`/`0x09` remain explicitly unsupported and tested as ignored/rejected `decoded:null`, not implemented), USB HID and BLE GATT transport drivers, DPI-button event subscription, polling-rate live alias (`read_live_polling_rate(alias)` side-effect only).
+- **`attack-shark-x3-manager`** — stateful operations: per-device logical `mouse-N` identity (schema 4, `nextDeviceNumber`), multi-transport endpoints, cross-process `state.lock` plus per-device `*.operation.lock`, read-modify-write pipeline with single composite `apply_profile_update` (DPI+preferences+buttons coalesced in one session; polling rate isolated with mandatory preflight), provenance tracking, verification workflows, and offline packet generation through `debug` commands.
+- **`x3ctl`** — the CLI binary. Talks to hardware through the manager crate; `--stateless` keeps state only in memory for the current invocation. Uses `DeviceManager::apply_profile_update` for all typed writes; polling-rate is never coalesced with other resources. Human output is friendly labels; raw protocol detail remains in `--output json` / `debug` / `--dry-run`.
+- **`x3-gui`** — the Slint desktop frontend. Split modules: `main.rs` (bootstrap + callbacks), `worker.rs` (Tokio manager worker owning `DeviceManager`), `presentation.rs` (pure display helpers), `projection.rs` (Slint model projection), `app_settings.rs` (separate `gui-preferences.json` schema 1, coalescing atomic writes, no `state.lock` or hardware). `ui/app-window.slint` renders the six-page window; pages are kept resident only where user-relevant so draft and scroll state survive navigation without speculative preloading. The GUI edits drafts and applies them via the composite manager operation with transport or readback verification. `serde` is retained only for `app_settings`.
 
 All crates default to USB. BLE requires `--features ble` on each crate in the
 dependency chain.
@@ -122,7 +116,7 @@ cargo run -p x3ctl -- <OPTIONS> <COMMAND>
 | Flag | Purpose |
 |:-----|:--------|
 | `--transport <auto\|wired\|receiver[\|ble]>` | Select transport (default: `auto`; `ble` requires `--features ble`) |
-| `--device <ID>` | Exact stable device ID from `x3ctl devices` |
+| `--device <ID>` | Stable device ID (`mouse-N`) or unique display name |
 | `--profile <N>` | Target profile number (default: `1`) |
 | `--stateless` | Keep state only in memory for this invocation |
 | `--dry-run` | Validate and print without hardware or state access |
@@ -141,6 +135,32 @@ cargo run -p x3ctl -- --transport receiver devices
 # Select a device for subsequent commands
 cargo run -p x3ctl -- use '<device-id>'
 ```
+
+### Device management
+
+Device arguments accept the canonical `mouse-N` id or a unique display name
+(set with `rename`, matched case-insensitively).
+
+```bash
+# Merge one saved identity into another after linking a second transport;
+# --keep target|source discards one side's saved configuration, --keep merge
+# fills the survivor's missing values from the other side (target wins conflicts)
+cargo run -p x3ctl -- link mouse-1 mouse-2 --keep merge
+
+# Re-point a stored endpoint at the connected device after its HID path
+# changed (e.g. the dongle moved to another USB port)
+cargo run -p x3ctl -- --transport receiver rebind mouse-2
+
+# Set the presentation name used for device lookup (blank clears it)
+cargo run -p x3ctl -- rename mouse-2 'Desk Mouse'
+
+# Remove a saved identity (refuses saved configuration without --force)
+cargo run -p x3ctl -- forget mouse-3
+```
+
+Discovery also self-cleans: an identity with no saved configuration whose
+every endpoint is now claimed by another identity is dropped automatically
+on the next scan (the residue of a port change resolved by `rebind`).
 
 ### Status
 
@@ -296,25 +316,28 @@ For BLE, `--device <ID>` selects the exact stable ID reported by `devices`; omit
 only when exactly one connected FEE0 device is available. BLE commands never invoke
 pairing or unpairing.
 
+## Device identity and endpoints
+
+Schema 4 uses a stable logical key `mouse-N` (`N >= 1`, canonical, allocated via `nextDeviceNumber` in `state.json`). No serial number or HID path is exposed as identity; `serial_number` is endpoint metadata only (trimmed, blank normalized to `None`).
+
+- **Endpoint is a locator, not an identity.** `DeviceEndpoint { transport, vendor_id, product_id, serial_number, locator, display_name }` keeps the current openable HID path verbatim as `DeviceLocator::UsbPath(path)` (or `BlePlatformId` for BLE). The path can change on replug; the logical `mouse-N` does not.
+- **Exact endpoint rediscovery is automatic.** `devices` / `list_devices` matches discovered endpoints by exact `(transport, locator)` equality and upserts the endpoint in place. No new logical device is created for a known locator.
+- **Cross-transport linkage is explicit.** Discovery never auto-merges wired/receiver/BLE by VID/PID or name. Adding a second transport to the same logical mouse requires the explicit `link_devices(source, target)` operation, which only succeeds when transports do not overlap and only one side carries configuration evidence. No stable-serial or automatic-link claim is made.
+- **Controlled unique replug can update the locator.** When a stored locator disappears (USB replug path change), `rebind_missing_endpoint` updates it only if exactly one connected candidate exists for that transport with the same VID/PID. Zero or multiple candidates fail with an ambiguity error — the implementation refuses to guess.
+- **Ambiguity refuses to guess.** Device selection without an explicit `--device <ID>` (and without a valid selected device) returns `AmbiguousDevice` when multiple connected logical identities exist. Rebind with ambiguous candidates is rejected the same way.
+- **Receiver treated as permanently paired absent contrary evidence.** PID `fa60` identifies the shared 2.4 GHz receiver, not the mouse model; a receiver endpoint is not auto-unpaired on disconnect. Removal is explicit state management, not transport disappearance.
+
+The GUI resolves the same model: `DeviceIdentity::selected_endpoint()` prefers `preferred_transport` when present, otherwise deterministically `Wired → Receiver → BLE`. Presentation helpers never unwrap missing endpoints.
+
 ## Durable state
 
-`x3ctl` records per-device, per-transport state under the platform-local state
-directory. Each resource keeps desired and observed values separately. Desired
-values record whether they came from a user write, portable import, or explicitly
-authorized captured defaults. Observations record USB readback independently.
-Application verification (`Acknowledged`, `ReadbackVerified`, or mismatch) is also
-separate from persistence verification (`Unknown`, profile reload, or power cycle).
+`x3ctl` and `x3-gui` share the same platform-local state directory. The manager stores durable device configuration in `state.json` (schemaVersion 4, sibling `state.lock` via `fs2` plus per-device `*.operation.lock` for transport I/O). Each resource keeps desired and observed values separately. Desired values record whether they came from a user write, portable import, or explicitly authorized captured defaults (`--replace-defaults`). Observations record USB readback independently. Application verification (`Acknowledged`, `ReadbackVerified`, or mismatch) is separate from persistence verification (`Unknown`, profile reload, or power cycle). Checked `serde` rejects unknown schemas and non-canonical `mouse-N` identities.
 
-`state invalidate` preserves desired and observed values but clears their persistence
-verification. `--stateless` uses an in-memory store for the current invocation and
-does not read or write the durable state file.
+GUI-only presentation state is **not** in `state.json`. It lives in a sibling `gui-preferences.json` with its own `schemaVersion = 1` (`x3-gui/src/app_settings.rs`): coalescing atomic writes, backup on unreadable/unsupported version, no `state.lock` and no hardware access. `serde` is retained in `x3-gui` only for this file.
 
-BLE has no configuration readback path. BLE writes are ACK-confirmed through FEE4
-notification (`10 50 00 <report_id>`), but ACK status `0x00` proves parser acceptance
-only — it does not prove application or EEPROM persistence. Over USB, `x3ctl` verifies
-writes through immediate readback of the affected fields. Report `0x06` (polling rate)
-persistence was separately verified across a power-cycle on one wired device.
-[live-confirmed]
+`state invalidate` preserves desired and observed values but clears their persistence verification. `--stateless` uses an in-memory store for the current invocation and does not read or write the durable state file.
+
+BLE has no configuration readback path. BLE writes are ACK-confirmed through FEE4 notification (`10 50 00 <report_id>`), but ACK status `0x00` proves parser acceptance only — it does not prove application or EEPROM persistence. Over USB, `x3ctl` verifies writes through immediate readback of the affected fields. Report `0x06` (polling rate) persistence was separately verified across a power-cycle on one wired device. [live-confirmed] Polling-rate reads are live-alias only (`read_live_polling_rate(alias)` is a wire side effect); profile-scoped meaning requires a preceding `read_profile(target)` in the same session, tested via `last_polling_alias`
 
 ## Hardware safety
 

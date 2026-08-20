@@ -28,14 +28,27 @@ Brand aliases do not by themselves prove identical firmware. Each technical clai
 | [`transports/`](transports/README.md) | USB HID, BLE GATT, and browser transport behavior |
 | [`research/`](research/README.md) | Dated investigations, binary-analysis provenance, and corrections |
 | [`evidence/`](evidence/README.md) | Raw descriptors, captures, packet dumps, and model-specific analyses |
-| [`ui-driver-spec.md`](ui-driver-spec.md) | Rust FA61 user-interface integration contract |
-| [`safety.md`](safety.md) | Shared hardware-test and recovery restrictions |
+| [`ui-driver-spec.md`](ui-driver-spec.md) | Rust FA61 user-interface integration contract (composite `apply_profile_update`, resident pages) |
+| [`safety.md`](safety.md) | Shared hardware-test and recovery restrictions (polling-rate preflight, rebind ambiguity) |
+
+## Device identity and durable state
+
+Manager durable state is schema 4 (`state.json`, `state.lock` plus per-device `*.operation.lock`). Device keys are logical `mouse-N` (`N >= 1`, canonical, allocated via `nextDeviceNumber`); serial numbers and HID paths are endpoint metadata only and never identity.
+
+- **Endpoint is a locator:** `DeviceLocator::UsbPath(path)` is the current verbatim HID path, `BlePlatformId` for BLE; `DeviceEndpoint` stores `vendor_id`/`product_id` and optional trimmed `serial_number` as metadata.
+- **Exact rediscovery is automatic:** discovery upserts a known `(transport, locator)` in place.
+- **Cross-transport linkage is explicit:** `link_devices(source, target, precedence)` merges transports; discovery never auto-links by name/model/serial. `Refuse` (default) rejects merges that would discard evidence; `KeepTarget`/`KeepSource` discard one side; `Merge` copies a resource from the source only when the target has neither desired nor observed data for it, and reports skipped source evidence via `discarded_evidence`. No stable-serial or automatic-link claim.
+- **Unique replug can update the locator:** `rebind_missing_endpoint` (CLI `rebind`) succeeds only with exactly one matching candidate (same VID/PID for USB); zero or multiple candidates fail and refuse to guess. Selection without an explicit `--device` and with multiple connected identities returns `AmbiguousDevice`.
+- **Evidence-free shells are auto-dropped:** each discovery association removes identities with no configuration evidence whose every endpoint locator is now claimed by a *surviving* different identity — the residue of a port change resolved by a later rebind. Mutually claiming shells keep each other alive, and evidence-bearing identities are never auto-dropped; explicit removal is `forget` (refuses evidence-bearing identities without `--force`).
+- **Display names are a lookup key:** `rename` sets `identity.display_name` (blank clears it); CLI device arguments accept a canonical `mouse-N` id or a unique case-insensitive display name. The `mouse-N` key itself never changes.
+- **Receiver is treated as permanently paired absent contrary evidence:** `fa60` identifies the shared receiver, not the mouse model; disappearance does not auto-unpair.
+
+GUI-only preferences are separate: `gui-preferences.json` (schema 1) beside `state.json`, managed by `x3-gui/src/app_settings.rs` with coalescing atomic writes and backup on unreadable/unsupported version, no `state.lock` or hardware access. Slint pages (`ui/app-window.slint`) are kept resident only where user-relevant so drafts survive navigation.
 
 ## Packet reports
 
 | Report | Purpose |
 |:-------|:--------|
-| [`0x04`](protocols/04-dpi.md) | DPI stages and sensor settings |
 | [`0x05`](protocols/05-preferences.md) | Preferences, sleep, debounce, and lighting fields |
 | [`0x06`](protocols/06-polling-rate.md) | Polling rate |
 | [`0x07`](protocols/07-wakeup-mode.md) | Partially characterized wakeup mode |
@@ -44,6 +57,8 @@ Brand aliases do not by themselves prove identical firmware. Each technical clai
 | [`0x0b`](protocols/0b-version.md) | Version and profile-state composite; byte [4] mirrors light mode |
 | [`0x0c`](protocols/0c-profile-reset.md) | Profile actions and reset preparation |
 | [Battery](protocols/battery.md) | X11 adapter interrupt report; unconfirmed FA60 X3/M600 candidate; X3 BLE battery path |
+
+Coverage: `fixtures/protocol/` holds evidence-labeled golden vectors for DPI/prefs/buttons/profile and `input.json` (`disassembly+live-confirmed`/`live-confirmed`/`implementation`, with `decoded:null` for `0x07`/`0x09` explicitly unsupported — tested as ignored/rejected via `tests/input_codec.rs`). Checksums have boundary/wrapping integration via `tests/checksum_codec.rs`. `0x07`/`0x09` remain explicitly unsupported, not implemented; `0x06` has no golden fixture (live-alias side-effect only). See [`protocols/README.md`](protocols/README.md) for the matrix.
 
 ## Evidence vocabulary
 

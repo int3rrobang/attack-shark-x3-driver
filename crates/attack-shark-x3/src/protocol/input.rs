@@ -188,7 +188,11 @@ fn raw_report(packet: &[u8]) -> Option<[u8; INPUT_REPORT_LENGTH]> {
     if packet.len() < INPUT_REPORT_LENGTH || packet[0] != INPUT_REPORT_ID {
         return None;
     }
-    packet[..INPUT_REPORT_LENGTH].try_into().ok()
+    Some(
+        packet[..INPUT_REPORT_LENGTH]
+            .try_into()
+            .expect("length checked"),
+    )
 }
 
 fn profile_event(raw_report: [u8; INPUT_REPORT_LENGTH]) -> Option<ProfileChangedEvent> {

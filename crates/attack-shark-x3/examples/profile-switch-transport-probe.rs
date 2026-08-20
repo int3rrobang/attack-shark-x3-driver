@@ -353,15 +353,20 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                     &config,
                     iteration,
                     "operation-start",
-                    "polling-read",
+                    "live-polling-read",
                 );
-                let rate = handle.read_polling_rate(ProfileId::try_from(1)?).await?;
+                // Live health check: read_live_polling_rate(alias) is alias-only on the wire;
+                // content is the current live profile's rate. No preceding read_profile is
+                // performed here, so this must not be treated as profile-scoped proof.
+                let rate = handle
+                    .read_live_polling_rate(ProfileId::try_from(1)?)
+                    .await?;
                 event(
                     &started,
                     &config,
                     iteration,
                     "operation-end",
-                    &format!("rate-{rate}"),
+                    &format!("live-rate-{rate}"),
                 );
                 sleep(READ_INTERVAL).await;
             }

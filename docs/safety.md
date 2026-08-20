@@ -2,23 +2,30 @@
 
 Prefer offline packet builders, fixtures, and CLI `hex` commands. Hardware access is not required to inspect or document the protocol.
 
+## Device identity and selection — no guessing
+
+- Device identity is logical `mouse-N` (`N >= 1`) stored in `state.json` schema 4 (`nextDeviceNumber` allocation). No serial number or HID path is exposed as a stable identifier; `DeviceEndpoint.serial_number` is trimmed metadata only and HID `UsbPath` is a locator that can change on replug.
+- **Exact endpoint rediscovery is automatic.** Matching `(transport, locator)` is upserted in place during discovery; no new logical device is created for a known locator.
+- **Cross-transport linkage is explicit.** Discovery never auto-merges wired/receiver/BLE by model or serial. Adding a second transport to the same mouse requires explicit `link_devices(source, target, precedence)` with non-overlapping transports. `Refuse` (the CLI default) fails rather than discard evidence; `KeepTarget`/`KeepSource` explicitly discard one side's saved configuration; `Merge` copies a resource only into a completely empty target slot group (never mixing desired/observed across devices) and reports skipped source evidence. Do not claim stable-serial or automatic-link behavior.
+- **Controlled unique replug can update the locator.** `rebind_missing_endpoint` (CLI `rebind`) replaces a missing USB locator only when exactly one connected candidate exists for that transport with the same VID/PID. Zero or multiple candidates return `InvalidUpdate` with the candidate count — the implementation refuses to guess. CLI `use <device>` selects an exact logical ID or a unique display name; `--device <ID>` is required when ambiguity exists.
+- **Identity removal is explicit or provably redundant.** `forget` removes a saved identity and refuses evidence-bearing ones without `--force`. Discovery auto-drops only identities with no configuration evidence whose every locator is claimed by a surviving different identity; mutually claiming shells keep each other alive, and evidence-bearing identities are never auto-removed.
+- **Ambiguity refuses to guess.** Resolving a device without an explicit ID when multiple connected logical identities exist returns `AmbiguousDevice` (list of candidates) rather than picking one. Rebind with ambiguous candidates is rejected the same way.
+- **Power-cycle verification matches by model, not by unit.** The X3/M600 expose an empty serial number and the HID path can change on replug, so after a power cycle the verification workflow accepts the sole same-VID/PID candidate as the returning device. `PowerCycleVerified` therefore proves model-level persistence; it cannot distinguish two identical units.
+- **Receiver is treated as permanently paired absent contrary evidence.** PID `fa60` identifies the shared receiver, not the mouse model. A receiver endpoint is not auto-removed on disconnect; removal is explicit state management.
+
 ## Configuration writes
 
 - Start from a known-good packet and change one field at a time.
 - Record the exact bytes, model, transport, response or ACK, observable effect, and recovery result.
-- Use conservative delays between configuration packets. Stock X3 reset
-  captures use about 500 ms. The FA60 receiver production path holds five
-  seconds after writes because targeted traffic can perturb deferred profile
-  loading and persistence.
-- Treat a BLE ACK as parser acceptance only; it does not prove application or persistence.  ACK status `0x00` means the firmware parsed the packet — it is not proof that the change took effect or was written to EEPROM.
-- Over USB, `x3ctl` validates set/update writes by the transport acknowledgment by default (`--validation transport`): a USB `SET_REPORT` that succeeds at the HID API proves submission, not application or persistence. `--validation readback` (opt-in) adds an immediate armed readback of the affected fields, which proves only the device's current working state, not EEPROM persistence. Report `0x06` (polling rate) persistence was separately verified across a power-cycle on one wired device. [live-confirmed]
+- Use conservative delays between configuration packets. Stock X3 reset captures use about 500 ms. The FA60 receiver production path holds five seconds after writes because targeted traffic can perturb deferred profile loading and persistence.
+- Treat a BLE ACK as parser acceptance only; it does not prove application or persistence. ACK status `0x00` means the firmware parsed the packet — it is not proof that the change took effect or was written to EEPROM.
+- Over USB, `x3ctl` validates set/update writes by the transport acknowledgment by default (`--validation transport`): a USB `SET_REPORT` that succeeds at the HID API proves submission, not application or persistence. `--validation readback` (opt-in) adds an immediate armed readback of the affected fields, which proves only the device's current working state, not EEPROM persistence. Report `0x06` (polling rate) persistence was separately verified across a power-cycle on one wired device. [live-confirmed] Polling-rate live reads are alias-only (`read_live_polling_rate(alias)`); see [Polling-rate writes](#polling-rate-writes-report-0x06).
 - BLE has no configuration readback path, so `--validation readback` is rejected over BLE; the default `--validation transport` accepts the BLE parser ACK, which proves parsing, not application or persistence. Full-state resources still require a complete durable-state baseline. On the first run for a new device, `--replace-defaults` authorizes the manager's evidence-qualified captured defaults as the baseline for omitted fields. Without a trusted or explicitly authorized baseline, BLE DPI, preferences, button, and profile commands fail before writing. Polling-rate writes follow a separate, stricter rule because report `0x06` skips the profile loader and can persist the complete live image under its target alias; see [Polling-rate writes (report `0x06`)](#polling-rate-writes-report-0x06).
 - Do not fuzz arbitrary values or unchecked indices.
 - The `--stateless` flag keeps state only in memory for the current invocation: the manager still reads, merges, and verifies within that run, but nothing is persisted to disk.
 - The `--replace-defaults` flag is a per-operation authorization: it tells the manager to accept evidence-qualified captured defaults when no durable baseline exists for a field. It does not seed or write defaults into persistent state by itself.
 - The `--dry-run` flag validates and prints what would be sent without touching hardware.
-- Durable state separates desired values (what was written) from observed values (what was read back). A USB readback confirms application but not EEPROM persistence. `x3ctl verify --method profile-reload` or `--method power-cycle` tests persistence explicitly. `x3ctl state invalidate` preserves the desired and observed values but clears the persistence evidence tags, so the next operation re-verifies before trusting cached state.
-
+- Durable state separates desired values (what was written) from observed values (what was read back). A USB readback confirms application but not EEPROM persistence. `x3ctl verify --method profile-reload` or `--method power-cycle` tests persistence explicitly. `x3ctl state invalidate` preserves the desired and observed values but clears the persistence evidence tags, so the next operation re-verifies before trusting cached state. GUI preferences are separate (`gui-preferences.json` schema 1, no `state.lock`, atomic coalescing): they never affect hardware or durable device state.
 ### All-profile state refresh
 
 `x3ctl profile refresh-all` is USB-only and is not a passive read. It may

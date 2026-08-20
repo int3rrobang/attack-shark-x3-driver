@@ -9,13 +9,13 @@ repository.workspace = true
 
 [features]
 default = ["usb"]
-serde = ["dep:serde"]
+serde = ["dep:serde", "bluest?/serde"]
 usb = ["dep:hidapi", "dep:tokio"]
 ble = ["dep:bluest", "dep:futures-lite", "dep:windows", "dep:tokio"]
 [dependencies]
-bluest = { version = "0.6.9", features = ["serde"], optional = true }
+bluest = { version = "0.6.9", optional = true }
 hidapi = { version = "2", optional = true }
-futures-lite = { version = "2", optional = true }
+futures-lite = { version = "1.13", optional = true }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 thiserror = "2"

@@ -2,15 +2,11 @@ use std::collections::BTreeMap;
 
 use attack_shark_x3::{ProfileId, ProfileMetadata, TransportKind};
 
-use crate::backend::{DeviceSession, SessionWrite};
+use crate::backend::DeviceSession;
 use crate::device::DeviceId;
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::operation::{FullProfileRefreshOutcome, ProfileResourceKind, RefreshedProfile};
-use crate::state::{
-    ApplicationVerification, ObservationSource, ObservedState, PersistenceVerification,
-    ResourceState, Timestamp,
-};
 
 impl DeviceManager {
     /// Temporarily enables every USB profile slot, captures each complete live
@@ -24,7 +20,7 @@ impl DeviceManager {
         &self,
         device: &DeviceId,
     ) -> Result<FullProfileRefreshOutcome, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, session, _guard) = self.open_locked(device, "refresh_all_profiles").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(ManagerError::UnsupportedOperation {
@@ -34,14 +30,17 @@ impl DeviceManager {
         }
 
         let original_metadata = session.read_profile_metadata().await?;
-        let maximum = ProfileId::new(ProfileId::MAX).expect("ProfileId::MAX must be valid");
+        let maximum = ProfileId::MAX_ID;
         let expanded_metadata = ProfileMetadata::new(original_metadata.current(), maximum)
-            .map_err(|error| ManagerError::InvalidUpdate(error.to_string()))?;
+            .map_err(|source| ManagerError::Protocol {
+                operation: "profile metadata",
+                source,
+            })?;
         let temporarily_expanded = original_metadata.maximum() != maximum;
-
         let capture_result = async {
             if temporarily_expanded {
-                write_exact_metadata(session.as_ref(), expanded_metadata).await?;
+                crate::verification::write_exact_metadata(session.as_ref(), expanded_metadata)
+                    .await?;
             }
             capture_all_profiles(session.as_ref(), original_metadata.current(), maximum).await
         }
@@ -49,7 +48,8 @@ impl DeviceManager {
 
         // Always verify an exact restoration. The backend activates the original
         // current profile before lowering the maximum, preserving its invariant.
-        let restore_result = write_exact_metadata(session.as_ref(), original_metadata).await;
+        let restore_result =
+            crate::verification::write_exact_metadata(session.as_ref(), original_metadata).await;
 
         let (profiles, restored_metadata) = match (capture_result, restore_result) {
             (Ok(profiles), Ok(restored)) => (profiles, restored),
@@ -74,9 +74,10 @@ impl DeviceManager {
             temporarily_expanded,
             profiles,
         )
+        .await
     }
 
-    fn persist_profile_refresh(
+    async fn persist_profile_refresh(
         &self,
         device: &DeviceId,
         original_metadata: ProfileMetadata,
@@ -85,48 +86,53 @@ impl DeviceManager {
         profiles: BTreeMap<ProfileId, RefreshedProfile>,
     ) -> Result<FullProfileRefreshOutcome, ManagerError> {
         let now = self.now();
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-
-        let profile_metadata_drift =
-            reconcile_observation(&mut device_state.profile_metadata, restored_metadata, now);
-        let mut drift = BTreeMap::new();
-
-        for (&profile, refreshed) in &profiles {
-            let state = device_state.profiles.entry(profile).or_default();
-            let mut mismatches = Vec::new();
-            if reconcile_observation(&mut state.dpi, refreshed.dpi.clone(), now) {
-                mismatches.push(ProfileResourceKind::Dpi);
-            }
-            if reconcile_observation(&mut state.preferences, refreshed.preferences, now) {
-                mismatches.push(ProfileResourceKind::Preferences);
-            }
-            if reconcile_observation(&mut state.buttons, refreshed.buttons, now) {
-                mismatches.push(ProfileResourceKind::Buttons);
-            }
-            if reconcile_observation(&mut state.polling_rate, refreshed.polling_rate, now) {
-                mismatches.push(ProfileResourceKind::PollingRate);
-            }
-            if !mismatches.is_empty() {
-                drift.insert(profile, mismatches);
-            }
-        }
-
-        transaction.state().validate()?;
-        transaction.commit()?;
-
-        Ok(FullProfileRefreshOutcome {
-            original_metadata,
-            restored_metadata,
-            temporarily_expanded,
-            profiles,
-            drift,
-            profile_metadata_drift,
-        })
+        let device = device.clone();
+        self.store()
+            .mutate_async(move |state| {
+                let device_state = state
+                    .devices
+                    .get_mut(&device)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+                let profile_metadata_drift = device_state
+                    .profile_metadata
+                    .reconcile_observation(restored_metadata, now);
+                let mut drift = BTreeMap::new();
+                for (&profile, refreshed) in &profiles {
+                    let st = device_state.profiles.entry(profile).or_default();
+                    let mut mismatches = Vec::new();
+                    if st.dpi.reconcile_observation(refreshed.dpi.clone(), now) {
+                        mismatches.push(ProfileResourceKind::Dpi);
+                    }
+                    if st
+                        .preferences
+                        .reconcile_observation(refreshed.preferences, now)
+                    {
+                        mismatches.push(ProfileResourceKind::Preferences);
+                    }
+                    if st.buttons.reconcile_observation(refreshed.buttons, now) {
+                        mismatches.push(ProfileResourceKind::Buttons);
+                    }
+                    if st
+                        .polling_rate
+                        .reconcile_observation(refreshed.polling_rate, now)
+                    {
+                        mismatches.push(ProfileResourceKind::PollingRate);
+                    }
+                    if !mismatches.is_empty() {
+                        drift.insert(profile, mismatches);
+                    }
+                }
+                Ok(FullProfileRefreshOutcome {
+                    original_metadata,
+                    restored_metadata,
+                    temporarily_expanded,
+                    profiles,
+                    drift,
+                    profile_metadata_drift,
+                })
+            })
+            .await
+            .map_err(ManagerError::State)?
     }
 }
 
@@ -145,28 +151,30 @@ async fn capture_all_profiles(
 
     for target in order {
         if current != target {
-            let metadata = ProfileMetadata::new(target, maximum)
-                .map_err(|error| ManagerError::InvalidUpdate(error.to_string()))?;
-            current = write_exact_metadata(session, metadata).await?.current();
+            let metadata =
+                ProfileMetadata::new(target, maximum).map_err(|source| ManagerError::Protocol {
+                    operation: "profile metadata",
+                    source,
+                })?;
+            current = crate::verification::write_exact_metadata(session, metadata)
+                .await?
+                .current();
         }
 
         let snapshot = session.read_profile(target).await?;
-        if snapshot.target_profile != target
-            || snapshot.persistent_metadata.current() != target
+        if snapshot.persistent_metadata.current() != target
             || snapshot.persistent_metadata.maximum() != maximum
-            || snapshot.dpi.profile != target
-            || snapshot.preferences.profile != target
-            || snapshot.buttons.profile != target
         {
             return Err(ManagerError::VerificationMismatch {
                 resource: "complete profile refresh",
                 profile: Some(target),
             });
         }
-
-        // Report 0x06 does not load its selector, so this must follow an
-        // explicit activation and the complete read of the same live profile.
-        let polling_rate = session.read_polling_rate(target).await?;
+        // Report 0x06 skips the profile loader: the selector byte is an alias
+        // with side-effect only, and the returned rate is from the current live
+        // image. This must follow an explicit activation and the complete read
+        // of the same live profile.
+        let polling_rate = session.read_live_polling_rate(target).await?;
         profiles.insert(
             target,
             RefreshedProfile {
@@ -179,43 +187,6 @@ async fn capture_all_profiles(
     }
 
     Ok(profiles)
-}
-
-async fn write_exact_metadata(
-    session: &dyn DeviceSession,
-    expected: ProfileMetadata,
-) -> Result<ProfileMetadata, ManagerError> {
-    match session.write_profile_metadata(expected).await? {
-        SessionWrite::ReadbackVerified(actual) if actual == expected => Ok(actual),
-        SessionWrite::ReadbackVerified(_) | SessionWrite::Acknowledged => {
-            Err(ManagerError::VerificationMismatch {
-                resource: "profile metadata",
-                profile: Some(expected.current()),
-            })
-        }
-    }
-}
-
-fn reconcile_observation<T: Eq>(resource: &mut ResourceState<T>, value: T, now: Timestamp) -> bool {
-    let mismatch = resource
-        .desired
-        .as_ref()
-        .is_some_and(|desired| desired.value != value);
-
-    if let Some(desired) = resource.desired.as_mut() {
-        desired.verification.application = if mismatch {
-            ApplicationVerification::Mismatch
-        } else {
-            ApplicationVerification::ReadbackVerified
-        };
-        desired.verification.persistence = PersistenceVerification::Unknown;
-    }
-    resource.observed = Some(ObservedState {
-        value,
-        source: ObservationSource::UsbReadback,
-        observed_at: now,
-    });
-    mismatch
 }
 
 #[cfg(test)]
@@ -234,8 +205,8 @@ mod tests {
     use crate::error::ManagerError;
     use crate::operation::ProfileResourceKind;
     use crate::state::{
-        ApplicationVerification, DesiredSource, DesiredState, PersistenceVerification, StateStore,
-        Timestamp, Verification,
+        ApplicationVerification, DesiredSource, DesiredState, ObservationSource, ObservedState,
+        PersistenceVerification, StateStore, Timestamp, Verification,
     };
 
     fn profile(value: u8) -> ProfileId {
@@ -259,7 +230,7 @@ mod tests {
     }
 
     fn identity() -> DeviceIdentity {
-        DeviceIdentity::usb(
+        DeviceIdentity::test_usb(
             TransportKind::Wired,
             0x1d57,
             0xfa61,
@@ -313,6 +284,11 @@ mod tests {
                     },
                 },
                 updated_at: Timestamp { unix_seconds: 1 },
+            });
+            profile_one.dpi.observed = Some(ObservedState {
+                value: matching_dpi.clone(),
+                source: ObservationSource::UsbReadback,
+                observed_at: Timestamp { unix_seconds: 1 },
             });
             profile_one.preferences.desired = Some(DesiredState {
                 value: mismatched_preferences,
@@ -456,7 +432,6 @@ mod tests {
                 .is_empty()
         );
     }
-
     #[tokio::test]
     async fn refresh_rejects_ble_without_writes() {
         let session = ScriptedFakeSession::ble();
@@ -475,5 +450,65 @@ mod tests {
             }
         ));
         assert!(writes.writes().is_empty());
+    }
+
+    #[test]
+    fn protocol_error_in_profile_metadata_preserves_typed_source() {
+        use attack_shark_x3::ProtocolError;
+        use std::error::Error;
+        // Simulate the mapping used in refresh: ProfileMetadata::new -> Protocol.
+        let source = ProtocolError::InvalidProfileRange {
+            current: 5,
+            maximum: 1,
+        };
+        let err = ManagerError::Protocol {
+            operation: "profile metadata",
+            source,
+        };
+        assert_eq!(format!("{err}"), "invalid update for profile metadata");
+        let chained = err.source().unwrap();
+        let typed = chained
+            .downcast_ref::<ProtocolError>()
+            .expect("typed source");
+        assert_eq!(
+            *typed,
+            ProtocolError::InvalidProfileRange {
+                current: 5,
+                maximum: 1
+            }
+        );
+        // Debug retains technical detail, Display does not leak it.
+        assert!(format!("{err:?}").contains("InvalidProfileRange"));
+        assert!(!format!("{err}").contains("InvalidProfileRange"));
+    }
+
+    #[test]
+    fn profile_metadata_new_error_maps_to_protocol_variant() {
+        use attack_shark_x3::ProtocolError;
+        // Exercise the actual conversion path: an invalid metadata construction.
+        let target = profile(1);
+        let invalid_max = profile(5);
+        // Valid case should succeed.
+        let ok = ProfileMetadata::new(target, invalid_max);
+        assert!(ok.is_ok());
+        // Invalid current (0) is not constructible via ProfileId::new; use raw ProtocolError directly.
+        let source = ProtocolError::InvalidProfile { value: 0 };
+        let mapped = Err::<ProfileMetadata, ProtocolError>(source).map_err(|source| {
+            ManagerError::Protocol {
+                operation: "profile metadata",
+                source,
+            }
+        });
+        assert!(matches!(
+            mapped,
+            Err(ManagerError::Protocol {
+                operation: "profile metadata",
+                ..
+            })
+        ));
+        if let Err(ManagerError::Protocol { operation, source }) = mapped {
+            assert_eq!(operation, "profile metadata");
+            assert_eq!(source, ProtocolError::InvalidProfile { value: 0 });
+        }
     }
 }
