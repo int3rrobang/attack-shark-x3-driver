@@ -66,17 +66,26 @@ impl<T> ResourceState<T> {
     /// and its verification are updated. Persistence is always reset to
     /// [`PersistenceVerification::Unknown`] — an ACK never implies survival
     /// across profile reload or power cycle.
-    pub fn record_ack_write(&mut self, value: T, source: DesiredSource, now: Timestamp) {
+    ///
+    /// Returns the [`Verification`] assigned to `self.desired`.
+    pub fn record_ack_write(
+        &mut self,
+        value: T,
+        source: DesiredSource,
+        now: Timestamp,
+    ) -> Verification {
+        let verification = Verification {
+            application: ApplicationVerification::Acknowledged,
+            persistence: PersistenceVerification::Unknown,
+        };
         self.desired = Some(DesiredState {
             value,
             source,
-            verification: Verification {
-                application: ApplicationVerification::Acknowledged,
-                persistence: PersistenceVerification::Unknown,
-            },
+            verification: verification.clone(),
             updated_at: now,
         });
         // observed intentionally preserved as historical
+        verification
     }
 
     /// Records a write that returned an immediate readback value.
@@ -88,13 +97,16 @@ impl<T> ResourceState<T> {
     /// [`ApplicationVerification::Mismatch`]. Persistence is always
     /// [`PersistenceVerification::Unknown`] — ordinary readback never infers
     /// profile-reload or power-cycle survival.
+    ///
+    /// Returns the [`Verification`] assigned to `self.desired`.
     pub fn record_readback_write(
         &mut self,
         desired_value: T,
         observed_value: T,
         source: DesiredSource,
         now: Timestamp,
-    ) where
+    ) -> Verification
+    where
         T: PartialEq,
     {
         let is_match = desired_value == observed_value;
@@ -103,13 +115,14 @@ impl<T> ResourceState<T> {
         } else {
             ApplicationVerification::Mismatch
         };
+        let verification = Verification {
+            application,
+            persistence: PersistenceVerification::Unknown,
+        };
         self.desired = Some(DesiredState {
             value: desired_value,
             source,
-            verification: Verification {
-                application,
-                persistence: PersistenceVerification::Unknown,
-            },
+            verification: verification.clone(),
             updated_at: now,
         });
         self.observed = Some(ObservedState {
@@ -117,27 +130,7 @@ impl<T> ResourceState<T> {
             source: ObservationSource::UsbReadback,
             observed_at: now,
         });
-    }
-
-    /// Generic helper that records a write with optional readback.
-    ///
-    /// When `observed` is `None`, this is an ACK-only write and preserves the
-    /// historical observation. When `Some`, it is a readback write with the
-    /// matching/mismatch logic of [`Self::record_readback_write`].
-    pub fn record_write(
-        &mut self,
-        desired: T,
-        observed: Option<T>,
-        source: DesiredSource,
-        now: Timestamp,
-    ) where
-        T: PartialEq,
-    {
-        if let Some(readback) = observed {
-            self.record_readback_write(desired, readback, source, now);
-        } else {
-            self.record_ack_write(desired, source, now);
-        }
+        verification
     }
 
     /// Reconciles a fresh observation against the current desired value.
@@ -150,7 +143,10 @@ impl<T> ResourceState<T> {
     ///   [`ApplicationVerification::Mismatch`]. Persistence is always reset to
     ///   [`PersistenceVerification::Unknown`] — a fresh read never infers
     ///   power-cycle or profile-reload survival.
-    pub fn reconcile_observation(&mut self, value: T, now: Timestamp)
+    ///
+    /// Returns `true` when the fresh observation does not confirm the desired
+    /// value (differing or stale).
+    pub fn reconcile_observation(&mut self, value: T, now: Timestamp) -> bool
     where
         T: Clone + PartialEq,
     {
@@ -159,7 +155,7 @@ impl<T> ResourceState<T> {
             source: ObservationSource::UsbReadback,
             observed_at: now,
         };
-        if let Some(desired) = self.desired.as_mut() {
+        let mismatch = if let Some(desired) = self.desired.as_mut() {
             let is_match =
                 desired.value == value && now.unix_seconds >= desired.updated_at.unix_seconds;
             desired.verification.application = if is_match {
@@ -168,8 +164,12 @@ impl<T> ResourceState<T> {
                 ApplicationVerification::Mismatch
             };
             desired.verification.persistence = PersistenceVerification::Unknown;
-        }
+            !is_match
+        } else {
+            false
+        };
         self.observed = Some(observed);
+        mismatch
     }
 
     /// Attempts to mark the current readback as profile-reload verified.
@@ -211,6 +211,17 @@ impl<T> ResourceState<T> {
             return false;
         }
         if observed.observed_at.unix_seconds < desired.updated_at.unix_seconds {
+            return false;
+        }
+        // The verification event cannot predate the observation it certifies.
+        let verified_at = match persistence {
+            PersistenceVerification::ProfileReloadVerified { verified_at }
+            | PersistenceVerification::PowerCycleVerified { verified_at } => Some(verified_at),
+            PersistenceVerification::Unknown => None,
+        };
+        if let Some(verified_at) = verified_at
+            && verified_at.unix_seconds < observed.observed_at.unix_seconds
+        {
             return false;
         }
         desired.verification.persistence = persistence;
@@ -396,41 +407,63 @@ impl ProfileState {
     /// verified. Resources without a current matching readback are left
     /// untouched (their persistence is cleared).
     pub fn try_mark_profile_reload_verified(&mut self, verified_at: Timestamp) {
-        if !self.dpi.try_mark_profile_reload_verified(verified_at) {
-            self.dpi.invalidate_persistence();
-        }
-        if !self
-            .preferences
-            .try_mark_profile_reload_verified(verified_at)
-        {
-            self.preferences.invalidate_persistence();
-        }
-        if !self.buttons.try_mark_profile_reload_verified(verified_at) {
-            self.buttons.invalidate_persistence();
-        }
-        if !self
-            .polling_rate
-            .try_mark_profile_reload_verified(verified_at)
-        {
-            self.polling_rate.invalidate_persistence();
-        }
+        mark_all_or_invalidate(
+            &mut self.dpi,
+            verified_at,
+            ResourceState::try_mark_profile_reload_verified,
+        );
+        mark_all_or_invalidate(
+            &mut self.preferences,
+            verified_at,
+            ResourceState::try_mark_profile_reload_verified,
+        );
+        mark_all_or_invalidate(
+            &mut self.buttons,
+            verified_at,
+            ResourceState::try_mark_profile_reload_verified,
+        );
+        mark_all_or_invalidate(
+            &mut self.polling_rate,
+            verified_at,
+            ResourceState::try_mark_profile_reload_verified,
+        );
     }
 
     /// Attempts to mark all matching readback resources as power-cycle
     /// verified.
     pub fn try_mark_power_cycle_verified(&mut self, verified_at: Timestamp) {
-        if !self.dpi.try_mark_power_cycle_verified(verified_at) {
-            self.dpi.invalidate_persistence();
-        }
-        if !self.preferences.try_mark_power_cycle_verified(verified_at) {
-            self.preferences.invalidate_persistence();
-        }
-        if !self.buttons.try_mark_power_cycle_verified(verified_at) {
-            self.buttons.invalidate_persistence();
-        }
-        if !self.polling_rate.try_mark_power_cycle_verified(verified_at) {
-            self.polling_rate.invalidate_persistence();
-        }
+        mark_all_or_invalidate(
+            &mut self.dpi,
+            verified_at,
+            ResourceState::try_mark_power_cycle_verified,
+        );
+        mark_all_or_invalidate(
+            &mut self.preferences,
+            verified_at,
+            ResourceState::try_mark_power_cycle_verified,
+        );
+        mark_all_or_invalidate(
+            &mut self.buttons,
+            verified_at,
+            ResourceState::try_mark_power_cycle_verified,
+        );
+        mark_all_or_invalidate(
+            &mut self.polling_rate,
+            verified_at,
+            ResourceState::try_mark_power_cycle_verified,
+        );
+    }
+}
+
+/// Marks one resource persistence-verified; any failure drops that
+/// resource's persistence claim so no partial profile is overclaimed.
+fn mark_all_or_invalidate<T: PartialEq>(
+    resource: &mut ResourceState<T>,
+    verified_at: Timestamp,
+    mark: fn(&mut ResourceState<T>, Timestamp) -> bool,
+) {
+    if !mark(resource, verified_at) {
+        resource.invalidate_persistence();
     }
 }
 
@@ -456,12 +489,6 @@ impl Default for StateFile {
 }
 
 impl StateFile {
-    /// Creates an empty state document for the current schema.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Allocates the next unused logical `mouse-N` identifier.
     pub fn allocate_device_id(&mut self) -> Result<DeviceId, StateError> {
         loop {
@@ -525,11 +552,26 @@ impl StateFile {
             )?;
 
             for (profile_id, profile) in &device.profiles {
-                validate_profile_resource(profile_id, &profile.dpi, "dpi")?;
-                validate_profile_resource(profile_id, &profile.preferences, "preferences")?;
-                validate_profile_resource(profile_id, &profile.buttons, "buttons")?;
-                // Polling is per-profile; validate evidence and skip profile_id coherence (PollingRate has no profile field)
-                validate_polling_resource(profile_id, &profile.polling_rate)?;
+                validate_profile_resource(profile_id, &profile.dpi, "dpi", |value: &DpiState| {
+                    value.profile
+                })?;
+                validate_profile_resource(
+                    profile_id,
+                    &profile.preferences,
+                    "preferences",
+                    |value: &PreferencesState| value.profile,
+                )?;
+                validate_profile_resource(
+                    profile_id,
+                    &profile.buttons,
+                    "buttons",
+                    |value: &ButtonsState| value.profile,
+                )?;
+                // PollingRate has no embedded profile id; only evidence invariants apply.
+                validate_resource_state(
+                    &profile.polling_rate,
+                    &format!("pollingRate for profile {profile_id}"),
+                )?;
             }
             for (profile_id, name) in &device.profile_names {
                 if name.trim().is_empty() {
@@ -548,22 +590,20 @@ impl StateFile {
     }
 }
 
-fn validate_profile_resource<T>(
+fn validate_profile_resource<T: PartialEq>(
     profile_id: &ProfileId,
     resource: &ResourceState<T>,
     name: &str,
-) -> Result<(), StateError>
-where
-    T: ProfileValue + PartialEq,
-{
+    profile_of: impl Fn(&T) -> ProfileId,
+) -> Result<(), StateError> {
     if resource
         .desired
         .as_ref()
-        .is_some_and(|desired| desired.value.profile_id() != *profile_id)
+        .is_some_and(|desired| profile_of(&desired.value) != *profile_id)
         || resource
             .observed
             .as_ref()
-            .is_some_and(|observed| observed.value.profile_id() != *profile_id)
+            .is_some_and(|observed| profile_of(&observed.value) != *profile_id)
     {
         return Err(StateError::invalid_state(format!(
             "{name} resource targets profile {profile_id} but is stored under another profile"
@@ -605,14 +645,25 @@ fn validate_resource_state<T: PartialEq>(
                     "{ctx}: ReadbackVerified observation is older than desired (stale)"
                 )));
             }
+            // A persistence claim cannot predate the readback that supports it.
+            if let PersistenceVerification::ProfileReloadVerified { verified_at }
+            | PersistenceVerification::PowerCycleVerified { verified_at } =
+                &desired.verification.persistence
+                && verified_at.unix_seconds < observed.observed_at.unix_seconds
+            {
+                return Err(StateError::invalid_state(format!(
+                    "{ctx}: persistence verification predates the supporting observation"
+                )));
+            }
         }
         ApplicationVerification::Mismatch => {
             let observed = resource.observed.as_ref().ok_or_else(|| {
                 StateError::invalid_state(format!("{ctx}: Mismatch requires an observed value"))
             })?;
-            if desired.value == observed.value {
+            let stale = observed.observed_at.unix_seconds < desired.updated_at.unix_seconds;
+            if desired.value == observed.value && !stale {
                 return Err(StateError::invalid_state(format!(
-                    "{ctx}: Mismatch requires differing observed value"
+                    "{ctx}: Mismatch requires a differing or stale observed value"
                 )));
             }
             if !desired.verification.persistence.is_unknown() {
@@ -622,37 +673,6 @@ fn validate_resource_state<T: PartialEq>(
             }
         }
     }
-    Ok(())
-}
-
-trait ProfileValue {
-    fn profile_id(&self) -> ProfileId;
-}
-
-impl ProfileValue for DpiState {
-    fn profile_id(&self) -> ProfileId {
-        self.profile
-    }
-}
-
-impl ProfileValue for PreferencesState {
-    fn profile_id(&self) -> ProfileId {
-        self.profile
-    }
-}
-
-impl ProfileValue for ButtonsState {
-    fn profile_id(&self) -> ProfileId {
-        self.profile
-    }
-}
-
-fn validate_polling_resource(
-    profile_id: &ProfileId,
-    resource: &ResourceState<PollingRate>,
-) -> Result<(), StateError> {
-    // PollingRate has no embedded profile id; only evidence invariants apply.
-    validate_resource_state(resource, &format!("pollingRate for profile {profile_id}"))?;
     Ok(())
 }
 
@@ -1163,6 +1183,39 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state3)]),
         };
         assert!(state3.validate().is_err());
+
+        // Equal value with a stale observation is a legitimate Mismatch: the
+        // readback predates the desired write, so it does not confirm it.
+        let mut stale_equal_mismatch = ProfileState::empty();
+        stale_equal_mismatch.dpi = ResourceState {
+            desired: Some(DesiredState {
+                value: dpi.clone(),
+                source: DesiredSource::UserWrite,
+                verification: Verification {
+                    application: ApplicationVerification::Mismatch,
+                    persistence: PersistenceVerification::Unknown,
+                },
+                updated_at: timestamp(20),
+            }),
+            observed: Some(ObservedState {
+                value: dpi.clone(),
+                source: ObservationSource::UsbReadback,
+                observed_at: timestamp(10),
+            }),
+        };
+        let mut device_state4 =
+            DeviceState::new(device_identity("mouse-1", vec![wired_endpoint("/a")]));
+        device_state4.profiles.insert(profile, stale_equal_mismatch);
+        let state4 = StateFile {
+            schema_version: SCHEMA_VERSION,
+            next_device_number: 2,
+            selected_device: None,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state4)]),
+        };
+        assert!(
+            state4.validate().is_ok(),
+            "equal-but-stale observation is a legitimate Mismatch"
+        );
     }
 
     #[test]
@@ -1286,6 +1339,37 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state4)]),
         };
         assert!(state4.validate().is_err());
+
+        // Persistence verification cannot predate the supporting readback.
+        let mut predated = ProfileState::empty();
+        predated.dpi = ResourceState {
+            desired: Some(DesiredState {
+                value: dpi.clone(),
+                source: DesiredSource::UserWrite,
+                verification: Verification {
+                    application: ApplicationVerification::ReadbackVerified,
+                    persistence: PersistenceVerification::PowerCycleVerified {
+                        verified_at: timestamp(10),
+                    },
+                },
+                updated_at: timestamp(10),
+            }),
+            observed: Some(ObservedState {
+                value: dpi.clone(),
+                source: ObservationSource::UsbReadback,
+                observed_at: timestamp(11),
+            }),
+        };
+        let mut device_state5 =
+            DeviceState::new(device_identity("mouse-1", vec![wired_endpoint("/a")]));
+        device_state5.profiles.insert(profile, predated);
+        let state5 = StateFile {
+            schema_version: SCHEMA_VERSION,
+            next_device_number: 2,
+            selected_device: None,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state5)]),
+        };
+        assert!(state5.validate().is_err());
     }
 
     #[test]
@@ -1732,6 +1816,8 @@ mod tests {
         assert!(!resource.try_mark_profile_reload_verified(timestamp(11)));
         assert!(!resource.try_mark_power_cycle_verified(timestamp(11)));
         resource.reconcile_observation(7, timestamp(12));
+        // Marking cannot predate the supporting observation.
+        assert!(!resource.try_mark_profile_reload_verified(timestamp(11)));
         assert!(resource.try_mark_profile_reload_verified(timestamp(13)));
         assert_eq!(
             resource.desired.as_ref().unwrap().verification.persistence,

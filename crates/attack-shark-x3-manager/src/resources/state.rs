@@ -3,12 +3,14 @@ use std::collections::BTreeMap;
 use attack_shark_x3::{ButtonsState, DpiState, PollingRate, PreferencesState, ProfileId};
 use serde::{Deserialize, Serialize};
 
+use crate::backend::SessionWrite;
 use crate::device::{DeviceId, DeviceIdentity};
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
+use crate::operation::WriteOutcome;
 use crate::state::{
-    DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS, ResourceState, StateReset,
-    Timestamp, Verification,
+    ApplicationVerification, DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS,
+    ProfileState, ResourceState, StateFile, StateReset, Timestamp, Verification,
 };
 
 /// A profile's portable configuration values.
@@ -104,7 +106,11 @@ impl DeviceManager {
         if let Some(num) = device_id.number()
             && state.next_device_number <= num
         {
-            state.next_device_number = num + 1;
+            state.next_device_number = num.checked_add(1).ok_or_else(|| {
+                ManagerError::State(crate::error::StateError::invalid_state(
+                    "nextDeviceNumber overflow",
+                ))
+            })?;
         }
         let device_state = state
             .devices
@@ -280,18 +286,26 @@ fn set_imported<T>(resource: &mut ResourceState<T>, value: T, now: Timestamp) {
 /// Generic over any resource value; persistence is always reset to Unknown
 /// and the old observation is kept as history. Used uniformly by DPI,
 /// preferences, buttons and polling-rate.
-pub(crate) fn record_ack<T>(resource: &mut ResourceState<T>, value: T, now: Timestamp) {
-    resource.record_ack_write(value, DesiredSource::UserWrite, now);
+///
+/// Returns the [`Verification`] assigned to `self.desired`.
+pub(crate) fn record_ack<T>(
+    resource: &mut ResourceState<T>,
+    value: T,
+    now: Timestamp,
+) -> Verification {
+    resource.record_ack_write(value, DesiredSource::UserWrite, now)
 }
 
 /// Records a write with immediate readback, setting verification truthfully.
+///
+/// Returns the [`Verification`] assigned to `self.desired`.
 pub(crate) fn record_readback<T: PartialEq>(
     resource: &mut ResourceState<T>,
     desired: T,
     observed: T,
     now: Timestamp,
-) {
-    resource.record_readback_write(desired, observed, DesiredSource::UserWrite, now);
+) -> Verification {
+    resource.record_readback_write(desired, observed, DesiredSource::UserWrite, now)
 }
 
 /// Reconciles a fresh observation for any resource.
@@ -306,6 +320,58 @@ pub(crate) fn reconcile_observed<T: Clone + PartialEq>(
     now: Timestamp,
 ) {
     resource.reconcile_observation(value, now);
+}
+
+pub(crate) fn persist_write<T>(
+    state: &mut StateFile,
+    device: &DeviceId,
+    profile: ProfileId,
+    select: impl for<'a> FnOnce(&'a mut ProfileState) -> &'a mut ResourceState<T>,
+    desired: T,
+    write: SessionWrite<T>,
+    now: Timestamp,
+) -> Result<WriteOutcome<T>, ManagerError>
+where
+    T: Clone + PartialEq,
+{
+    let device_state = state
+        .devices
+        .get_mut(device)
+        .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+    let profile_state = device_state
+        .profiles
+        .entry(profile)
+        .or_insert_with(ProfileState::empty);
+    let resource = select(profile_state);
+    let (observed, verification) = match write {
+        SessionWrite::ReadbackVerified(readback) => {
+            let verification = record_readback(resource, desired.clone(), readback.clone(), now);
+            (Some(readback), verification)
+        }
+        SessionWrite::Acknowledged => {
+            let verification = record_ack(resource, desired.clone(), now);
+            (None, verification)
+        }
+    };
+    Ok(WriteOutcome {
+        desired,
+        observed,
+        verification,
+    })
+}
+
+pub(crate) fn finish_write<T>(
+    outcome: WriteOutcome<T>,
+    resource: &'static str,
+    profile: ProfileId,
+) -> Result<WriteOutcome<T>, ManagerError> {
+    if outcome.verification.application == ApplicationVerification::Mismatch {
+        return Err(ManagerError::VerificationMismatch {
+            resource,
+            profile: Some(profile),
+        });
+    }
+    Ok(outcome)
 }
 
 fn validate_configuration(configuration: &ConfigurationExport) -> Result<(), ManagerError> {

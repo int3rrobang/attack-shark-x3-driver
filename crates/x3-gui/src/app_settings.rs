@@ -246,6 +246,12 @@ fn reset_gui_preferences(
         Ok(_) => format!("{message} — backup saved"),
         Err(error) => format!("{message}; the old file could not be backed up ({error})"),
     };
+    // Persist the reset so the next launch reads clean defaults instead of
+    // re-backing-up the same invalid file.
+    let warning = match write_atomic_gui(path, &GuiPreferences::default().normalized()) {
+        Ok(()) => warning,
+        Err(error) => format!("{warning}; the reset could not be saved ({error})"),
+    };
     (GuiPreferences::default(), Some(warning))
 }
 
@@ -497,6 +503,16 @@ mod tests {
             .join(format!("{GUI_PREFERENCES_FILE_NAME}.unreadable.bak"));
         assert!(backup.exists());
         assert_eq!(fs::read(&backup).unwrap(), malformed);
+
+        // The reset is persisted, so the next launch reads clean defaults
+        // instead of re-backing-up the same invalid file.
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            serde_json::to_vec_pretty(&GuiPreferences::default().normalized()).unwrap()
+        );
+        let (again, warning2) = load_gui_preferences_from_path(&path);
+        assert!(warning2.is_none(), "rewritten defaults must load cleanly");
+        assert_eq!(again, GuiPreferences::default());
     }
 
     #[test]

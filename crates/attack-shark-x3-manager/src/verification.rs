@@ -10,15 +10,17 @@ use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::operation::{PowerCycleVerificationOutcome, ProfileVerificationOutcome, WriteOutcome};
 use crate::state::{ApplicationVerification, PersistenceVerification, ProfileState, Verification};
-#[cfg(not(test))]
-const POWER_CYCLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
-#[cfg(test)]
-const POWER_CYCLE_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const POWER_CYCLE_POLL_INTERVAL: Duration = if cfg!(test) {
+    Duration::from_millis(1)
+} else {
+    Duration::from_millis(250)
+};
 
-#[cfg(not(test))]
-const POWER_CYCLE_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(test)]
-const POWER_CYCLE_TIMEOUT: Duration = Duration::from_millis(20);
+const POWER_CYCLE_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_millis(20)
+} else {
+    Duration::from_secs(30)
+};
 
 impl DeviceManager {
     /// Verifies that a complete profile image survives a profile reload.
@@ -161,8 +163,11 @@ impl DeviceManager {
     /// physical power cycle.
     ///
     /// The open session is released before discovery polling begins. A
-    /// persistence claim is made only after the exact USB identity disappears,
-    /// returns, and produces a complete matching profile readback.
+    /// persistence claim is made only after the device disappears and a
+    /// same-model USB device (same VID/PID) returns and produces a complete
+    /// matching profile readback. This mouse exposes no serial number and the
+    /// HID path is a locator that can change on replug, so reconnect identity
+    /// is model-level, never per-unit.
     ///
     /// Capture uses read_profile then read_live_polling_rate in same session
     /// before disconnect and after reconnect.
@@ -370,19 +375,8 @@ impl DeviceManager {
             }) {
                 return Ok(found.endpoint.clone());
             }
-            let mut candidates: Vec<DeviceEndpoint> = discovered
-                .into_iter()
-                .filter(|candidate| {
-                    candidate.connected && candidate.endpoint.transport == transport
-                })
-                .filter(|candidate| {
-                    candidate.endpoint.vendor_id == old_endpoint.vendor_id
-                        && candidate.endpoint.product_id == old_endpoint.product_id
-                })
-                .map(|candidate| candidate.endpoint)
-                .collect();
-            candidates.sort_by(|a, b| a.locator.cmp(&b.locator));
-            candidates.dedup_by(|a, b| a.locator == b.locator);
+            let mut candidates =
+                crate::device::rebind_candidates(discovered, transport, old_endpoint);
             match candidates.len() {
                 0 => {}
                 1 => {
@@ -440,7 +434,7 @@ async fn read_complete_profile(
     Ok((snapshot, rate))
 }
 
-async fn write_exact_metadata(
+pub(crate) async fn write_exact_metadata(
     session: &dyn crate::backend::DeviceSession,
     expected: ProfileMetadata,
 ) -> Result<ProfileMetadata, ManagerError> {

@@ -436,14 +436,6 @@ const fn expected_length_for_error(transport: TransportKind, actual: usize) -> u
     }
 }
 
-#[allow(dead_code)]
-fn enabled_stage_mask(stage_count: usize) -> Result<u8, ProtocolError> {
-    if !(1..=8).contains(&stage_count) {
-        return Err(ProtocolError::InvalidStageCount { count: stage_count });
-    }
-    Ok(enabled_stage_mask_unchecked(stage_count))
-}
-
 fn enabled_stage_mask_unchecked(stage_count: usize) -> u8 {
     debug_assert!((1..=8).contains(&stage_count));
     if stage_count == 8 {

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use attack_shark_x3::{
     BatteryEvent, ButtonsState, ConnectionChangedEvent, DpiButtonEvent, DpiIndexChangedEvent,
     DpiState, InputEvent, LedModeChangedEvent, PollingRate, PreferencesState, ProfileChangedEvent,
-    ProfileId, ProfileMetadata,
+    ProfileId, ProfileMetadata, TransportKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -115,13 +115,17 @@ pub struct DiscoveredEndpoint {
 
 /// A discovered logical mouse and whether it is currently connected.
 ///
-/// After association, the logical identity owns one or more endpoints, so the
-/// transport path/platform id is an endpoint locator, never the physical identity.
+/// After association, the logical identity owns one or more endpoints, so
+/// discovery rows are aggregated per logical device and `transports` records
+/// which transports produced discovery entries this scan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredDevice {
     pub identity: DeviceIdentity,
     pub connected: bool,
+    /// Transports on which the device was discovered this scan, sorted and
+    /// without duplicates.
+    pub transports: Vec<TransportKind>,
 }
 
 /// Resource status read from one logical device identity.

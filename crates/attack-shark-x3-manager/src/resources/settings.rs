@@ -10,8 +10,8 @@ use crate::manager::DeviceManager;
 use crate::operation::{
     BaselineSource, ResourceSnapshot, UpdatePolicy, VerificationMethod, WriteOutcome,
 };
-use crate::resources::state::{reconcile_observed, record_ack, record_readback};
-use crate::state::{ApplicationVerification, DesiredSource, ProfileState, StateFile};
+use crate::resources::state::reconcile_observed;
+use crate::state::{DesiredSource, ProfileState, StateFile};
 
 /// Partial profile preferences to merge into a complete image.
 ///
@@ -148,10 +148,18 @@ impl DeviceManager {
         let outcome = self
             .store()
             .mutate_async(move |state| {
-                persist_preferences_write(state, &device_id, profile, desired, write, now)
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.preferences,
+                    desired,
+                    write,
+                    now,
+                )
             })
             .await??;
-        finish_preferences_write(outcome, profile)
+        crate::resources::state::finish_write(outcome, "preferences", profile)
     }
 
     /// Applies a sparse preferences update after resolving a complete
@@ -207,10 +215,18 @@ impl DeviceManager {
         let outcome = self
             .store()
             .mutate_async(move |state| {
-                persist_preferences_write(state, &device_id, profile, desired, write, now)
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.preferences,
+                    desired,
+                    write,
+                    now,
+                )
             })
             .await??;
-        finish_preferences_write(outcome, profile)
+        crate::resources::state::finish_write(outcome, "preferences", profile)
     }
 
     /// Resolves the complete preferences baseline from the durable store
@@ -354,10 +370,18 @@ impl DeviceManager {
             let outcome = self
                 .store()
                 .mutate_async(move |state| {
-                    persist_polling_write(state, &device_id, profile, desired, write, now)
+                    crate::resources::state::persist_write(
+                        state,
+                        &device_id,
+                        profile,
+                        |ps| &mut ps.polling_rate,
+                        desired,
+                        write,
+                        now,
+                    )
                 })
                 .await??;
-            return finish_polling_write(outcome, profile);
+            return crate::resources::state::finish_write(outcome, "polling rate", profile);
         }
 
         let write = session
@@ -368,10 +392,18 @@ impl DeviceManager {
         let outcome = self
             .store()
             .mutate_async(move |state| {
-                persist_polling_write(state, &device_id, profile, desired, write, now)
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.polling_rate,
+                    desired,
+                    write,
+                    now,
+                )
             })
             .await??;
-        finish_polling_write(outcome, profile)
+        crate::resources::state::finish_write(outcome, "polling rate", profile)
     }
 
     /// Performs a direct, unverified BLE polling-rate write as the explicit
@@ -415,10 +447,18 @@ impl DeviceManager {
         let outcome = self
             .store()
             .mutate_async(move |state| {
-                persist_polling_write(state, &device_id, profile, desired, write, now)
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.polling_rate,
+                    desired,
+                    write,
+                    now,
+                )
             })
             .await??;
-        finish_polling_write(outcome, profile)
+        crate::resources::state::finish_write(outcome, "polling rate", profile)
     }
 
     /// Resolves the complete desired image a safe polling-rate write must be
@@ -538,130 +578,6 @@ pub(crate) fn has_preferences_baseline(
             profile_state.preferences.desired.is_some()
                 || profile_state.preferences.observed.is_some()
         })
-}
-
-pub(crate) fn persist_preferences_write(
-    state: &mut StateFile,
-    device: &DeviceId,
-    profile: ProfileId,
-    desired: PreferencesState,
-    write: SessionWrite<PreferencesState>,
-    now: crate::state::Timestamp,
-) -> Result<WriteOutcome<PreferencesState>, ManagerError> {
-    let device_state = state
-        .devices
-        .get_mut(device)
-        .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-    let profile_state = device_state
-        .profiles
-        .entry(profile)
-        .or_insert_with(ProfileState::empty);
-    let (observed, verification) = match write {
-        SessionWrite::ReadbackVerified(readback) => {
-            let observed = readback;
-            record_readback(&mut profile_state.preferences, desired, observed, now);
-            let verification = profile_state
-                .preferences
-                .desired
-                .as_ref()
-                .expect("desired must exist after record_readback")
-                .verification
-                .clone();
-            (Some(observed), verification)
-        }
-        SessionWrite::Acknowledged => {
-            record_ack(&mut profile_state.preferences, desired, now);
-            let verification = profile_state
-                .preferences
-                .desired
-                .as_ref()
-                .expect("desired must exist after record_ack")
-                .verification
-                .clone();
-            (None, verification)
-        }
-    };
-
-    Ok(WriteOutcome {
-        desired,
-        observed,
-        verification,
-    })
-}
-
-pub(crate) fn persist_polling_write(
-    state: &mut StateFile,
-    device: &DeviceId,
-    profile: ProfileId,
-    desired: PollingRate,
-    write: SessionWrite<PollingRate>,
-    now: crate::state::Timestamp,
-) -> Result<WriteOutcome<PollingRate>, ManagerError> {
-    let device_state = state
-        .devices
-        .get_mut(device)
-        .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-    let profile_state = device_state
-        .profiles
-        .entry(profile)
-        .or_insert_with(ProfileState::empty);
-    let (observed, verification) = match write {
-        SessionWrite::ReadbackVerified(readback) => {
-            let observed = readback;
-            record_readback(&mut profile_state.polling_rate, desired, observed, now);
-            let verification = profile_state
-                .polling_rate
-                .desired
-                .as_ref()
-                .expect("desired must exist after record_readback")
-                .verification
-                .clone();
-            (Some(observed), verification)
-        }
-        SessionWrite::Acknowledged => {
-            record_ack(&mut profile_state.polling_rate, desired, now);
-            let verification = profile_state
-                .polling_rate
-                .desired
-                .as_ref()
-                .expect("desired must exist after record_ack")
-                .verification
-                .clone();
-            (None, verification)
-        }
-    };
-
-    Ok(WriteOutcome {
-        desired,
-        observed,
-        verification,
-    })
-}
-
-pub(crate) fn finish_preferences_write(
-    outcome: WriteOutcome<PreferencesState>,
-    profile: ProfileId,
-) -> Result<WriteOutcome<PreferencesState>, ManagerError> {
-    if outcome.verification.application == ApplicationVerification::Mismatch {
-        return Err(ManagerError::VerificationMismatch {
-            resource: "preferences",
-            profile: Some(profile),
-        });
-    }
-    Ok(outcome)
-}
-
-pub(crate) fn finish_polling_write(
-    outcome: WriteOutcome<PollingRate>,
-    profile: ProfileId,
-) -> Result<WriteOutcome<PollingRate>, ManagerError> {
-    if outcome.verification.application == ApplicationVerification::Mismatch {
-        return Err(ManagerError::VerificationMismatch {
-            resource: "polling rate",
-            profile: Some(profile),
-        });
-    }
-    Ok(outcome)
 }
 
 #[cfg(test)]

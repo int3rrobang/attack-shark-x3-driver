@@ -105,12 +105,17 @@ pub fn is_ble_identity(identity: &DeviceIdentity) -> bool {
 
 pub fn transport_label_for_identity(identity: &DeviceIdentity) -> String {
     match selected_transport(identity) {
-        Some(TransportKind::Wired) => "usb wired",
-        Some(TransportKind::Receiver) => "2.4g receiver",
-        Some(TransportKind::Ble) => "ble",
-        None => "disconnected",
+        Some(transport) => transport_label(transport).to_owned(),
+        None => "disconnected".to_owned(),
     }
-    .to_owned()
+}
+
+pub fn transport_label(transport: TransportKind) -> &'static str {
+    match transport {
+        TransportKind::Wired => "usb wired",
+        TransportKind::Receiver => "2.4g receiver",
+        TransportKind::Ble => "ble",
+    }
 }
 
 pub fn product_id_label_for_identity(identity: &DeviceIdentity) -> String {

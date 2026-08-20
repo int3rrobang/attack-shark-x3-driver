@@ -177,15 +177,15 @@ impl SafeButtonAction {
     }
 }
 
-use crate::backend::{DeviceSession, SessionWrite};
+use crate::backend::DeviceSession;
 use crate::device::DeviceId;
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::operation::{
     BaselineSource, ResourceSnapshot, UpdatePolicy, VerificationMethod, WriteOutcome,
 };
-use crate::resources::state::{reconcile_observed, record_ack, record_readback};
-use crate::state::{ApplicationVerification, DesiredSource, StateFile};
+use crate::resources::state::reconcile_observed;
+use crate::state::DesiredSource;
 
 /// A bounded, typed update to one safe button slot.
 ///
@@ -327,20 +327,23 @@ impl DeviceManager {
         let now = self.now();
         let device_id = device.clone();
         let requested_for_store = requested;
+        let profile = requested_for_store.profile;
         let outcome = self
             .store()
             .mutate_async(move |state| {
-                persist_buttons_write(state, &device_id, requested_for_store, result, now)
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.buttons,
+                    requested_for_store,
+                    result,
+                    now,
+                )
             })
             .await??;
 
-        if outcome.verification.application == ApplicationVerification::Mismatch {
-            return Err(ManagerError::VerificationMismatch {
-                resource: "buttons",
-                profile: Some(requested.profile),
-            });
-        }
-        Ok(outcome)
+        crate::resources::state::finish_write(outcome, "buttons", profile)
     }
 
     /// image, then [`ButtonsState::default_for_profile`] only when
@@ -378,51 +381,6 @@ impl DeviceManager {
             profile: Some(profile),
         })
     }
-}
-
-pub(crate) fn persist_buttons_write(
-    state: &mut StateFile,
-    device: &DeviceId,
-    requested: ButtonsState,
-    result: SessionWrite<ButtonsState>,
-    now: crate::state::Timestamp,
-) -> Result<WriteOutcome<ButtonsState>, ManagerError> {
-    let device_state = state
-        .devices
-        .get_mut(device)
-        .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-    let profile_state = device_state.profiles.entry(requested.profile).or_default();
-    let (observed, verification) = match result {
-        SessionWrite::ReadbackVerified(readback) => {
-            let observed = readback;
-            record_readback(&mut profile_state.buttons, requested, readback, now);
-            let verification = profile_state
-                .buttons
-                .desired
-                .as_ref()
-                .expect("desired must exist after record_readback")
-                .verification
-                .clone();
-            (Some(observed), verification)
-        }
-        SessionWrite::Acknowledged => {
-            record_ack(&mut profile_state.buttons, requested, now);
-            let verification = profile_state
-                .buttons
-                .desired
-                .as_ref()
-                .expect("desired must exist after record_ack")
-                .verification
-                .clone();
-            (None, verification)
-        }
-    };
-
-    Ok(WriteOutcome {
-        desired: requested,
-        observed,
-        verification,
-    })
 }
 
 fn unsupported_read(transport: TransportKind) -> ManagerError {

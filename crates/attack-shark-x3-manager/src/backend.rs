@@ -302,6 +302,7 @@ impl SessionFactory for RealSessionFactory {
     }
 }
 
+#[cfg(feature = "usb")]
 struct UsbSession {
     handle: MouseHandle,
     transport: TransportKind,

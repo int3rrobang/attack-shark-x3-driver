@@ -1,13 +1,13 @@
 use attack_shark_x3::{DpiState, DpiValue, LiftOffDistance, ProfileId, StageIndex, TransportKind};
 use serde::{Deserialize, Serialize};
 
-use crate::backend::{DeviceSession, SessionWrite};
+use crate::backend::DeviceSession;
 use crate::device::DeviceId;
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::operation::{BaselineSource, ResourceSnapshot, UpdatePolicy, WriteOutcome};
-use crate::resources::state::{reconcile_observed, record_ack, record_readback};
-use crate::state::{ApplicationVerification, DesiredSource, ProfileState, StateFile};
+use crate::resources::state::reconcile_observed;
+use crate::state::{DesiredSource, ProfileState, StateFile};
 
 /// Partial DPI settings to merge into a complete profile image.
 ///
@@ -193,10 +193,18 @@ impl DeviceManager {
         let outcome = self
             .store()
             .mutate_async(move |state| {
-                persist_dpi_write(state, &device_id, profile, desired_owned, write, now)
+                crate::resources::state::persist_write(
+                    state,
+                    &device_id,
+                    profile,
+                    |ps| &mut ps.dpi,
+                    desired_owned,
+                    write,
+                    now,
+                )
             })
             .await??;
-        finish_dpi_write(outcome, profile)
+        crate::resources::state::finish_write(outcome, "DPI", profile)
     }
 
     /// Resolves the complete DPI baseline from the durable store without any
@@ -328,67 +336,6 @@ pub(crate) fn has_dpi_baseline(state: &StateFile, device: &DeviceId, profile: Pr
         .is_some_and(|profile_state| {
             profile_state.dpi.desired.is_some() || profile_state.dpi.observed.is_some()
         })
-}
-
-pub(crate) fn persist_dpi_write(
-    state: &mut StateFile,
-    device: &DeviceId,
-    profile: ProfileId,
-    desired: DpiState,
-    write: SessionWrite<DpiState>,
-    now: crate::state::Timestamp,
-) -> Result<WriteOutcome<DpiState>, ManagerError> {
-    let device_state = state
-        .devices
-        .get_mut(device)
-        .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-    let profile_state = device_state
-        .profiles
-        .entry(profile)
-        .or_insert_with(crate::state::ProfileState::empty);
-    let (observed, verification) = match write {
-        SessionWrite::ReadbackVerified(readback) => {
-            let observed = readback.clone();
-            record_readback(&mut profile_state.dpi, desired.clone(), readback, now);
-            let verification = profile_state
-                .dpi
-                .desired
-                .as_ref()
-                .expect("desired must exist after record_readback")
-                .verification
-                .clone();
-            (Some(observed), verification)
-        }
-        SessionWrite::Acknowledged => {
-            record_ack(&mut profile_state.dpi, desired.clone(), now);
-            let verification = profile_state
-                .dpi
-                .desired
-                .as_ref()
-                .expect("desired must exist after record_ack")
-                .verification
-                .clone();
-            (None, verification)
-        }
-    };
-
-    Ok(WriteOutcome {
-        desired,
-        observed,
-        verification,
-    })
-}
-pub(crate) fn finish_dpi_write(
-    outcome: WriteOutcome<DpiState>,
-    profile: ProfileId,
-) -> Result<WriteOutcome<DpiState>, ManagerError> {
-    if outcome.verification.application == ApplicationVerification::Mismatch {
-        return Err(ManagerError::VerificationMismatch {
-            resource: "DPI",
-            profile: Some(profile),
-        });
-    }
-    Ok(outcome)
 }
 
 #[cfg(test)]

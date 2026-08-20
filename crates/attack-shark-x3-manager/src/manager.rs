@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -5,7 +6,7 @@ use attack_shark_x3::driver::ProfileSnapshot;
 use attack_shark_x3::{ProfileId, ProfileMetadata, TransportKind};
 
 use crate::backend::{DeviceSession, RealSessionFactory, SessionFactory, SessionWrite};
-use crate::device::{DeviceEndpoint, DeviceId, DeviceIdentity, TransportSelection};
+use crate::device::{DeviceId, DeviceIdentity, TransportSelection};
 use crate::error::ManagerError;
 use crate::operation::{DeviceStatus, DiscoveredDevice, DiscoveredEndpoint, ResourceSnapshot};
 use crate::state::{DeviceState, ProfileState, ResourceState, StateStore, Timestamp};
@@ -83,25 +84,34 @@ impl DeviceManager {
         discovered: &[DiscoveredEndpoint],
     ) -> Result<Vec<DiscoveredDevice>, ManagerError> {
         let state = self.store.load_async().await?;
-        let mut result = Vec::new();
+        let mut result: BTreeMap<DeviceId, DiscoveredDevice> = BTreeMap::new();
         for disc in discovered {
-            let mut found_identity: Option<DeviceIdentity> = None;
-            for dev_state in state.devices.values() {
-                if let Some(ep) = dev_state.identity.endpoint(disc.endpoint.transport)
-                    && ep.locator == disc.endpoint.locator
-                {
-                    found_identity = Some(dev_state.identity.clone());
-                    break;
-                }
-            }
-            if let Some(identity) = found_identity {
-                result.push(DiscoveredDevice {
+            let identity = state.devices.values().find_map(|dev_state| {
+                dev_state
+                    .identity
+                    .endpoint(disc.endpoint.transport)
+                    .filter(|ep| ep.locator == disc.endpoint.locator)
+                    .map(|_| dev_state.identity.clone())
+            });
+            let Some(identity) = identity else {
+                continue;
+            };
+            let entry = result
+                .entry(identity.id.clone())
+                .or_insert_with(|| DiscoveredDevice {
                     identity,
-                    connected: disc.connected,
+                    connected: false,
+                    transports: Vec::new(),
                 });
+            entry.connected |= disc.connected;
+            if !entry.transports.contains(&disc.endpoint.transport) {
+                entry.transports.push(disc.endpoint.transport);
             }
         }
-        Ok(result)
+        for device in result.values_mut() {
+            device.transports.sort();
+        }
+        Ok(result.into_values().collect())
     }
 
     pub async fn list_devices(
@@ -227,12 +237,11 @@ impl DeviceManager {
         if let Some(num) = identity.id.number()
             && state.next_device_number <= num
         {
-            state.next_device_number = num + 1;
-            if state.next_device_number == 0 {
-                return Err(ManagerError::State(
-                    crate::error::StateError::invalid_state("nextDeviceNumber overflow"),
-                ));
-            }
+            state.next_device_number = num.checked_add(1).ok_or_else(|| {
+                ManagerError::State(crate::error::StateError::invalid_state(
+                    "nextDeviceNumber overflow",
+                ))
+            })?;
         }
         if state.selected_device.is_none() {
             state.selected_device = Some(identity.id.clone());
@@ -331,21 +340,8 @@ impl DeviceManager {
         {
             return Ok(());
         }
-        let mut candidates: Vec<DeviceEndpoint> = discovered
-            .into_iter()
-            .filter(|d| d.connected && d.endpoint.transport == transport)
-            .filter(|d| {
-                if is_usb_transport(transport) {
-                    d.endpoint.vendor_id == stored_endpoint.vendor_id
-                        && d.endpoint.product_id == stored_endpoint.product_id
-                } else {
-                    true
-                }
-            })
-            .map(|d| d.endpoint)
-            .collect();
-        candidates.sort_by(|a, b| a.locator.cmp(&b.locator));
-        candidates.dedup_by(|a, b| a.locator == b.locator);
+        let mut candidates =
+            crate::device::rebind_candidates(discovered, transport, &stored_endpoint);
         match candidates.len() {
             0 => Err(ManagerError::InvalidUpdate(format!(
                 "no candidate for rebind of device {device} transport {transport:?}"
@@ -633,6 +629,12 @@ impl DeviceManager {
             }
             let image = self.require_complete_desired_image(device, profile).await?;
             let snapshot = session_ref.read_profile(profile).await?;
+            if snapshot.persistent_metadata.current() != profile {
+                return Err(ManagerError::VerificationMismatch {
+                    resource: "profile metadata",
+                    profile: Some(profile),
+                });
+            }
             if snapshot.dpi != image.dpi {
                 return Err(ManagerError::MissingBaseline {
                     resource: "DPI",
@@ -664,17 +666,18 @@ impl DeviceManager {
             let outcome = self
                 .store
                 .mutate_async(move |state| {
-                    crate::resources::settings::persist_polling_write(
+                    crate::resources::state::persist_write(
                         state,
                         &device_id,
                         profile,
+                        |ps| &mut ps.polling_rate,
                         desired_rate,
                         write,
                         now,
                     )
                 })
                 .await??;
-            let finished = crate::resources::settings::finish_polling_write(outcome, profile)?;
+            let finished = crate::resources::state::finish_write(outcome, "polling rate", profile)?;
             return Ok(crate::operation::ProfileUpdateOutcome {
                 polling_rate: Some(finished),
                 ..Default::default()
@@ -787,20 +790,39 @@ impl DeviceManager {
                     crate::operation::WriteOutcome<attack_shark_x3::ButtonsState>,
                 > = None;
                 if let Some((desired, write)) = dpi_pair {
-                    let out = crate::resources::dpi::persist_dpi_write(
-                        state, &device_id, profile, desired, write, now,
+                    let out = crate::resources::state::persist_write(
+                        state,
+                        &device_id,
+                        profile,
+                        |ps| &mut ps.dpi,
+                        desired,
+                        write,
+                        now,
                     )?;
                     dpi_out = Some(out);
                 }
                 if let Some((desired, write)) = prefs_pair {
-                    let out = crate::resources::settings::persist_preferences_write(
-                        state, &device_id, profile, desired, write, now,
+                    let out = crate::resources::state::persist_write(
+                        state,
+                        &device_id,
+                        profile,
+                        |ps| &mut ps.preferences,
+                        desired,
+                        write,
+                        now,
                     )?;
                     prefs_out = Some(out);
                 }
                 if let Some((desired, write)) = buttons_pair {
-                    let out = crate::resources::buttons::persist_buttons_write(
-                        state, &device_id, desired, write, now,
+                    let profile = desired.profile;
+                    let out = crate::resources::state::persist_write(
+                        state,
+                        &device_id,
+                        profile,
+                        |ps| &mut ps.buttons,
+                        desired,
+                        write,
+                        now,
                     )?;
                     btn_out = Some(out);
                 }
@@ -809,25 +831,23 @@ impl DeviceManager {
             .await??;
 
         let dpi_final = if let Some(out) = dpi_outcome {
-            Some(crate::resources::dpi::finish_dpi_write(out, profile)?)
+            Some(crate::resources::state::finish_write(out, "DPI", profile)?)
         } else {
             None
         };
         let prefs_final = if let Some(out) = prefs_outcome {
-            Some(crate::resources::settings::finish_preferences_write(
-                out, profile,
+            Some(crate::resources::state::finish_write(
+                out,
+                "preferences",
+                profile,
             )?)
         } else {
             None
         };
         let buttons_final = if let Some(out) = buttons_outcome {
-            if out.verification.application == crate::state::ApplicationVerification::Mismatch {
-                return Err(ManagerError::VerificationMismatch {
-                    resource: "buttons",
-                    profile: Some(profile),
-                });
-            }
-            Some(out)
+            Some(crate::resources::state::finish_write(
+                out, "buttons", profile,
+            )?)
         } else {
             None
         };
@@ -952,7 +972,8 @@ mod tests {
     use crate::error::ManagerError;
     use crate::operation::DiscoveredEndpoint;
     use crate::state::{
-        ApplicationVerification, DesiredSource, DesiredState, StatePaths, StateStore, Verification,
+        ApplicationVerification, DesiredSource, DesiredState, DeviceState, StatePaths, StateStore,
+        Verification,
     };
     use attack_shark_x3::{
         ButtonAssignment, ButtonsState, DpiState, DpiValue, PollingRate, PreferencesState,
@@ -1690,6 +1711,69 @@ mod tests {
         for dev in devices {
             assert_eq!(dev.identity.endpoints.len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn multi_transport_logical_device_aggregates_to_one_row() {
+        let store = StateStore::memory();
+        let wired = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            None,
+            "/dev/hidraw0",
+            None,
+        )
+        .unwrap();
+        let receiver = DeviceEndpoint::usb(
+            TransportKind::Receiver,
+            0x1d57,
+            0xfa60,
+            None,
+            "/dev/hidraw1",
+            None,
+        )
+        .unwrap();
+        let mut txn = store.transaction().unwrap();
+        let id = txn.state_mut().allocate_device_id().unwrap();
+        let mut identity = DeviceIdentity::new(id.clone(), None);
+        identity.upsert_endpoint(wired.clone());
+        identity.upsert_endpoint(receiver.clone());
+        txn.state_mut()
+            .devices
+            .insert(id.clone(), DeviceState::new(identity));
+        txn.commit().unwrap();
+
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_endpoint(
+                    DiscoveredEndpoint {
+                        endpoint: wired,
+                        connected: true,
+                    },
+                    ScriptedFakeSession::usb(),
+                )
+                .with_endpoint(
+                    DiscoveredEndpoint {
+                        endpoint: receiver,
+                        connected: true,
+                    },
+                    ScriptedFakeSession::usb(),
+                ),
+        );
+        let manager = DeviceManager::with_store_and_factory(store, factory);
+        let devices = manager
+            .list_devices(TransportSelection::Auto)
+            .await
+            .unwrap();
+        assert_eq!(devices.len(), 1, "one logical mouse must be one row");
+        let row = &devices[0];
+        assert_eq!(row.identity.id, id);
+        assert!(row.connected, "connected on either transport");
+        assert_eq!(
+            row.transports,
+            vec![TransportKind::Wired, TransportKind::Receiver]
+        );
     }
 
     #[tokio::test]

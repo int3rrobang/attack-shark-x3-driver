@@ -7,8 +7,8 @@ use crate::presentation::{
     MAX_DPI_STAGES, SAFE_BUTTON_SLOTS, add_tail_metadata, button_action_name, format_byte,
     format_error_string, format_refresh_summary, hide_tail_metadata, is_ble_identity,
     lift_off_choice_value, on_off, product_id_label_for_identity, profile_update_status,
-    reported_profile_switch, round_dpi_step, safe_button_action, transport_label_for_identity,
-    workflow_summary,
+    reported_profile_switch, round_dpi_step, safe_button_action, transport_label,
+    transport_label_for_identity, workflow_summary,
 };
 use crate::projection::apply_event;
 use attack_shark_x3::{DebounceMs, DeepSleepMinutes, SleepTimer};
@@ -16,9 +16,9 @@ use attack_shark_x3_manager::{
     BaselineSource, ButtonSlotDelta, ConfigurationExport, DesiredSource, DeviceEvent, DeviceId,
     DeviceIdentity, DeviceManager, DeviceStatus, DiscoveredDevice, DpiDelta, DpiValue,
     EventSubscriptions, LiftOffDistance, ManagerError, PersistenceVerification, PollingRate,
-    PreferencesDelta, ProfileId, ProfileMetadata, ProfileUpdate, ResourceState, SafeButtonSlot,
-    SensorOptionsDelta, StageIndex, StateFile, StateStore, TransportSelection, UpdatePolicy,
-    VerificationMethod,
+    PreferencesDelta, ProfileId, ProfileMetadata, ProfileUpdate, ProfileUpdateOutcome,
+    ResourceState, SafeButtonSlot, SensorOptionsDelta, StageIndex, StateFile, StateStore,
+    TransportSelection, UpdatePolicy, VerificationMethod,
 };
 
 #[derive(Debug)]
@@ -1002,7 +1002,12 @@ fn emit_devices(
     let entries = discovered
         .iter()
         .map(|device| {
-            let transport = transport_label_for_identity(&device.identity);
+            let transport = device
+                .transports
+                .iter()
+                .map(|transport| transport_label(*transport))
+                .collect::<Vec<_>>()
+                .join(" + ");
             DeviceListEntry {
                 id: device.identity.id.to_string(),
                 name: device
@@ -1524,24 +1529,46 @@ async fn apply_draft(
         None
     };
 
-    let update = ProfileUpdate {
-        dpi: dpi_delta,
-        preferences: preferences_delta,
-        buttons: button_deltas,
-        polling_rate,
-    };
-
-    if update.is_empty() {
+    let has_non_rate =
+        dpi_delta.is_some() || preferences_delta.is_some() || !button_deltas.is_empty();
+    if !has_non_rate && polling_rate.is_none() {
         return Ok((
             "no changes to apply; the mouse is already up to date".into(),
             profile,
         ));
     }
 
-    let outcome = manager
-        .apply_profile_update(&current.device, profile, update, policy)
-        .await
-        .map_err(|error| format_error_string("apply failed", error))?;
+    // The manager owns the report-0x06 isolation: a polling-rate change must
+    // never share one apply with DPI/preferences/buttons. Apply the non-rate
+    // composite first, then the rate through its own isolated call, so a
+    // combined draft applies without losing edits.
+    let mut outcome = ProfileUpdateOutcome::default();
+    if has_non_rate {
+        let non_rate = ProfileUpdate {
+            dpi: dpi_delta,
+            preferences: preferences_delta,
+            buttons: button_deltas,
+            polling_rate: None,
+        };
+        outcome = manager
+            .apply_profile_update(&current.device, profile, non_rate, policy)
+            .await
+            .map_err(|error| format_error_string("apply failed", error))?;
+    }
+
+    if let Some(rate) = polling_rate {
+        let rate_update = ProfileUpdate {
+            dpi: None,
+            preferences: None,
+            buttons: Vec::new(),
+            polling_rate: Some(rate),
+        };
+        let rate_outcome = manager
+            .apply_profile_update(&current.device, profile, rate_update, policy)
+            .await
+            .map_err(|error| format_error_string("polling-rate apply failed", error))?;
+        outcome.polling_rate = rate_outcome.polling_rate;
+    }
 
     let status = profile_update_status(&outcome);
     Ok((status, profile))

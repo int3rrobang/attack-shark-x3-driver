@@ -371,10 +371,11 @@ async fn dispatch(
                     .iter()
                     .map(|device| {
                         let transport_label = device
-                            .identity
-                            .selected_transport()
-                            .map(format_transport)
-                            .unwrap_or("unknown");
+                            .transports
+                            .iter()
+                            .map(|transport| format_transport(*transport))
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         format!(
                             "{} [{}] {}",
                             device.identity.id,

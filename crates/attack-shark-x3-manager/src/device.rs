@@ -5,6 +5,7 @@ use attack_shark_x3::TransportKind;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::StateError;
+use crate::operation::DiscoveredEndpoint;
 
 /// A validated, stable logical key for one physical mouse.
 ///
@@ -397,6 +398,31 @@ fn parse_logical_number(value: &str) -> Option<u64> {
         return None;
     }
     suffix.parse::<u64>().ok().filter(|&n| n != 0)
+}
+
+/// Filters connected discoveries down to the rebind candidates for one stored
+/// endpoint: same transport and same VID/PID, sorted by locator and
+/// deduplicated. VID/PID is the only stable model signal on this hardware
+/// (empty serial, locator changes on replug); BLE endpoints always carry
+/// `None` VID/PID, so the filter is a no-op there.
+pub(crate) fn rebind_candidates(
+    discovered: Vec<DiscoveredEndpoint>,
+    transport: TransportKind,
+    stored: &DeviceEndpoint,
+) -> Vec<DeviceEndpoint> {
+    let mut candidates: Vec<DeviceEndpoint> = discovered
+        .into_iter()
+        .filter(|candidate| {
+            candidate.connected
+                && candidate.endpoint.transport == transport
+                && candidate.endpoint.vendor_id == stored.vendor_id
+                && candidate.endpoint.product_id == stored.product_id
+        })
+        .map(|candidate| candidate.endpoint)
+        .collect();
+    candidates.sort_by(|a, b| a.locator.cmp(&b.locator));
+    candidates.dedup_by(|a, b| a.locator == b.locator);
+    candidates
 }
 
 #[cfg(test)]
