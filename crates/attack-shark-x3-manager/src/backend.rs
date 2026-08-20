@@ -20,14 +20,13 @@ use attack_shark_x3::{
 use attack_shark_x3::{DeviceSelector, UsbDeviceKind, list_devices_for};
 use tokio::sync::broadcast;
 
-#[cfg(any(feature = "usb", feature = "ble"))]
 use crate::device::DeviceLocator;
 #[cfg(feature = "ble")]
 use crate::error::StateError;
 use crate::{
-    device::{DeviceIdentity, TransportSelection},
+    device::{DeviceEndpoint, TransportSelection},
     error::ManagerError,
-    operation::{DiscoveredDevice, VerificationMethod},
+    operation::{DiscoveredEndpoint, VerificationMethod},
 };
 
 /// The result shape of a typed session write.
@@ -56,9 +55,9 @@ pub(crate) trait SessionFactory: Send + Sync {
     async fn list(
         &self,
         selection: TransportSelection,
-    ) -> Result<Vec<DiscoveredDevice>, ManagerError>;
+    ) -> Result<Vec<DiscoveredEndpoint>, ManagerError>;
 
-    async fn open(&self, identity: &DeviceIdentity)
+    async fn open(&self, endpoint: &DeviceEndpoint)
     -> Result<Box<dyn DeviceSession>, ManagerError>;
 }
 
@@ -115,12 +114,12 @@ pub(crate) trait DeviceSession: Send + Sync {
 pub(crate) struct RealSessionFactory;
 
 #[cfg(feature = "usb")]
-fn list_usb_devices(kind: UsbDeviceKind) -> Result<Vec<DiscoveredDevice>, ManagerError> {
+fn list_usb_devices(kind: UsbDeviceKind) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
     list_devices_for(kind)?
         .into_iter()
         .map(|info| {
-            Ok(DiscoveredDevice {
-                identity: DeviceIdentity::usb(
+            Ok(DiscoveredEndpoint {
+                endpoint: DeviceEndpoint::usb(
                     kind.transport_kind(),
                     info.vendor_id,
                     info.product_id,
@@ -135,15 +134,15 @@ fn list_usb_devices(kind: UsbDeviceKind) -> Result<Vec<DiscoveredDevice>, Manage
 }
 
 #[cfg(feature = "ble")]
-async fn list_ble_devices() -> Result<Vec<DiscoveredDevice>, ManagerError> {
+async fn list_ble_devices() -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
     let devices = BleHandle::list_connected().await?;
     devices
         .into_iter()
         .map(|info| {
             let stable_id = serde_json::to_string(&info.id)
                 .map_err(|error| ManagerError::State(StateError::Serde(error)))?;
-            Ok(DiscoveredDevice {
-                identity: DeviceIdentity::ble(&stable_id, info.name.as_deref())?,
+            Ok(DiscoveredEndpoint {
+                endpoint: DeviceEndpoint::ble(&stable_id, info.name.as_deref())?,
                 connected: info.connected,
             })
         })
@@ -152,12 +151,22 @@ async fn list_ble_devices() -> Result<Vec<DiscoveredDevice>, ManagerError> {
 
 #[cfg(feature = "usb")]
 async fn open_usb_session(
-    identity: &DeviceIdentity,
+    endpoint: &DeviceEndpoint,
     kind: UsbDeviceKind,
 ) -> Result<Box<dyn DeviceSession>, ManagerError> {
-    let DeviceLocator::UsbPath(path) = &identity.locator else {
-        return Err(ManagerError::DeviceNotFound(identity.id.clone()));
+    let DeviceLocator::UsbPath(path) = &endpoint.locator else {
+        return Err(ManagerError::InvalidUpdate(format!(
+            "USB open expected UsbPath locator for transport {:?}, got {:?}",
+            endpoint.transport, endpoint.locator
+        )));
     };
+    if endpoint.transport != kind.transport_kind() {
+        return Err(ManagerError::InvalidUpdate(format!(
+            "USB open expected transport {:?}, got {:?} for locator {path}",
+            kind.transport_kind(),
+            endpoint.transport
+        )));
+    }
     let handle = MouseHandle::open_for_kind(DeviceSelector::path(path.clone()), kind)?;
     Ok(Box::new(UsbSession {
         handle,
@@ -167,11 +176,20 @@ async fn open_usb_session(
 
 #[cfg(feature = "ble")]
 async fn open_ble_session(
-    identity: &DeviceIdentity,
+    endpoint: &DeviceEndpoint,
 ) -> Result<Box<dyn DeviceSession>, ManagerError> {
-    let DeviceLocator::BlePlatformId(serialized_id) = &identity.locator else {
-        return Err(ManagerError::DeviceNotFound(identity.id.clone()));
+    let DeviceLocator::BlePlatformId(serialized_id) = &endpoint.locator else {
+        return Err(ManagerError::InvalidUpdate(format!(
+            "BLE open expected BlePlatformId locator for transport {:?}, got {:?}",
+            endpoint.transport, endpoint.locator
+        )));
     };
+    if endpoint.transport != TransportKind::Ble {
+        return Err(ManagerError::InvalidUpdate(format!(
+            "BLE open expected transport Ble, got {:?} for id {serialized_id}",
+            endpoint.transport
+        )));
+    }
     let id: BleDeviceId = serde_json::from_str(serialized_id)
         .map_err(|error| ManagerError::State(StateError::Serde(error)))?;
     let handle = BleHandle::open(BleSelector::Device(id)).await?;
@@ -183,7 +201,7 @@ impl SessionFactory for RealSessionFactory {
     async fn list(
         &self,
         selection: TransportSelection,
-    ) -> Result<Vec<DiscoveredDevice>, ManagerError> {
+    ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
         match selection {
             TransportSelection::Auto => {
                 #[cfg(any(feature = "usb", feature = "ble"))]
@@ -247,12 +265,12 @@ impl SessionFactory for RealSessionFactory {
 
     async fn open(
         &self,
-        identity: &DeviceIdentity,
+        endpoint: &DeviceEndpoint,
     ) -> Result<Box<dyn DeviceSession>, ManagerError> {
-        match identity.transport {
+        match endpoint.transport {
             TransportKind::Wired => {
                 #[cfg(feature = "usb")]
-                return open_usb_session(identity, UsbDeviceKind::Wired).await;
+                return open_usb_session(endpoint, UsbDeviceKind::Wired).await;
                 #[cfg(not(feature = "usb"))]
                 Err(ManagerError::UnsupportedOperation {
                     operation: "open",
@@ -261,7 +279,7 @@ impl SessionFactory for RealSessionFactory {
             }
             TransportKind::Receiver => {
                 #[cfg(feature = "usb")]
-                return open_usb_session(identity, UsbDeviceKind::Receiver).await;
+                return open_usb_session(endpoint, UsbDeviceKind::Receiver).await;
                 #[cfg(not(feature = "usb"))]
                 Err(ManagerError::UnsupportedOperation {
                     operation: "open",
@@ -270,7 +288,7 @@ impl SessionFactory for RealSessionFactory {
             }
             TransportKind::Ble => {
                 #[cfg(feature = "ble")]
-                return open_ble_session(identity).await;
+                return open_ble_session(endpoint).await;
                 #[cfg(not(feature = "ble"))]
                 Err(ManagerError::UnsupportedOperation {
                     operation: "open",
@@ -281,7 +299,6 @@ impl SessionFactory for RealSessionFactory {
     }
 }
 
-#[cfg(feature = "usb")]
 struct UsbSession {
     handle: MouseHandle,
     transport: TransportKind,
@@ -878,12 +895,20 @@ impl DeviceSession for ScriptedFakeSession {
 }
 
 #[cfg(test)]
+fn endpoint_key(endpoint: &DeviceEndpoint) -> String {
+    match &endpoint.locator {
+        DeviceLocator::UsbPath(path) => format!("{:?}:{}", endpoint.transport, path),
+        DeviceLocator::BlePlatformId(id) => format!("{:?}:{}", endpoint.transport, id),
+    }
+}
+
+#[cfg(test)]
 #[derive(Clone, Default)]
 pub(crate) struct ScriptedFakeFactory {
-    devices: Arc<Mutex<BTreeMap<crate::device::DeviceId, DiscoveredDevice>>>,
-    sessions: Arc<Mutex<BTreeMap<crate::device::DeviceId, ScriptedFakeSession>>>,
-    discovery_queue: Arc<Mutex<VecDeque<Vec<DiscoveredDevice>>>>,
-    last_discovery: Arc<Mutex<Option<Vec<DiscoveredDevice>>>>,
+    endpoints: Arc<Mutex<BTreeMap<String, DiscoveredEndpoint>>>,
+    sessions: Arc<Mutex<BTreeMap<String, ScriptedFakeSession>>>,
+    discovery_queue: Arc<Mutex<VecDeque<Vec<DiscoveredEndpoint>>>>,
+    last_discovery: Arc<Mutex<Option<Vec<DiscoveredEndpoint>>>>,
     list_calls: Arc<Mutex<Vec<TransportSelection>>>,
 }
 
@@ -893,7 +918,7 @@ impl ScriptedFakeFactory {
         Self::default()
     }
 
-    pub(crate) fn with_discovery_sequence(self, sequence: Vec<Vec<DiscoveredDevice>>) -> Self {
+    pub(crate) fn with_discovery_sequence(self, sequence: Vec<Vec<DiscoveredEndpoint>>) -> Self {
         *lock_scripted(&self.discovery_queue) = VecDeque::from(sequence);
         *lock_scripted(&self.last_discovery) = None;
         self
@@ -903,34 +928,46 @@ impl ScriptedFakeFactory {
         lock_scripted(&self.list_calls).clone()
     }
 
-    pub(crate) fn with_device(
+    pub(crate) fn with_endpoint(
         self,
-        device: DiscoveredDevice,
+        discovered: DiscoveredEndpoint,
         session: ScriptedFakeSession,
     ) -> Self {
-        self.add_device(device, session);
+        self.add_endpoint(discovered, session);
         self
     }
 
+    /// Legacy helper: accepts a DeviceIdentity and converts its first endpoint.
     pub(crate) fn with_identity(
         self,
-        identity: DeviceIdentity,
+        identity: crate::device::DeviceIdentity,
         connected: bool,
         session: ScriptedFakeSession,
     ) -> Self {
-        self.with_device(
-            DiscoveredDevice {
-                identity,
+        let endpoint = identity
+            .endpoints
+            .values()
+            .next()
+            .cloned()
+            .expect("DeviceIdentity must contain at least one endpoint");
+        self.add_endpoint(
+            DiscoveredEndpoint {
+                endpoint,
                 connected,
             },
             session,
-        )
+        );
+        self
     }
 
-    pub(crate) fn add_device(&self, device: DiscoveredDevice, session: ScriptedFakeSession) {
-        let id = device.identity.id.clone();
-        lock_scripted(&self.devices).insert(id.clone(), device);
-        lock_scripted(&self.sessions).insert(id, session);
+    pub(crate) fn add_endpoint(
+        &self,
+        discovered: DiscoveredEndpoint,
+        session: ScriptedFakeSession,
+    ) {
+        let key = endpoint_key(&discovered.endpoint);
+        lock_scripted(&self.endpoints).insert(key.clone(), discovered);
+        lock_scripted(&self.sessions).insert(key, session);
     }
 }
 
@@ -940,7 +977,7 @@ impl SessionFactory for ScriptedFakeFactory {
     async fn list(
         &self,
         selection: TransportSelection,
-    ) -> Result<Vec<DiscoveredDevice>, ManagerError> {
+    ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
         lock_scripted(&self.list_calls).push(selection);
         let candidates = if let Some(next) = lock_scripted(&self.discovery_queue).pop_front() {
             *lock_scripted(&self.last_discovery) = Some(next.clone());
@@ -948,25 +985,30 @@ impl SessionFactory for ScriptedFakeFactory {
         } else if let Some(last) = lock_scripted(&self.last_discovery).clone() {
             last
         } else {
-            lock_scripted(&self.devices).values().cloned().collect()
+            lock_scripted(&self.endpoints).values().cloned().collect()
         };
         Ok(candidates
             .into_iter()
-            .filter(|device| match selection {
+            .filter(|discovered| match selection {
                 TransportSelection::Auto => true,
-                TransportSelection::Exact(transport) => device.identity.transport == transport,
+                TransportSelection::Exact(transport) => discovered.endpoint.transport == transport,
             })
             .collect())
     }
 
     async fn open(
         &self,
-        identity: &DeviceIdentity,
+        endpoint: &DeviceEndpoint,
     ) -> Result<Box<dyn DeviceSession>, ManagerError> {
+        let key = endpoint_key(endpoint);
         let session = lock_scripted(&self.sessions)
-            .get(&identity.id)
+            .get(&key)
             .cloned()
-            .ok_or_else(|| ManagerError::DeviceNotFound(identity.id.clone()))?;
+            .ok_or_else(|| {
+                ManagerError::InvalidUpdate(format!(
+                    "no scripted session for endpoint {endpoint:?} (key {key})"
+                ))
+            })?;
         Ok(Box::new(session))
     }
 }

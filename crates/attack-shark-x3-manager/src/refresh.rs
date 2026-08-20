@@ -74,9 +74,10 @@ impl DeviceManager {
             temporarily_expanded,
             profiles,
         )
+        .await
     }
 
-    fn persist_profile_refresh(
+    async fn persist_profile_refresh(
         &self,
         device: &DeviceId,
         original_metadata: ProfileMetadata,
@@ -85,48 +86,52 @@ impl DeviceManager {
         profiles: BTreeMap<ProfileId, RefreshedProfile>,
     ) -> Result<FullProfileRefreshOutcome, ManagerError> {
         let now = self.now();
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-
-        let profile_metadata_drift =
-            reconcile_observation(&mut device_state.profile_metadata, restored_metadata, now);
-        let mut drift = BTreeMap::new();
-
-        for (&profile, refreshed) in &profiles {
-            let state = device_state.profiles.entry(profile).or_default();
-            let mut mismatches = Vec::new();
-            if reconcile_observation(&mut state.dpi, refreshed.dpi.clone(), now) {
-                mismatches.push(ProfileResourceKind::Dpi);
-            }
-            if reconcile_observation(&mut state.preferences, refreshed.preferences, now) {
-                mismatches.push(ProfileResourceKind::Preferences);
-            }
-            if reconcile_observation(&mut state.buttons, refreshed.buttons, now) {
-                mismatches.push(ProfileResourceKind::Buttons);
-            }
-            if reconcile_observation(&mut state.polling_rate, refreshed.polling_rate, now) {
-                mismatches.push(ProfileResourceKind::PollingRate);
-            }
-            if !mismatches.is_empty() {
-                drift.insert(profile, mismatches);
-            }
-        }
-
-        transaction.state().validate()?;
-        transaction.commit()?;
-
-        Ok(FullProfileRefreshOutcome {
-            original_metadata,
-            restored_metadata,
-            temporarily_expanded,
-            profiles,
-            drift,
-            profile_metadata_drift,
-        })
+        let device_owned = device.clone();
+        let restored_owned = restored_metadata;
+        let original_owned = original_metadata;
+        let tmp_owned = temporarily_expanded;
+        let profiles_owned = profiles;
+        let outcome = self
+            .store()
+            .mutate_async(move |state| {
+                let device_state = match state.devices.get_mut(&device_owned) {
+                    Some(ds) => ds,
+                    None => return Err(ManagerError::DeviceNotFound(device_owned.clone())),
+                };
+                let profile_metadata_drift =
+                    reconcile_observation(&mut device_state.profile_metadata, restored_owned, now);
+                let mut drift = BTreeMap::new();
+                for (&profile, refreshed) in &profiles_owned {
+                    let st = device_state.profiles.entry(profile).or_default();
+                    let mut mismatches = Vec::new();
+                    if reconcile_observation(&mut st.dpi, refreshed.dpi.clone(), now) {
+                        mismatches.push(ProfileResourceKind::Dpi);
+                    }
+                    if reconcile_observation(&mut st.preferences, refreshed.preferences, now) {
+                        mismatches.push(ProfileResourceKind::Preferences);
+                    }
+                    if reconcile_observation(&mut st.buttons, refreshed.buttons, now) {
+                        mismatches.push(ProfileResourceKind::Buttons);
+                    }
+                    if reconcile_observation(&mut st.polling_rate, refreshed.polling_rate, now) {
+                        mismatches.push(ProfileResourceKind::PollingRate);
+                    }
+                    if !mismatches.is_empty() {
+                        drift.insert(profile, mismatches);
+                    }
+                }
+                Ok(FullProfileRefreshOutcome {
+                    original_metadata: original_owned,
+                    restored_metadata: restored_owned,
+                    temporarily_expanded: tmp_owned,
+                    profiles: profiles_owned,
+                    drift,
+                    profile_metadata_drift,
+                })
+            })
+            .await
+            .map_err(ManagerError::State)?;
+        outcome
     }
 }
 
@@ -234,8 +239,8 @@ mod tests {
     use crate::error::ManagerError;
     use crate::operation::ProfileResourceKind;
     use crate::state::{
-        ApplicationVerification, DesiredSource, DesiredState, PersistenceVerification, StateStore,
-        Timestamp, Verification,
+        ApplicationVerification, DesiredSource, DesiredState, ObservationSource, ObservedState,
+        PersistenceVerification, StateStore, Timestamp, Verification,
     };
 
     fn profile(value: u8) -> ProfileId {
@@ -313,6 +318,11 @@ mod tests {
                     },
                 },
                 updated_at: Timestamp { unix_seconds: 1 },
+            });
+            profile_one.dpi.observed = Some(ObservedState {
+                value: matching_dpi.clone(),
+                source: ObservationSource::UsbReadback,
+                observed_at: Timestamp { unix_seconds: 1 },
             });
             profile_one.preferences.desired = Some(DesiredState {
                 value: mismatched_preferences,

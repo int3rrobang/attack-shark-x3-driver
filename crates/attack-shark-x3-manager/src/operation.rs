@@ -8,7 +8,7 @@ use attack_shark_x3::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    device::DeviceIdentity,
+    device::{DeviceEndpoint, DeviceIdentity},
     state::{ResourceState, Verification},
 };
 
@@ -103,7 +103,21 @@ pub struct FullProfileRefreshOutcome {
     pub profile_metadata_drift: bool,
 }
 
-/// A discovered exact device and whether it is currently connected.
+/// A raw transport endpoint discovered before logical association.
+///
+/// This carries an endpoint only, never a logical `DeviceId`. The manager
+/// associates raw discoveries to a logical `mouse-N` via [`StateFile::allocate_device_id`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredEndpoint {
+    pub endpoint: DeviceEndpoint,
+    pub connected: bool,
+}
+
+/// A discovered logical mouse and whether it is currently connected.
+///
+/// After association, the logical identity owns one or more endpoints, so the
+/// transport path/platform id is an endpoint locator, never the physical identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredDevice {
@@ -111,7 +125,7 @@ pub struct DiscoveredDevice {
     pub connected: bool,
 }
 
-/// Resource status read from one exact device identity.
+/// Resource status read from one logical device identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceStatus {
@@ -173,8 +187,9 @@ impl From<InputEvent> for DeviceEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceEvent, UpdatePolicy, VerificationMethod};
-    use attack_shark_x3::{ConnectionChangedEvent, InputEvent};
+    use super::{DeviceEvent, DiscoveredEndpoint, UpdatePolicy, VerificationMethod};
+    use crate::device::DeviceEndpoint;
+    use attack_shark_x3::{ConnectionChangedEvent, InputEvent, TransportKind};
 
     #[test]
     fn maps_low_level_input_events_without_losing_raw_bytes() {
@@ -222,5 +237,55 @@ mod tests {
             serde_json::from_str::<VerificationMethod>("\"readback\"").unwrap(),
             VerificationMethod::Readback
         );
+    }
+
+    #[test]
+    fn raw_discovery_carries_endpoint_without_logical_id() {
+        let endpoint = DeviceEndpoint::ble("platform-123", Some("Mouse")).unwrap();
+        let discovered = DiscoveredEndpoint {
+            endpoint: endpoint.clone(),
+            connected: true,
+        };
+        // Serializing raw discovery must not contain a mouse-N id.
+        let json = serde_json::to_string(&discovered).unwrap();
+        assert!(
+            !json.contains("mouse-"),
+            "raw discovery should not embed logical id"
+        );
+        assert!(json.contains("blePlatformId") || json.contains("platform-123"));
+        assert_eq!(discovered.endpoint, endpoint);
+    }
+
+    #[test]
+    fn wired_endpoint_not_used_as_stable_identity_and_ble_uses_platform_id() {
+        // USB endpoint locator is verbatim HID path, not stable identity.
+        let wired = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa60,
+            None,
+            "/dev/hidraw0",
+            None,
+        )
+        .unwrap();
+        // Changing path yields a different endpoint but same logical device can be reused.
+        let wired2 = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa60,
+            None,
+            "/dev/hidraw1",
+            None,
+        )
+        .unwrap();
+        assert_ne!(wired.locator, wired2.locator);
+        assert_eq!(wired.transport, wired2.transport);
+
+        // BLE endpoint uses platform id.
+        let ble = DeviceEndpoint::ble("ble-platform-id-XYZ", None).unwrap();
+        assert!(matches!(
+            ble.locator,
+            crate::device::DeviceLocator::BlePlatformId(_)
+        ));
     }
 }

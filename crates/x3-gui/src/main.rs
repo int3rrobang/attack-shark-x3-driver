@@ -10,12 +10,12 @@ use std::{
 use attack_shark_x3::{DebounceMs, DeepSleepMinutes, SleepTimer};
 use attack_shark_x3_manager::{
     ApplicationVerification, BaselineSource, ButtonSlotDelta, ConfigurationExport, DesiredSource,
-    DeviceEvent, DeviceId, DeviceIdentity, DeviceManager, DeviceStatus, DiscoveredDevice, DpiDelta,
-    DpiValue, EventSubscriptions, FullProfileRefreshOutcome, LiftOffDistance, ManagerError,
-    PersistenceVerification, PollingRate, PreferencesDelta, ProfileId, ProfileMetadata,
-    ProfileResourceKind, ResourceState, SafeButtonAction, SafeButtonSlot, SensorOptionsDelta,
-    StageIndex, StateFile, StateStore, TransportKind, TransportSelection, UpdatePolicy,
-    Verification, VerificationMethod,
+    DeviceEndpoint, DeviceEvent, DeviceId, DeviceIdentity, DeviceManager, DeviceStatus,
+    DiscoveredDevice, DpiDelta, DpiValue, EventSubscriptions, FullProfileRefreshOutcome,
+    LiftOffDistance, ManagerError, PersistenceVerification, PollingRate, PreferencesDelta,
+    ProfileId, ProfileMetadata, ProfileResourceKind, ResourceState, SafeButtonAction,
+    SafeButtonSlot, SensorOptionsDelta, StageIndex, StateFile, StateStore, TransportKind,
+    TransportSelection, UpdatePolicy, Verification, VerificationMethod,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
@@ -270,6 +270,41 @@ enum StartupError {
     /// the user can discard it (with a backup) and retry.
     UnreadableState(String),
     Message(String),
+}
+/// Centralized endpoint helpers: never unwrap, never panic on missing endpoint.
+/// The selected endpoint is `preferred_transport` with deterministic fallback
+/// (Wired -> Receiver -> BLE), exactly `DeviceIdentity::selected_endpoint()`.
+fn selected_endpoint(identity: &DeviceIdentity) -> Option<&DeviceEndpoint> {
+    identity.selected_endpoint()
+}
+
+fn selected_transport(identity: &DeviceIdentity) -> Option<TransportKind> {
+    selected_endpoint(identity).map(|endpoint| endpoint.transport)
+}
+
+fn is_ble_identity(identity: &DeviceIdentity) -> bool {
+    matches!(selected_transport(identity), Some(TransportKind::Ble))
+}
+
+fn transport_label_for_identity(identity: &DeviceIdentity) -> String {
+    match selected_transport(identity) {
+        Some(TransportKind::Wired) => "usb wired",
+        Some(TransportKind::Receiver) => "2.4g receiver",
+        Some(TransportKind::Ble) => "ble",
+        None => "disconnected",
+    }
+    .to_owned()
+}
+
+fn product_id_label_for_identity(identity: &DeviceIdentity) -> String {
+    let endpoint = selected_endpoint(identity);
+    let vid = endpoint
+        .and_then(|ep| ep.vendor_id)
+        .map_or_else(|| "unknown".to_owned(), |id| format!("{id:04x}"));
+    let pid = endpoint
+        .and_then(|ep| ep.product_id)
+        .map_or_else(|| "unknown".to_owned(), |id| format!("{id:04x}"));
+    format!("{vid}:{pid}")
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -1650,7 +1685,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                     emit(&weak, UiEvent::Busy(format!("activating profile {number}")));
                     match select_profile(&runtime, manager_ref, current, number) {
                         Ok(new_loaded) => {
-                            let status = if new_loaded.identity.transport == TransportKind::Ble {
+                            let status = if is_ble_identity(&new_loaded.identity) {
                                 format!(
                                     "profile {number} activation sent; the mouse can't confirm it over BLE"
                                 )
@@ -1820,7 +1855,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                         );
                         continue;
                     };
-                    if current.identity.transport == TransportKind::Ble {
+                    if is_ble_identity(&current.identity) {
                         emit(
                             &weak,
                             UiEvent::OperationError(
@@ -1959,7 +1994,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                         );
                         continue;
                     };
-                    if current.identity.transport == TransportKind::Ble {
+                    if is_ble_identity(&current.identity) {
                         emit(
                             &weak,
                             UiEvent::OperationError(
@@ -2327,7 +2362,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                         );
                         continue;
                     };
-                    if current.identity.transport == TransportKind::Ble {
+                    if is_ble_identity(&current.identity) {
                         emit(
                             &weak,
                             UiEvent::OperationError(
@@ -2400,7 +2435,7 @@ fn worker_main(receiver: Receiver<Command>, weak: slint::Weak<AppWindow>) -> Res
                         );
                         continue;
                     };
-                    if current.identity.transport == TransportKind::Ble {
+                    if is_ble_identity(&current.identity) {
                         emit(
                             &weak,
                             UiEvent::OperationError(
@@ -2628,11 +2663,7 @@ fn emit_devices(
     let entries = discovered
         .iter()
         .map(|device| {
-            let transport = match device.identity.transport {
-                TransportKind::Wired => "usb wired",
-                TransportKind::Receiver => "2.4g receiver",
-                TransportKind::Ble => "ble",
-            };
+            let transport = transport_label_for_identity(&device.identity);
             DeviceListEntry {
                 id: device.identity.id.to_string(),
                 name: device
@@ -3018,7 +3049,7 @@ fn open_manager() -> Result<DeviceManager, StartupError> {
     if let Err(error) = store.load() {
         return Err(StartupError::UnreadableState(format!(
             "manager state file {} is unreadable ({error}); use the dialog to discard it and continue",
-            store.paths().state_file.display()
+            store.paths().state_file().display()
         )));
     }
     DeviceManager::new(store).map_err(|error| {
@@ -3095,7 +3126,7 @@ async fn read_loaded(
     requested: Option<ProfileId>,
 ) -> Result<LoadedDevice, ManagerError> {
     let status = manager.read_status(device).await?;
-    if status.identity.transport == TransportKind::Ble {
+    if is_ble_identity(&status.identity) {
         return read_ble_loaded(manager, status, requested);
     }
     let metadata = status
@@ -3336,7 +3367,7 @@ fn select_profile(
 ) -> Result<LoadedDevice, String> {
     let target = ProfileId::new(number)
         .ok_or_else(|| format!("profile {number} is outside the fixed device range 1..=5"))?;
-    if current.identity.transport == TransportKind::Ble {
+    if is_ble_identity(&current.identity) {
         runtime
             .block_on(manager.activate_profile(&current.device, target))
             .map_err(|error| format_error_string("BLE profile activation failed", error))?;
@@ -3376,7 +3407,7 @@ fn apply_draft(
             "draft targets a profile that is no longer current; reload before applying".into(),
         );
     }
-    let is_ble = current.identity.transport == TransportKind::Ble;
+    let is_ble = is_ble_identity(&current.identity);
     if !is_ble {
         let fresh_status = runtime
             .block_on(manager.read_status(&current.device))
@@ -3616,12 +3647,10 @@ fn make_live_snapshot(loaded: &LoadedDevice, status: &str) -> LiveSnapshot {
         .copied()
         .map(DpiValue::get)
         .unwrap_or(0);
-    let is_ble = loaded.identity.transport == TransportKind::Ble;
-    let transport = match loaded.identity.transport {
-        TransportKind::Wired => "usb wired",
-        TransportKind::Receiver => "2.4g receiver",
-        TransportKind::Ble => "ble",
-    };
+    let is_ble = is_ble_identity(&loaded.identity);
+    let transport = transport_label_for_identity(&loaded.identity); // replaced match
+    // original match removed
+
     let battery = loaded
         .battery
         .map_or_else(String::new, |value| format!("{value}%"));
@@ -3711,18 +3740,8 @@ fn make_live_snapshot(loaded: &LoadedDevice, status: &str) -> LiveSnapshot {
             .clone()
             .unwrap_or_else(|| "X3-compatible device".to_owned()),
         stable_id: loaded.identity.id.to_string(),
-        product_id: format!(
-            "{}:{}",
-            loaded
-                .identity
-                .vendor_id
-                .map_or_else(|| "unknown".to_owned(), |id| format!("{id:04x}")),
-            loaded
-                .identity
-                .product_id
-                .map_or_else(|| "unknown".to_owned(), |id| format!("{id:04x}"))
-        ),
-        transport: transport.to_owned(),
+        product_id: product_id_label_for_identity(&loaded.identity),
+        transport,
         polling_rate_ready: loaded.polling_rate_ready,
         is_ble,
         all_profiles_observed: loaded.all_profiles_observed,
@@ -4828,7 +4847,7 @@ mod tests {
 
     #[test]
     fn complete_profile_observations_require_every_resource_in_all_five_slots() {
-        let identity = DeviceIdentity::usb(
+        let endpoint = attack_shark_x3_manager::DeviceEndpoint::usb(
             TransportKind::Wired,
             0x1d57,
             0xfa61,
@@ -4836,7 +4855,10 @@ mod tests {
             r"\\?\hid#gui-observation-test",
             Some("GUI observation test"),
         )
-        .expect("valid test identity");
+        .expect("valid endpoint");
+        let id = attack_shark_x3_manager::DeviceId::new("mouse-1").expect("valid id");
+        let identity = DeviceIdentity::new(id.clone(), Some("GUI observation test".to_owned()))
+            .with_endpoint(endpoint);
         let mut state = StateFile::default();
         let mut device = attack_shark_x3_manager::DeviceState::new(identity.clone());
         for number in ProfileId::MIN..=ProfileId::MAX {
@@ -5115,7 +5137,7 @@ mod tests {
     #[test]
     fn stored_evidence_summary_avoids_blocklist_vocabulary() {
         let profile = ProfileId::new(1).unwrap();
-        let device = DeviceId::new("test-device").expect("valid device id");
+        let device = DeviceId::new("mouse-9").expect("valid device id");
         let mut state = attack_shark_x3_manager::StateFile::default();
         for (is_ble, captured) in [(false, true), (false, false), (true, false)] {
             let summary = stored_evidence_summary(&state, &device, profile, is_ble, captured);
@@ -5125,7 +5147,7 @@ mod tests {
             );
         }
 
-        let identity = DeviceIdentity::usb(
+        let endpoint = attack_shark_x3_manager::DeviceEndpoint::usb(
             TransportKind::Wired,
             0x1234,
             0x5678,
@@ -5133,7 +5155,11 @@ mod tests {
             "summary-test-path",
             Some("summary test device"),
         )
-        .expect("valid test identity");
+        .expect("valid endpoint");
+        let identity = {
+            let id = attack_shark_x3_manager::DeviceId::new("mouse-2").expect("valid id");
+            DeviceIdentity::new(id, Some("summary test device".to_owned())).with_endpoint(endpoint)
+        };
         let applied_device = identity.id.clone();
         let mut device_state = attack_shark_x3_manager::DeviceState::new(identity);
         let mut profile_state = attack_shark_x3_manager::ProfileState::default();

@@ -171,4 +171,15 @@ pub enum ManagerError {
     /// The requested update is invalid before reaching a transport.
     #[error("invalid update: {0}")]
     InvalidUpdate(String),
+
+    /// A per-device operation could not acquire its lock within the timeout.
+    #[error(
+        "device {device} is busy: operation {operation} timed out after {timeout:?} waiting for lock at {path}"
+    )]
+    DeviceOperationBusy {
+        device: DeviceId,
+        operation: &'static str,
+        timeout: Duration,
+        path: PathBuf,
+    },
 }

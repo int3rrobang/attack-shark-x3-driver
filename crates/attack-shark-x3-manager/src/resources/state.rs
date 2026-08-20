@@ -7,8 +7,8 @@ use crate::device::{DeviceId, DeviceIdentity};
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::state::{
-    DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS, ProfileState, ResourceState,
-    StateReset, Timestamp, Verification,
+    DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS, ResourceState, StateReset,
+    Timestamp, Verification,
 };
 
 /// A profile's portable configuration values.
@@ -101,6 +101,11 @@ impl DeviceManager {
         let mut transaction = self.store().transaction()?;
         let state = transaction.state_mut();
         let device_id = identity.id.clone();
+        if let Some(num) = device_id.number() {
+            if state.next_device_number <= num {
+                state.next_device_number = num + 1;
+            }
+        }
         let device_state = state
             .devices
             .entry(device_id.clone())
@@ -109,7 +114,7 @@ impl DeviceManager {
         // document. Refresh it when importing over an existing stable ID.
         device_state.identity = identity.clone();
         if state.selected_device.is_none() {
-            state.selected_device = Some(device_id);
+            state.selected_device = Some(device_id.clone());
         }
 
         for (&profile, configuration) in &configuration.profiles {
@@ -274,20 +279,60 @@ fn set_imported<T>(resource: &mut ResourceState<T>, value: T, now: Timestamp) {
     });
 }
 
+/// Records an ACK-only write while preserving historical observation.
+///
+/// Generic over any resource value; persistence is always reset to Unknown
+/// and the old observation is kept as history. Used uniformly by DPI,
+/// preferences, buttons and polling-rate.
+pub(crate) fn record_ack<T: Clone>(resource: &mut ResourceState<T>, value: T, now: Timestamp) {
+    resource.record_ack_write(value, DesiredSource::UserWrite, now);
+}
+
+/// Records a write with immediate readback, setting verification truthfully.
+pub(crate) fn record_readback<T: Clone + PartialEq>(
+    resource: &mut ResourceState<T>,
+    desired: T,
+    observed: T,
+    now: Timestamp,
+) {
+    resource.record_readback_write(desired, observed, DesiredSource::UserWrite, now);
+}
+
+/// Reconciles a fresh observation for any resource.
+///
+/// With no desired value, only the observation is stored. With a desired
+/// value, verification is set to ReadbackVerified when equal/current,
+/// otherwise Mismatch, and persistence is always Unknown. Never infers
+/// profile-reload or power-cycle persistence.
+pub(crate) fn reconcile_observed<T: Clone + PartialEq>(
+    resource: &mut ResourceState<T>,
+    value: T,
+    now: Timestamp,
+) {
+    resource.reconcile_observation(value, now);
+}
+
+#[allow(dead_code)]
+/// Attempts to mark a resource as profile-reload verified.
+pub(crate) fn try_mark_profile_reload<T: PartialEq>(
+    resource: &mut ResourceState<T>,
+    verified_at: Timestamp,
+) -> bool {
+    resource.try_mark_profile_reload_verified(verified_at)
+}
+
+#[allow(dead_code)]
+/// Attempts to mark a resource as power-cycle verified.
+pub(crate) fn try_mark_power_cycle<T: PartialEq>(
+    resource: &mut ResourceState<T>,
+    verified_at: Timestamp,
+) -> bool {
+    resource.try_mark_power_cycle_verified(verified_at)
+}
+
 fn invalidate_device_state(device: &mut DeviceState) {
-    device.profile_metadata.invalidate_persistence();
-    for profile in device.profiles.values_mut() {
-        invalidate_profile_state(profile);
-    }
+    device.invalidate_persistence();
 }
-
-fn invalidate_profile_state(profile: &mut ProfileState) {
-    profile.dpi.invalidate_persistence();
-    profile.preferences.invalidate_persistence();
-    profile.buttons.invalidate_persistence();
-    profile.polling_rate.invalidate_persistence();
-}
-
 fn validate_configuration(configuration: &ConfigurationExport) -> Result<(), ManagerError> {
     for (&profile, values) in &configuration.profiles {
         if values
@@ -342,10 +387,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn store(dir: &tempfile::TempDir) -> StateStore {
-        StateStore::open(StatePaths {
-            state_file: dir.path().join("state.json"),
-            lock_file: dir.path().join("state.lock"),
-        })
+        StateStore::open(StatePaths::new(dir.path().join("state.json")))
     }
 
     fn identity() -> DeviceIdentity {
@@ -442,14 +484,24 @@ mod tests {
             },
             updated_at: timestamp,
         };
+        let observed_dpi = ObservedState {
+            value: dpi.clone(),
+            source: ObservationSource::UsbReadback,
+            observed_at: timestamp,
+        };
         let desired_preferences = DesiredState {
             value: preferences,
             source: DesiredSource::UserWrite,
             verification: Verification {
-                application: ApplicationVerification::Acknowledged,
+                application: ApplicationVerification::ReadbackVerified,
                 persistence: persistent.clone(),
             },
             updated_at: timestamp,
+        };
+        let observed_preferences = ObservedState {
+            value: preferences,
+            source: ObservationSource::UsbReadback,
+            observed_at: timestamp,
         };
         let desired_buttons = DesiredState {
             value: buttons,
@@ -465,6 +517,11 @@ mod tests {
             source: ObservationSource::UsbReadback,
             observed_at: timestamp,
         };
+        let observed_metadata = ObservedState {
+            value: ProfileMetadata::new(profile, profile).expect("metadata"),
+            source: ObservationSource::UsbReadback,
+            observed_at: timestamp,
+        };
         let mut transaction = store.transaction().expect("transaction");
         let device = transaction
             .state_mut()
@@ -476,23 +533,23 @@ mod tests {
                 value: ProfileMetadata::new(profile, profile).expect("metadata"),
                 source: DesiredSource::UserWrite,
                 verification: Verification {
-                    application: ApplicationVerification::Acknowledged,
+                    application: ApplicationVerification::ReadbackVerified,
                     persistence: persistent.clone(),
                 },
                 updated_at: timestamp,
             }),
-            observed: None,
+            observed: Some(observed_metadata),
         };
         device.profiles.insert(
             profile,
             crate::state::ProfileState {
                 dpi: ResourceState {
                     desired: Some(desired_dpi),
-                    observed: None,
+                    observed: Some(observed_dpi),
                 },
                 preferences: ResourceState {
                     desired: Some(desired_preferences),
-                    observed: None,
+                    observed: Some(observed_preferences),
                 },
                 buttons: ResourceState {
                     desired: Some(desired_buttons),
@@ -503,17 +560,20 @@ mod tests {
                         value: PollingRate::Hz1000,
                         source: DesiredSource::UserWrite,
                         verification: Verification {
-                            application: ApplicationVerification::Acknowledged,
+                            application: ApplicationVerification::ReadbackVerified,
                             persistence: persistent.clone(),
                         },
                         updated_at: timestamp,
                     }),
-                    observed: None,
+                    observed: Some(ObservedState {
+                        value: PollingRate::Hz1000,
+                        source: ObservationSource::UsbReadback,
+                        observed_at: timestamp,
+                    }),
                 },
             },
         );
         transaction.commit().expect("commit");
-
         manager.invalidate_state(&identity.id).expect("invalidate");
         let state = manager.store().load().expect("state");
         let device = &state.devices[&identity.id];
@@ -646,11 +706,11 @@ mod tests {
                 .is_empty()
         );
 
-        match manager.set_profile_name(&DeviceId::new("missing").expect("id"), profile, "X") {
+        match manager.set_profile_name(&DeviceId::new("mouse-2").expect("id"), profile, "X") {
             Err(ManagerError::DeviceNotFound(_)) => {}
             other => panic!("expected DeviceNotFound, got {other:?}"),
         }
-        match manager.profile_names(&DeviceId::new("missing").expect("id")) {
+        match manager.profile_names(&DeviceId::new("mouse-2").expect("id")) {
             Err(ManagerError::DeviceNotFound(_)) => {}
             other => panic!("expected DeviceNotFound, got {other:?}"),
         }

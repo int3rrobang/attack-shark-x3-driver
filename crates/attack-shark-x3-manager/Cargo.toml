@@ -23,7 +23,7 @@ tokio = { version = "1", features = ["rt", "sync", "time"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 
 [lints]
 workspace = true

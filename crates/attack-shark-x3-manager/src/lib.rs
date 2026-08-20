@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+//! Attack Shark X3 manager: logical `mouse-N` device identities, multi-transport
+//! endpoints, schema 4 durable state with `nextDeviceNumber`, strengthened
+//! evidence invariants, and per-device operation locks separate from `state.lock`.
+
 #[cfg(any(feature = "usb", feature = "ble"))]
 mod backend;
 pub mod device;
@@ -43,8 +47,8 @@ pub use resources::settings::PreferencesDelta;
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use resources::state::{ConfigurationExport, ProfileConfiguration};
 pub use state::{
-    ApplicationVerification, DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS,
-    ObservationSource, ObservedState, PersistenceVerification, ProfileState, ResourceState,
-    SCHEMA_VERSION, StateFile, StatePaths, StateReset, StateStore, StateTransaction, Timestamp,
-    Verification,
+    ApplicationVerification, DesiredSource, DesiredState, DeviceOperationGuard, DeviceState,
+    MAX_PROFILE_NAME_CHARS, ObservationSource, ObservedState, PersistenceVerification,
+    ProfileState, ResourceState, SCHEMA_VERSION, StateFile, StatePaths, StateReset, StateStore,
+    StateTransaction, Timestamp, Verification,
 };

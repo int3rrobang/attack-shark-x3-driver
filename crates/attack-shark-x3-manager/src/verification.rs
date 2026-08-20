@@ -4,14 +4,13 @@ use attack_shark_x3::driver::ProfileSnapshot;
 use attack_shark_x3::{ProfileId, ProfileMetadata, TransportKind};
 use tokio::time::{Instant, sleep};
 
-use crate::device::{DeviceId, DeviceIdentity, TransportSelection};
+use crate::device::{DeviceEndpoint, DeviceId, DeviceIdentity, TransportSelection};
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::operation::{PowerCycleVerificationOutcome, ProfileVerificationOutcome, WriteOutcome};
 use crate::state::{
     ApplicationVerification, PersistenceVerification, ProfileState, ResourceState, Verification,
 };
-
 #[cfg(not(test))]
 const POWER_CYCLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 #[cfg(test)]
@@ -88,7 +87,8 @@ impl DeviceManager {
         let persistence = mismatch
             .is_none()
             .then_some(PersistenceVerification::ProfileReloadVerified { verified_at });
-        self.persist_profile_observation(device, target, &reloaded, persistence, verified_at)?;
+        self.persist_profile_observation(device, target, &reloaded, persistence, verified_at)
+            .await?;
 
         if let Some(resource) = mismatch {
             return Err(ManagerError::VerificationMismatch {
@@ -147,13 +147,84 @@ impl DeviceManager {
         let initial = session.read_profile(target).await?;
         drop(session);
 
-        self.wait_for_power_cycle_state(device, transport, false)
-            .await?;
-        let returned_identity = self
-            .wait_for_power_cycle_state(device, transport, true)
-            .await?
+        let state = self
+            .store()
+            .load_async()
+            .await
+            .map_err(ManagerError::State)?;
+        let old_endpoint = state
+            .devices
+            .get(device)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+            .identity
+            .endpoint(transport)
+            .cloned()
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        self.refresh_device_identity(device, returned_identity)?;
+
+        self.wait_for_disappearance(device, transport, &old_endpoint)
+            .await?;
+        let reappeared_endpoint = self
+            .wait_for_reappearance_with_rebind(device, transport, &old_endpoint)
+            .await?;
+
+        // Ensure reappeared endpoint is now the stored locator before reopening.
+        // wait_for_reappearance_with_rebind already performed the unique
+        // VID/PID rebind when needed; for the same-path case no change is needed.
+        let state_after = self
+            .store()
+            .load_async()
+            .await
+            .map_err(ManagerError::State)?;
+        let stored_locator = state_after
+            .devices
+            .get(device)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+            .identity
+            .endpoint(transport)
+            .map(|endpoint| &endpoint.locator)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+        if stored_locator != &reappeared_endpoint.locator {
+            // Defensive async rebind when unique (ignore errors as original did).
+            let device_clone = device.clone();
+            let reappeared_clone = reappeared_endpoint.clone();
+            let _ = self
+                .store()
+                .mutate_async(move |state| {
+                    let device_state = match state.devices.get_mut(&device_clone) {
+                        Some(ds) => ds,
+                        None => return Err(ManagerError::DeviceNotFound(device_clone.clone())),
+                    };
+                    let stored = match device_state.identity.endpoint(transport) {
+                        Some(ep) => ep.clone(),
+                        None => {
+                            return Err(ManagerError::InvalidUpdate(format!(
+                                "no stored endpoint for {transport:?}"
+                            )));
+                        }
+                    };
+                    if reappeared_clone.locator == stored.locator {
+                        return Ok(());
+                    }
+                    if reappeared_clone.transport != transport {
+                        return Err(ManagerError::InvalidUpdate(format!(
+                            "no candidate for rebind of {device_clone} transport {transport:?}"
+                        )));
+                    }
+                    let is_usb =
+                        matches!(transport, TransportKind::Wired | TransportKind::Receiver);
+                    if is_usb
+                        && (reappeared_clone.vendor_id != stored.vendor_id
+                            || reappeared_clone.product_id != stored.product_id)
+                    {
+                        return Err(ManagerError::InvalidUpdate(format!(
+                            "no candidate for rebind of {device_clone} transport {transport:?}"
+                        )));
+                    }
+                    device_state.identity.upsert_endpoint(reappeared_clone);
+                    Ok(())
+                })
+                .await;
+        }
 
         let (reopened_identity, reopened_session) = self.open_session(device).await?;
         if reopened_identity.id != *device || reopened_session.transport() != transport {
@@ -170,7 +241,8 @@ impl DeviceManager {
         let persistence = mismatch
             .is_none()
             .then_some(PersistenceVerification::PowerCycleVerified { verified_at });
-        self.persist_profile_observation(device, target, &reloaded, persistence, verified_at)?;
+        self.persist_profile_observation(device, target, &reloaded, persistence, verified_at)
+            .await?;
 
         if let Some(resource) = mismatch {
             return Err(ManagerError::VerificationMismatch {
@@ -204,7 +276,7 @@ impl DeviceManager {
         })
     }
 
-    fn persist_profile_observation(
+    async fn persist_profile_observation(
         &self,
         device: &DeviceId,
         target: ProfileId,
@@ -212,84 +284,182 @@ impl DeviceManager {
         persistence: Option<PersistenceVerification>,
         verified_at: crate::state::Timestamp,
     ) -> Result<(), ManagerError> {
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        let profile_state = device_state
-            .profiles
-            .entry(target)
-            .or_insert_with(ProfileState::empty);
-
-        set_observed(&mut profile_state.dpi, snapshot.dpi.clone(), verified_at);
-        set_observed(
-            &mut profile_state.preferences,
-            snapshot.preferences,
-            verified_at,
-        );
-        set_observed(&mut profile_state.buttons, snapshot.buttons, verified_at);
-
-        if let Some(persistence) = persistence.as_ref() {
-            mark_persistence(&mut profile_state.dpi, &snapshot.dpi, persistence);
-            mark_persistence(
-                &mut profile_state.preferences,
-                &snapshot.preferences,
-                persistence,
-            );
-            mark_persistence(&mut profile_state.buttons, &snapshot.buttons, persistence);
-        } else {
-            invalidate_persistence(&mut profile_state.dpi);
-            invalidate_persistence(&mut profile_state.preferences);
-            invalidate_persistence(&mut profile_state.buttons);
-        }
-        transaction.state().validate()?;
-        transaction.commit()?;
+        let device_owned = device.clone();
+        let snapshot_owned = snapshot.clone();
+        let persistence_owned = persistence.clone();
+        self.store()
+            .mutate_async(move |state| {
+                let device_state = match state.devices.get_mut(&device_owned) {
+                    Some(ds) => ds,
+                    None => return Err(ManagerError::DeviceNotFound(device_owned.clone())),
+                };
+                let profile_state = device_state
+                    .profiles
+                    .entry(target)
+                    .or_insert_with(ProfileState::empty);
+                profile_state
+                    .dpi
+                    .reconcile_observation(snapshot_owned.dpi.clone(), verified_at);
+                profile_state
+                    .preferences
+                    .reconcile_observation(snapshot_owned.preferences, verified_at);
+                profile_state
+                    .buttons
+                    .reconcile_observation(snapshot_owned.buttons, verified_at);
+                if let Some(persistence_value) = persistence_owned.clone() {
+                    if profile_state.dpi.desired.as_ref().is_some_and(|desired| {
+                        desired.verification.application
+                            == ApplicationVerification::ReadbackVerified
+                    }) {
+                        if let Some(desired) = profile_state.dpi.desired.as_mut() {
+                            desired.verification.persistence = persistence_value.clone();
+                        }
+                    }
+                    if profile_state
+                        .preferences
+                        .desired
+                        .as_ref()
+                        .is_some_and(|desired| {
+                            desired.verification.application
+                                == ApplicationVerification::ReadbackVerified
+                        })
+                    {
+                        if let Some(desired) = profile_state.preferences.desired.as_mut() {
+                            desired.verification.persistence = persistence_value.clone();
+                        }
+                    }
+                    if profile_state
+                        .buttons
+                        .desired
+                        .as_ref()
+                        .is_some_and(|desired| {
+                            desired.verification.application
+                                == ApplicationVerification::ReadbackVerified
+                        })
+                    {
+                        if let Some(desired) = profile_state.buttons.desired.as_mut() {
+                            desired.verification.persistence = persistence_value;
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .await
+            .map_err(ManagerError::State)??;
         Ok(())
     }
-    async fn wait_for_power_cycle_state(
+    async fn wait_for_disappearance(
         &self,
         device: &DeviceId,
         transport: TransportKind,
-        expect_present: bool,
-    ) -> Result<Option<DeviceIdentity>, ManagerError> {
+        old_endpoint: &DeviceEndpoint,
+    ) -> Result<(), ManagerError> {
         let started = Instant::now();
         loop {
             let discovered = self
-                .list_devices(TransportSelection::Exact(transport))
+                .factory
+                .list(TransportSelection::Exact(transport))
                 .await?;
-            let exact = discovered.into_iter().find(|candidate| {
-                candidate.connected
-                    && candidate.identity.id == *device
-                    && candidate.identity.transport == transport
+            let still_present = discovered.iter().any(|candidate| {
+                candidate.connected && candidate.endpoint.locator == old_endpoint.locator
             });
-            let reached_state = if expect_present {
-                exact.is_some()
-            } else {
-                exact.is_none()
-            };
-            if reached_state {
-                return Ok(exact.map(|candidate| candidate.identity));
+            if !still_present {
+                return Ok(());
             }
-
             if started.elapsed() >= POWER_CYCLE_TIMEOUT {
-                return Err(if expect_present {
-                    ManagerError::PowerCycleReappearanceTimeout {
-                        device: device.clone(),
-                        timeout: POWER_CYCLE_TIMEOUT,
-                    }
-                } else {
-                    ManagerError::PowerCycleDisappearanceTimeout {
-                        device: device.clone(),
-                        timeout: POWER_CYCLE_TIMEOUT,
-                    }
+                return Err(ManagerError::PowerCycleDisappearanceTimeout {
+                    device: device.clone(),
+                    timeout: POWER_CYCLE_TIMEOUT,
                 });
             }
             sleep(POWER_CYCLE_POLL_INTERVAL).await;
         }
     }
 
+    async fn wait_for_reappearance_with_rebind(
+        &self,
+        device: &DeviceId,
+        transport: TransportKind,
+        old_endpoint: &DeviceEndpoint,
+    ) -> Result<DeviceEndpoint, ManagerError> {
+        let started = Instant::now();
+        loop {
+            let discovered = self
+                .factory
+                .list(TransportSelection::Exact(transport))
+                .await?;
+            if let Some(found) = discovered.iter().find(|candidate| {
+                candidate.connected && candidate.endpoint.locator == old_endpoint.locator
+            }) {
+                return Ok(found.endpoint.clone());
+            }
+            let is_usb = matches!(transport, TransportKind::Wired | TransportKind::Receiver);
+            let mut candidates: Vec<DeviceEndpoint> = discovered
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.connected && candidate.endpoint.transport == transport
+                })
+                .filter(|candidate| {
+                    if is_usb {
+                        candidate.endpoint.vendor_id == old_endpoint.vendor_id
+                            && candidate.endpoint.product_id == old_endpoint.product_id
+                    } else {
+                        true
+                    }
+                })
+                .map(|candidate| candidate.endpoint)
+                .collect();
+            candidates.sort_by(|a, b| format!("{:?}", a.locator).cmp(&format!("{:?}", b.locator)));
+            candidates.dedup_by(|a, b| a.locator == b.locator);
+            match candidates.len() {
+                0 => {}
+                1 => {
+                    let new_endpoint = candidates.into_iter().next().unwrap();
+                    let device_clone = device.clone();
+                    let new_endpoint_clone = new_endpoint.clone();
+                    self.store()
+                        .mutate_async(move |state| {
+                            let device_state = match state.devices.get_mut(&device_clone) {
+                                Some(ds) => ds,
+                                None => {
+                                    return Err(ManagerError::DeviceNotFound(device_clone.clone()));
+                                }
+                            };
+                            let stored = match device_state.identity.endpoint(transport) {
+                                Some(ep) => ep.clone(),
+                                None => {
+                                    return Err(ManagerError::InvalidUpdate(format!(
+                                        "no stored endpoint for {transport:?}"
+                                    )));
+                                }
+                            };
+                            if new_endpoint_clone.locator == stored.locator {
+                                return Ok(());
+                            }
+                            // Already filtered to unique VID/PID candidate, so directly upsert.
+                            device_state.identity.upsert_endpoint(new_endpoint_clone);
+                            Ok(())
+                        })
+                        .await
+                        .map_err(ManagerError::State)??;
+                    return Ok(new_endpoint);
+                }
+                _ => {
+                    // Ambiguous: more than one same VID/PID candidate — do not guess.
+                    // Keep polling until timeout.
+                }
+            }
+            if started.elapsed() >= POWER_CYCLE_TIMEOUT {
+                return Err(ManagerError::PowerCycleReappearanceTimeout {
+                    device: device.clone(),
+                    timeout: POWER_CYCLE_TIMEOUT,
+                });
+            }
+            sleep(POWER_CYCLE_POLL_INTERVAL).await;
+        }
+    }
+
+    #[allow(dead_code)]
     fn refresh_device_identity(
         &self,
         device: &DeviceId,
@@ -304,13 +474,22 @@ impl DeviceManager {
             .devices
             .get_mut(device)
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        if device_state.identity.transport != identity.transport {
+        let mut has_transport = false;
+        for t in identity.endpoints.keys() {
+            if device_state.identity.has_endpoint(*t) || identity.has_endpoint(*t) {
+                has_transport = true;
+                break;
+            }
+        }
+        if !has_transport {
             return Err(ManagerError::VerificationMismatch {
                 resource: "device identity",
                 profile: None,
             });
         }
-        device_state.identity = identity;
+        for endpoint in identity.endpoints.into_values() {
+            device_state.identity.upsert_endpoint(endpoint);
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -348,6 +527,7 @@ fn first_mismatch(
     }
     None
 }
+#[allow(dead_code)]
 fn set_observed<T>(
     resource: &mut ResourceState<T>,
     value: T,
@@ -360,6 +540,7 @@ fn set_observed<T>(
     });
 }
 
+#[allow(dead_code)]
 fn mark_persistence<T: Eq>(
     resource: &mut ResourceState<T>,
     readback: &T,
@@ -374,6 +555,7 @@ fn mark_persistence<T: Eq>(
     }
 }
 
+#[allow(dead_code)]
 fn invalidate_persistence<T>(resource: &mut ResourceState<T>) {
     if let Some(desired) = resource.desired.as_mut() {
         desired.verification.invalidate_persistence();
@@ -393,7 +575,7 @@ mod tests {
     use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession};
     use crate::device::DeviceIdentity;
     use crate::error::ManagerError;
-    use crate::operation::DiscoveredDevice;
+    use crate::operation::DiscoveredEndpoint;
     use crate::state::{
         ApplicationVerification, DesiredSource, DesiredState, PersistenceVerification,
         ProfileState, StateStore, Timestamp, Verification,
@@ -440,13 +622,29 @@ mod tests {
     fn manager_for(
         initial_identity: &DeviceIdentity,
         session: ScriptedFakeSession,
-        discovery_sequence: Vec<Vec<DiscoveredDevice>>,
+        discovery_sequence: Vec<Vec<DiscoveredEndpoint>>,
     ) -> (DeviceManager, Arc<ScriptedFakeFactory>) {
-        let factory = Arc::new(
-            ScriptedFakeFactory::new()
-                .with_identity(initial_identity.clone(), true, session)
-                .with_discovery_sequence(discovery_sequence),
+        let endpoint = initial_identity
+            .endpoints
+            .values()
+            .next()
+            .cloned()
+            .expect("initial must have endpoint");
+        let factory =
+            ScriptedFakeFactory::new().with_discovery_sequence(discovery_sequence.clone());
+        factory.add_endpoint(
+            DiscoveredEndpoint {
+                endpoint,
+                connected: true,
+            },
+            session.clone(),
         );
+        for seq in &discovery_sequence {
+            for disc in seq {
+                factory.add_endpoint(disc.clone(), session.clone());
+            }
+        }
+        let factory = Arc::new(factory);
         let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory.clone());
         manager
             .register_device(initial_identity.clone())
@@ -469,11 +667,17 @@ mod tests {
             persistence: PersistenceVerification::Unknown,
         };
         let updated_at = Timestamp { unix_seconds: 1 };
+        let observed_at = Timestamp { unix_seconds: 2 };
         profile_state.dpi.desired = Some(DesiredState {
             value: expected.dpi.clone(),
             source: DesiredSource::UserWrite,
             verification: verification.clone(),
             updated_at,
+        });
+        profile_state.dpi.observed = Some(crate::state::ObservedState {
+            value: expected.dpi.clone(),
+            source: crate::state::ObservationSource::UsbReadback,
+            observed_at,
         });
         profile_state.preferences.desired = Some(DesiredState {
             value: expected.preferences,
@@ -481,11 +685,21 @@ mod tests {
             verification: verification.clone(),
             updated_at,
         });
+        profile_state.preferences.observed = Some(crate::state::ObservedState {
+            value: expected.preferences,
+            source: crate::state::ObservationSource::UsbReadback,
+            observed_at,
+        });
         profile_state.buttons.desired = Some(DesiredState {
             value: expected.buttons,
             source: DesiredSource::UserWrite,
-            verification,
+            verification: verification.clone(),
             updated_at,
+        });
+        profile_state.buttons.observed = Some(crate::state::ObservedState {
+            value: expected.buttons,
+            source: crate::state::ObservationSource::UsbReadback,
+            observed_at,
         });
         transaction.commit().expect("commit desired state");
     }
@@ -495,8 +709,14 @@ mod tests {
         let initial_identity = identity(r"\\?\hid#power-cycle-old");
         let returned_identity = identity(r"\\?\hid#power-cycle-new");
         let expected = snapshot(800);
-        let returned = DiscoveredDevice {
-            identity: returned_identity.clone(),
+        let returned_endpoint = returned_identity
+            .endpoints
+            .values()
+            .next()
+            .cloned()
+            .unwrap();
+        let returned = DiscoveredEndpoint {
+            endpoint: returned_endpoint.clone(),
             connected: true,
         };
         let session = ScriptedFakeSession::usb()
@@ -515,13 +735,16 @@ mod tests {
             outcome.dpi.verification.persistence,
             PersistenceVerification::PowerCycleVerified { .. }
         ));
-        assert_eq!(
-            manager
-                .device_identity(&initial_identity.id)
-                .expect("refreshed identity")
-                .locator,
-            returned_identity.locator
-        );
+        let refreshed = manager
+            .device_identity(&initial_identity.id)
+            .expect("refreshed identity");
+        let refreshed_locator = refreshed
+            .endpoint(TransportKind::Wired)
+            .unwrap()
+            .locator
+            .clone();
+        let expected_locator = returned_endpoint.locator.clone();
+        assert_eq!(refreshed_locator, expected_locator);
         let state = manager.store().load().expect("load state");
         let profile_state = &state.devices[&initial_identity.id].profiles[&expected.target_profile];
         assert_eq!(
@@ -569,13 +792,13 @@ mod tests {
         ));
         assert!(factory.list_calls().is_empty());
     }
-
     #[tokio::test]
     async fn power_cycle_times_out_when_exact_device_never_disappears() {
         let device = identity(r"\\?\hid#power-cycle-never-away");
         let expected = snapshot(800);
-        let present = DiscoveredDevice {
-            identity: device.clone(),
+        let endpoint = device.endpoints.values().next().cloned().unwrap();
+        let present = DiscoveredEndpoint {
+            endpoint,
             connected: true,
         };
         let session = ScriptedFakeSession::usb()
@@ -619,8 +842,9 @@ mod tests {
         let device = identity(r"\\?\hid#power-cycle-mismatch");
         let expected = snapshot(800);
         let mismatched = snapshot(1600);
-        let returned = DiscoveredDevice {
-            identity: device.clone(),
+        let endpoint = device.endpoints.values().next().cloned().unwrap();
+        let returned = DiscoveredEndpoint {
+            endpoint,
             connected: true,
         };
         let session = ScriptedFakeSession::usb()
@@ -633,7 +857,6 @@ mod tests {
             .verify_power_cycle(&device.id, expected.target_profile)
             .await
             .expect_err("changed DPI must fail complete verification");
-
         assert!(matches!(
             error,
             ManagerError::VerificationMismatch {

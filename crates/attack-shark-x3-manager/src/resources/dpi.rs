@@ -1,15 +1,13 @@
 use attack_shark_x3::{DpiState, DpiValue, LiftOffDistance, ProfileId, StageIndex, TransportKind};
 use serde::{Deserialize, Serialize};
 
-use crate::backend::SessionWrite;
+use crate::backend::{DeviceSession, SessionWrite};
 use crate::device::DeviceId;
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::operation::{BaselineSource, ResourceSnapshot, UpdatePolicy, WriteOutcome};
-use crate::state::{
-    ApplicationVerification, DesiredSource, DesiredState, ObservationSource, ObservedState,
-    PersistenceVerification, ProfileState, StateFile, StateTransaction, Verification,
-};
+use crate::resources::state::{reconcile_observed, record_ack, record_readback};
+use crate::state::{ApplicationVerification, DesiredSource, ProfileState, StateFile};
 
 /// Partial DPI settings to merge into a complete profile image.
 ///
@@ -69,7 +67,7 @@ impl DeviceManager {
         device: &DeviceId,
         profile: ProfileId,
     ) -> Result<ResourceSnapshot<DpiState>, ManagerError> {
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, _endpoint, session, _guard) = self.open_locked(device, "read_dpi").await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
             return Err(unsupported("read_dpi", transport));
@@ -77,24 +75,22 @@ impl DeviceManager {
 
         let value = session.read_dpi(profile).await?;
         let now = self.now();
-        let mut transaction = self.store().transaction()?;
-        let device_state = transaction
-            .state_mut()
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
-        let profile_state = device_state
-            .profiles
-            .entry(profile)
-            .or_insert_with(ProfileState::empty);
-        profile_state.dpi.observed = Some(ObservedState {
-            value,
-            source: ObservationSource::UsbReadback,
-            observed_at: now,
-        });
-        let resource = profile_state.dpi.clone();
-        transaction.state().validate()?;
-        transaction.commit()?;
+        let device_id = device.clone();
+        let resource = self
+            .store()
+            .mutate_async(move |state| {
+                let device_state = state
+                    .devices
+                    .get_mut(&device_id)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device_id.clone()))?;
+                let profile_state = device_state
+                    .profiles
+                    .entry(profile)
+                    .or_insert_with(ProfileState::empty);
+                reconcile_observed(&mut profile_state.dpi, value, now);
+                Ok::<_, ManagerError>(profile_state.dpi.clone())
+            })
+            .await??;
 
         Ok(ResourceSnapshot { resource })
     }
@@ -113,52 +109,28 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, _endpoint, session, _guard) =
+            self.open_locked(device, "update_dpi").await?;
         let transport = session.transport();
 
         if transport == TransportKind::Ble && !policy.allow_explicit_defaults {
-            {
-                let state = self.store().load()?;
-                if !has_dpi_baseline(&state, device, profile) {
-                    return Err(ManagerError::MissingBaseline {
-                        resource: "DPI",
-                        profile: Some(profile),
-                    });
-                }
+            let state = self.store().load_async().await?;
+            if !has_dpi_baseline(&state, device, profile) {
+                return Err(ManagerError::MissingBaseline {
+                    resource: "DPI",
+                    profile: Some(profile),
+                });
             }
-
-            let write = session
-                .write_dpi(desired.clone(), policy.verification)
-                .await?;
-            let mut transaction = self.store().transaction()?;
-            let outcome = persist_dpi_write(
-                &mut transaction,
-                device,
-                profile,
-                desired,
-                write,
-                self.now(),
-            )?;
-            transaction.state().validate()?;
-            transaction.commit()?;
-            return finish_dpi_write(outcome, profile);
         }
 
-        let write = session
-            .write_dpi(desired.clone(), policy.verification)
-            .await?;
-        let mut transaction = self.store().transaction()?;
-        let outcome = persist_dpi_write(
-            &mut transaction,
+        self.write_dpi_with_session(
             device,
             profile,
             desired,
-            write,
-            self.now(),
-        )?;
-        transaction.state().validate()?;
-        transaction.commit()?;
-        finish_dpi_write(outcome, profile)
+            policy.verification,
+            session.as_ref(),
+        )
+        .await
     }
     /// Applies a sparse DPI update after resolving a complete baseline.
     ///
@@ -181,14 +153,19 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, session) = self.open_session(device).await?;
+        let (_identity, _endpoint, session, _guard) =
+            self.open_locked(device, "update_dpi_delta").await?;
         let baseline = match session.transport() {
             TransportKind::Ble => {
-                self.load_stored_dpi_baseline(device, profile, policy.allow_explicit_defaults)?
+                self.load_stored_dpi_baseline(device, profile, policy.allow_explicit_defaults)
+                    .await?
             }
             TransportKind::Wired | TransportKind::Receiver => match policy.baseline {
                 BaselineSource::Live => session.read_dpi(profile).await?,
-                BaselineSource::Stored => self.load_stored_dpi_baseline(device, profile, false)?,
+                BaselineSource::Stored => {
+                    self.load_stored_dpi_baseline(device, profile, false)
+                        .await?
+                }
             },
         };
         if baseline.profile != profile {
@@ -199,7 +176,40 @@ impl DeviceManager {
         }
 
         let desired = merge_dpi_delta(baseline, &delta)?;
-        self.update_dpi(device, profile, desired, policy).await
+        self.write_dpi_with_session(
+            device,
+            profile,
+            desired,
+            policy.verification,
+            session.as_ref(),
+        )
+        .await
+    }
+
+    async fn write_dpi_with_session(
+        &self,
+        device: &DeviceId,
+        profile: ProfileId,
+        desired: DpiState,
+        verification: crate::operation::VerificationMethod,
+        session: &dyn DeviceSession,
+    ) -> Result<WriteOutcome<DpiState>, ManagerError> {
+        if desired.profile != profile {
+            return Err(ManagerError::InvalidUpdate(
+                "DPI state profile does not match requested profile".to_owned(),
+            ));
+        }
+        let write = session.write_dpi(desired.clone(), verification).await?;
+        let now = self.now();
+        let device_id = device.clone();
+        let desired_owned = desired.clone();
+        let outcome = self
+            .store()
+            .mutate_async(move |state| {
+                persist_dpi_write(state, &device_id, profile, desired_owned, write, now)
+            })
+            .await??;
+        finish_dpi_write(outcome, profile)
     }
 
     /// Resolves the complete DPI baseline from the durable store without any
@@ -211,13 +221,13 @@ impl DeviceManager {
     /// authorized by `allow_explicit_defaults`. With no usable stored
     /// baseline and no capture authorization, `ManagerError::MissingBaseline`
     /// is returned.
-    fn load_stored_dpi_baseline(
+    async fn load_stored_dpi_baseline(
         &self,
         device: &DeviceId,
         profile: ProfileId,
         allow_explicit_defaults: bool,
     ) -> Result<DpiState, ManagerError> {
-        let state = self.store().load()?;
+        let state = self.store().load_async().await?;
         let resource = state
             .devices
             .get(device)
@@ -321,27 +331,14 @@ fn has_dpi_baseline(state: &StateFile, device: &DeviceId, profile: ProfileId) ->
 }
 
 fn persist_dpi_write(
-    transaction: &mut StateTransaction<'_>,
+    state: &mut StateFile,
     device: &DeviceId,
     profile: ProfileId,
     desired: DpiState,
     write: SessionWrite<DpiState>,
     now: crate::state::Timestamp,
 ) -> Result<WriteOutcome<DpiState>, ManagerError> {
-    let (observed, application) = match write {
-        SessionWrite::ReadbackVerified(readback) => {
-            let application = if readback == desired {
-                ApplicationVerification::ReadbackVerified
-            } else {
-                ApplicationVerification::Mismatch
-            };
-            (Some(readback), application)
-        }
-        SessionWrite::Acknowledged => (None, ApplicationVerification::Acknowledged),
-    };
-
-    let device_state = transaction
-        .state_mut()
+    let device_state = state
         .devices
         .get_mut(device)
         .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
@@ -349,33 +346,38 @@ fn persist_dpi_write(
         .profiles
         .entry(profile)
         .or_insert_with(crate::state::ProfileState::empty);
-    profile_state.dpi.desired = Some(DesiredState {
-        value: desired.clone(),
-        source: DesiredSource::UserWrite,
-        verification: Verification {
-            application,
-            persistence: PersistenceVerification::Unknown,
-        },
-        updated_at: now,
-    });
-    if let Some(readback) = observed.as_ref() {
-        profile_state.dpi.observed = Some(ObservedState {
-            value: readback.clone(),
-            source: ObservationSource::UsbReadback,
-            observed_at: now,
-        });
-    }
+    let (observed, verification) = match write {
+        SessionWrite::ReadbackVerified(readback) => {
+            let observed = readback.clone();
+            record_readback(&mut profile_state.dpi, desired.clone(), readback, now);
+            let verification = profile_state
+                .dpi
+                .desired
+                .as_ref()
+                .expect("desired must exist after record_readback")
+                .verification
+                .clone();
+            (Some(observed), verification)
+        }
+        SessionWrite::Acknowledged => {
+            record_ack(&mut profile_state.dpi, desired.clone(), now);
+            let verification = profile_state
+                .dpi
+                .desired
+                .as_ref()
+                .expect("desired must exist after record_ack")
+                .verification
+                .clone();
+            (None, verification)
+        }
+    };
 
     Ok(WriteOutcome {
         desired,
         observed,
-        verification: Verification {
-            application,
-            persistence: PersistenceVerification::Unknown,
-        },
+        verification,
     })
 }
-
 fn finish_dpi_write(
     outcome: WriteOutcome<DpiState>,
     profile: ProfileId,
@@ -407,10 +409,7 @@ mod tests {
     use std::sync::Arc;
 
     fn store(dir: &tempfile::TempDir) -> StateStore {
-        StateStore::open(StatePaths {
-            state_file: dir.path().join("state.json"),
-            lock_file: dir.path().join("state.lock"),
-        })
+        StateStore::open(StatePaths::new(dir.path().join("state.json")))
     }
 
     fn usb_identity() -> DeviceIdentity {
@@ -974,5 +973,181 @@ mod tests {
                 profile: Some(p),
             } if p == profile
         ));
+    }
+
+    #[tokio::test]
+    async fn dpi_delta_live_baseline_uses_one_session() {
+        use crate::backend::SessionFactory;
+        use crate::device::DeviceEndpoint;
+        use crate::operation::DiscoveredEndpoint;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingFactory {
+            inner: ScriptedFakeFactory,
+            opens: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait(?Send)]
+        impl SessionFactory for CountingFactory {
+            async fn list(
+                &self,
+                selection: crate::device::TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+                self.inner.list(selection).await
+            }
+
+            async fn open(
+                &self,
+                endpoint: &DeviceEndpoint,
+            ) -> Result<Box<dyn crate::backend::DeviceSession>, ManagerError> {
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                self.inner.open(endpoint).await
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let profile = ProfileId::new(1).unwrap();
+        let baseline = dpi(profile, 800);
+        let opens = Arc::new(AtomicUsize::new(0));
+        let inner = ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            ScriptedFakeSession::usb().with_profile(snapshot(profile, baseline.clone())),
+        );
+        let factory = Arc::new(CountingFactory {
+            inner,
+            opens: opens.clone(),
+        });
+        let manager = DeviceManager::with_store_and_factory(store, factory);
+        manager.register_device(identity).unwrap();
+
+        let result = manager
+            .update_dpi_delta(
+                &device,
+                profile,
+                DpiDelta {
+                    active_stage: Some(StageIndex::new(1).unwrap()),
+                    ..DpiDelta::default()
+                },
+                UpdatePolicy::default(),
+            )
+            .await;
+        assert!(
+            !matches!(
+                result.as_ref().err(),
+                Some(ManagerError::DeviceOperationBusy { .. })
+            ),
+            "live baseline must not trigger nested lock, got {result:?}"
+        );
+        result.unwrap();
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            1,
+            "live DPI delta must open exactly one session"
+        );
+    }
+
+    #[tokio::test]
+    async fn dpi_delta_stored_baseline_uses_one_session() {
+        use crate::backend::SessionFactory;
+        use crate::device::DeviceEndpoint;
+        use crate::operation::DiscoveredEndpoint;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingFactory {
+            inner: ScriptedFakeFactory,
+            opens: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait(?Send)]
+        impl SessionFactory for CountingFactory {
+            async fn list(
+                &self,
+                selection: crate::device::TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+                self.inner.list(selection).await
+            }
+
+            async fn open(
+                &self,
+                endpoint: &DeviceEndpoint,
+            ) -> Result<Box<dyn crate::backend::DeviceSession>, ManagerError> {
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                self.inner.open(endpoint).await
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let profile = ProfileId::new(1).unwrap();
+        let mut stored_baseline = dpi(profile, 800);
+        stored_baseline.preserved_tail = [0x22; 25];
+        stored_baseline.sensor.ripple_control = true;
+        let opens = Arc::new(AtomicUsize::new(0));
+        let inner = ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            ScriptedFakeSession::usb(),
+        );
+        let factory = Arc::new(CountingFactory {
+            inner,
+            opens: opens.clone(),
+        });
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        let mut txn = store.transaction().unwrap();
+        let profile_state = txn
+            .state_mut()
+            .devices
+            .get_mut(&device)
+            .unwrap()
+            .profiles
+            .entry(profile)
+            .or_default();
+        profile_state.dpi.desired = Some(DesiredState {
+            value: stored_baseline.clone(),
+            source: DesiredSource::UserWrite,
+            verification: Verification::not_sent(),
+            updated_at: Timestamp::default(),
+        });
+        txn.commit().unwrap();
+
+        let result = manager
+            .update_dpi_delta(
+                &device,
+                profile,
+                DpiDelta {
+                    sensor: Some(SensorOptionsDelta {
+                        motion_sync: Some(true),
+                        ..SensorOptionsDelta::default()
+                    }),
+                    ..DpiDelta::default()
+                },
+                UpdatePolicy {
+                    baseline: BaselineSource::Stored,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await;
+        assert!(
+            !matches!(
+                result.as_ref().err(),
+                Some(ManagerError::DeviceOperationBusy { .. })
+            ),
+            "stored baseline must not trigger nested lock, got {result:?}"
+        );
+        let outcome = result.unwrap();
+        assert_eq!(outcome.desired.sensor.motion_sync, true);
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            1,
+            "stored DPI delta must open exactly one session"
+        );
     }
 }

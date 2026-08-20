@@ -369,10 +369,15 @@ async fn dispatch(
                 devices
                     .iter()
                     .map(|device| {
+                        let transport_label = device
+                            .identity
+                            .selected_transport()
+                            .map(format_transport)
+                            .unwrap_or("unknown");
                         format!(
                             "{} [{}] {}",
                             device.identity.id,
-                            format_transport(device.identity.transport),
+                            transport_label,
                             if device.connected {
                                 "connected"
                             } else {
@@ -1095,10 +1100,14 @@ fn cli_profile_resource_name(resource: &ProfileResourceKind) -> &'static str {
 }
 
 fn format_status_human(status: &DeviceStatus) -> String {
+    let transport_label = status
+        .identity
+        .selected_endpoint()
+        .map(|endpoint| format_transport(endpoint.transport))
+        .unwrap_or("unknown");
     let mut text = format!(
         "Status for {}\n  transport: {}",
-        status.identity.id,
-        format_transport(status.identity.transport)
+        status.identity.id, transport_label
     );
     if let Some(battery) = status.battery {
         text.push_str(&format!("\n  battery:   {battery}%"));
