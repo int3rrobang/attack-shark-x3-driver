@@ -780,11 +780,8 @@ mod tests {
         assert_eq!(target.current().get(), 2);
         assert_eq!(target.maximum().get(), 4);
 
-        let full = ProfileMetadata::new(
-            ProfileId::new(1).expect("profile 1"),
-            ProfileId::new(ProfileId::MAX).expect("profile maximum"),
-        )
-        .expect("valid metadata");
+        let full =
+            ProfileMetadata::new(ProfileId::MIN_ID, ProfileId::MAX_ID).expect("valid metadata");
         assert!(add_tail_metadata(full).is_none());
     }
 

@@ -528,7 +528,7 @@ impl DeviceManager {
                 .maximum()
                 .max(profile)
         } else {
-            ProfileId::new(ProfileId::MAX).expect("ProfileId::MAX must be valid")
+            ProfileId::MAX_ID
         };
         let target = ProfileMetadata::new(profile, maximum)
             .map_err(|error| ManagerError::Driver(error.into()))?;

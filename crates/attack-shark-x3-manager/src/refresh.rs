@@ -34,7 +34,7 @@ impl DeviceManager {
         }
 
         let original_metadata = session.read_profile_metadata().await?;
-        let maximum = ProfileId::new(ProfileId::MAX).expect("ProfileId::MAX must be valid");
+        let maximum = ProfileId::MAX_ID;
         let expanded_metadata = ProfileMetadata::new(original_metadata.current(), maximum)
             .map_err(|source| ManagerError::Protocol {
                 operation: "profile metadata",

@@ -769,8 +769,8 @@ impl BleSession {
         if self.closed {
             return Err(BleError::Disconnected);
         }
-        let report_id = *packet.first().ok_or(BleError::MalformedAck)?;
-        #[cfg(windows)]
+        debug_assert!(!packet.is_empty(), "typed BleReport is always non-empty");
+        let report_id = packet[0];
         let result = self
             .windows_session
             .write(report_id, packet, self.policy.ack_timeout)

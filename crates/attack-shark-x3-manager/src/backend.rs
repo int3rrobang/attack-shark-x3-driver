@@ -159,18 +159,17 @@ async fn open_usb_session(
     kind: UsbDeviceKind,
 ) -> Result<Box<dyn DeviceSession>, ManagerError> {
     let DeviceLocator::UsbPath(path) = &endpoint.locator else {
+        debug_assert!(false, "USB open expected UsbPath locator");
         return Err(ManagerError::InvalidUpdate(format!(
             "USB open expected UsbPath locator for transport {:?}, got {:?}",
             endpoint.transport, endpoint.locator
         )));
     };
-    if endpoint.transport != kind.transport_kind() {
-        return Err(ManagerError::InvalidUpdate(format!(
-            "USB open expected transport {:?}, got {:?} for locator {path}",
-            kind.transport_kind(),
-            endpoint.transport
-        )));
-    }
+    debug_assert_eq!(
+        endpoint.transport,
+        kind.transport_kind(),
+        "USB transport mismatch"
+    );
     let handle = MouseHandle::open_for_kind(DeviceSelector::path(path.clone()), kind)?;
     Ok(Box::new(UsbSession {
         handle,
@@ -183,17 +182,17 @@ async fn open_ble_session(
     endpoint: &DeviceEndpoint,
 ) -> Result<Box<dyn DeviceSession>, ManagerError> {
     let DeviceLocator::BlePlatformId(serialized_id) = &endpoint.locator else {
+        debug_assert!(false, "BLE open expected BlePlatformId locator");
         return Err(ManagerError::InvalidUpdate(format!(
             "BLE open expected BlePlatformId locator for transport {:?}, got {:?}",
             endpoint.transport, endpoint.locator
         )));
     };
-    if endpoint.transport != TransportKind::Ble {
-        return Err(ManagerError::InvalidUpdate(format!(
-            "BLE open expected transport Ble, got {:?} for id {serialized_id}",
-            endpoint.transport
-        )));
-    }
+    debug_assert_eq!(
+        endpoint.transport,
+        TransportKind::Ble,
+        "BLE transport mismatch"
+    );
     let id: BleDeviceId = serde_json::from_str(serialized_id)
         .map_err(|error| ManagerError::State(StateError::Serde(error)))?;
     let handle = BleHandle::open(BleSelector::Device(id)).await?;
@@ -620,7 +619,7 @@ impl ScriptedFakeSession {
             profile_sequences: Arc::new(Mutex::new(BTreeMap::new())),
             last_profiles: Arc::new(Mutex::new(BTreeMap::new())),
             polling_rates: Arc::new(Mutex::new(BTreeMap::new())),
-            live_profile: Arc::new(Mutex::new(ProfileId::new(1).expect("profile 1 valid"))),
+            live_profile: Arc::new(Mutex::new(ProfileId::MIN_ID)),
             last_polling_alias: Arc::new(Mutex::new(None)),
             battery: Arc::new(Mutex::new(None)),
             writes: Arc::new(Mutex::new(Vec::new())),

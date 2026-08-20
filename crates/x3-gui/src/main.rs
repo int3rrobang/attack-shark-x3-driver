@@ -169,7 +169,10 @@ fn install_callbacks(
                 );
                 return;
             }
-            let Some(device) = ui.get_devices().row_data(row.max(0) as usize) else {
+            if row < 0 {
+                return;
+            }
+            let Some(device) = ui.get_devices().row_data(row as usize) else {
                 return;
             };
             if !device.connected {
@@ -195,7 +198,10 @@ fn install_callbacks(
                 ui.set_status_text("discard the current draft before switching profiles".into());
                 return;
             }
-            let Some(row) = profiles.row_data(selected.max(0) as usize) else {
+            if selected < 0 {
+                return;
+            }
+            let Some(row) = profiles.row_data(selected as usize) else {
                 return;
             };
             if !row.enabled {
@@ -1139,9 +1145,7 @@ fn install_callbacks(
         });
     }
     {
-        let weak = ui.as_weak();
         ui.on_close_app(move || {
-            let _ = weak.upgrade();
             let _ = slint::quit_event_loop();
         });
     }

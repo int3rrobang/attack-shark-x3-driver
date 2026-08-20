@@ -96,9 +96,7 @@ impl FeatureTransport for HidFeatureTransport {
     }
 
     fn get_feature_report(&mut self, report_id: u8, buffer: &mut [u8]) -> Result<usize, String> {
-        if buffer.is_empty() {
-            return Ok(0);
-        }
+        debug_assert!(!buffer.is_empty(), "empty feature-report buffer");
         buffer.fill(0);
         buffer[0] = report_id;
         self.device

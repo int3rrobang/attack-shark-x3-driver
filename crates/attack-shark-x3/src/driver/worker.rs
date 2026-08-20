@@ -176,12 +176,7 @@ impl Worker {
     }
 
     fn send_preferences(&mut self, state: &PreferencesState) -> Result<(), DriverError> {
-        let framing = match self.transport_kind {
-            TransportKind::Receiver | TransportKind::Wired | TransportKind::Ble => {
-                crate::PreferencesFraming::Compact
-            }
-        };
-        let report = PreferencesReport::encode_framed(state, framing);
+        let report = PreferencesReport::encode_framed(state, crate::PreferencesFraming::Compact);
         self.transport
             .send_feature_report(report.as_bytes())
             .map_err(DriverError::Transport)

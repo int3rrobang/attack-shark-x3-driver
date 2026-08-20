@@ -370,19 +370,14 @@ impl DeviceManager {
             }) {
                 return Ok(found.endpoint.clone());
             }
-            let is_usb = matches!(transport, TransportKind::Wired | TransportKind::Receiver);
             let mut candidates: Vec<DeviceEndpoint> = discovered
                 .into_iter()
                 .filter(|candidate| {
                     candidate.connected && candidate.endpoint.transport == transport
                 })
                 .filter(|candidate| {
-                    if is_usb {
-                        candidate.endpoint.vendor_id == old_endpoint.vendor_id
-                            && candidate.endpoint.product_id == old_endpoint.product_id
-                    } else {
-                        true
-                    }
+                    candidate.endpoint.vendor_id == old_endpoint.vendor_id
+                        && candidate.endpoint.product_id == old_endpoint.product_id
                 })
                 .map(|candidate| candidate.endpoint)
                 .collect();

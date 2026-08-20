@@ -355,24 +355,24 @@ impl StateStore {
         let deadline = std::time::Instant::now() + timeout;
         let backend = Arc::clone(&self.backend);
         loop {
-            if let StoreBackend::Memory(mem) = backend.as_ref() {
-                let mut set = lock_memory_hashset(&mem.op_locks);
-                if !set.contains(&key) {
-                    set.insert(key.clone());
-                    drop(set);
-                    return Ok(DeviceOperationGuard {
-                        device: device.clone(),
-                        path,
-                        backend: OperationGuardBackend::Memory {
-                            key: key.clone(),
-                            backend: Arc::clone(&backend),
-                        },
-                    });
-                }
-            } else {
+            let StoreBackend::Memory(mem) = backend.as_ref() else {
+                debug_assert!(false, "memory operation lock called on disk backend");
                 return Err(ManagerError::State(StateError::invalid_state(
                     "memory operation lock called on disk backend",
                 )));
+            };
+            let mut set = lock_memory_hashset(&mem.op_locks);
+            if !set.contains(&key) {
+                set.insert(key.clone());
+                drop(set);
+                return Ok(DeviceOperationGuard {
+                    device: device.clone(),
+                    path,
+                    backend: OperationGuardBackend::Memory {
+                        key: key.clone(),
+                        backend: Arc::clone(&backend),
+                    },
+                });
             }
             if std::time::Instant::now() >= deadline {
                 return Err(ManagerError::DeviceOperationBusy {
@@ -787,9 +787,11 @@ impl DeviceOperationGuard {
 
 impl Drop for DeviceOperationGuard {
     fn drop(&mut self) {
-        if let OperationGuardBackend::Memory { key, backend } = &self.backend
-            && let StoreBackend::Memory(mem) = backend.as_ref()
-        {
+        if let OperationGuardBackend::Memory { key, backend } = &self.backend {
+            let StoreBackend::Memory(mem) = backend.as_ref() else {
+                debug_assert!(false, "memory guard on disk backend");
+                return;
+            };
             let mut set = lock_memory_hashset(&mem.op_locks);
             set.remove(key);
         }

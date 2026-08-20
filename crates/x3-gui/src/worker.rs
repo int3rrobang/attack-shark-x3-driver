@@ -1205,11 +1205,7 @@ fn read_ble_loaded(
     let polling_rate = profile_state
         .and_then(|profile| stored_value(&profile.polling_rate))
         .unwrap_or(PollingRate::Hz1000);
-    let metadata = ProfileMetadata::new(
-        working,
-        ProfileId::new(ProfileId::MAX).expect("profile maximum must be valid"),
-    )
-    .map_err(|error| ManagerError::InvalidUpdate(error.to_string()))?;
+    let metadata = ProfileMetadata::new(working, ProfileId::MAX_ID).expect("valid metadata");
     let all_profiles_observed = false;
     let profile_names = manager.profile_names(&identity.id).unwrap_or_default();
     let verification_summary =

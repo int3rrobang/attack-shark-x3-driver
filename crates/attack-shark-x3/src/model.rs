@@ -19,6 +19,8 @@ pub struct ProfileId(u8);
 impl ProfileId {
     pub const MIN: u8 = 1;
     pub const MAX: u8 = 5;
+    pub const MIN_ID: Self = Self(Self::MIN);
+    pub const MAX_ID: Self = Self(Self::MAX);
 
     /// Creates a profile identifier when `value` is in the supported range.
     #[must_use]
@@ -36,7 +38,6 @@ impl ProfileId {
         self.0
     }
 }
-
 impl TryFrom<u8> for ProfileId {
     type Error = ProtocolError;
 

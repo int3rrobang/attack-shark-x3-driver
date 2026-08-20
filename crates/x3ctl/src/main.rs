@@ -221,7 +221,7 @@ fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
             StateCommand::Invalidate => Ok(Action::StateInvalidate),
             StateCommand::Reset => Ok(Action::StateReset),
         },
-        Command::Debug(_) => Err("debug commands are handled offline".into()),
+        Command::Debug(_) => unreachable!("debug commands are handled offline before build_action"),
     }
 }
 
@@ -820,9 +820,7 @@ fn parse_dpi_stages(raw: &Option<String>) -> Result<Option<Vec<DpiValue>>, Strin
         let dpi = DpiValue::try_from(value).map_err(|error| error.to_string())?;
         values.push(dpi);
     }
-    if values.is_empty() {
-        return Err("DPI stages must not be empty".into());
-    }
+    debug_assert!(!values.is_empty(), "empty DPI stages already rejected");
     if values.len() > 8 {
         return Err("DPI supports at most eight stages".into());
     }
