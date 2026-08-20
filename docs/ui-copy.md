@@ -76,7 +76,7 @@ When a stronger tier is not yet proven, say **"not yet confirmed"** — never
 | invalidate persistence evidence / state | reset saved confirmation / clear saved status |
 | schema version / state file | local data |
 | packet / byte / ACK / report `0x06` | (drop; describe the effect) |
-| no write was attempted / no retry was attempted | (drop) or "Nothing was changed." |
+| protocol error / device-operation lock timeout | that change isn't valid / the mouse is busy; try again |
 
 ## Blocklist
 
@@ -88,7 +88,12 @@ debug output (`x3ctl debug ...`), which is intentionally a raw surface:
 `readback`, `persistence` (use "survives restart"), `baseline`, `observed`,
 `desired`, `drift`, `evidence`, `preflight`, `submission`, `schema`,
 `unverified`, `"no ... was attempted"`, `"definitive proof"`, `report 0x06`,
-`ACK`, `packet`.
+`ACK`, `packet`, `byte`.
+
+Copy tests apply this blocklist only to strings shown in normal UI or human
+output. Do not run it over `Debug` values, raw diagnostic fields, JSON, code
+comments, or test fixture labels; those surfaces intentionally retain exact
+engineering terms.
 
 The buttons **Verify profile reload** / **Verify power cycle** and the card
 title **save verification** are borderline: keep the "Verify" verb, but prefer
