@@ -101,10 +101,10 @@ impl DeviceManager {
         let mut transaction = self.store().transaction()?;
         let state = transaction.state_mut();
         let device_id = identity.id.clone();
-        if let Some(num) = device_id.number() {
-            if state.next_device_number <= num {
-                state.next_device_number = num + 1;
-            }
+        if let Some(num) = device_id.number()
+            && state.next_device_number <= num
+        {
+            state.next_device_number = num + 1;
         }
         let device_state = state
             .devices

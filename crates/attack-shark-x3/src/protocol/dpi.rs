@@ -429,17 +429,10 @@ fn decode_framing(transport: TransportKind, actual: usize) -> Result<DpiFraming,
 const fn expected_length_for_error(transport: TransportKind, actual: usize) -> usize {
     match transport {
         TransportKind::Ble => DPI_WIRED_LENGTH,
-        TransportKind::Wired | TransportKind::Receiver => {
-            if actual == DPI_WIRED_LENGTH || actual == DPI_RECEIVER_LENGTH {
-                DPI_WIRED_LENGTH
-            } else if actual < DPI_WIRED_LENGTH {
-                DPI_WIRED_LENGTH
-            } else if actual < DPI_RECEIVER_LENGTH {
-                DPI_RECEIVER_LENGTH
-            } else {
-                DPI_RECEIVER_LENGTH
-            }
-        }
+        TransportKind::Wired | TransportKind::Receiver => match actual {
+            0..=DPI_WIRED_LENGTH => DPI_WIRED_LENGTH,
+            _ => DPI_RECEIVER_LENGTH,
+        },
     }
 }
 

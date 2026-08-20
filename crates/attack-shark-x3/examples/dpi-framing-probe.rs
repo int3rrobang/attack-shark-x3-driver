@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let backup_snapshot = handle.read_profile(profile).await?;
     settle("profile read").await;
     let backup_dpi = backup_snapshot.dpi.clone();
-    let backup_prefs = backup_snapshot.preferences.clone();
+    let backup_prefs = backup_snapshot.preferences;
     let backup_rate = handle.read_live_polling_rate(profile).await?;
     settle("polling-rate read (live, alias is wire side effect)").await;
     println!("DPI stages: {:?}", backup_dpi.stages);

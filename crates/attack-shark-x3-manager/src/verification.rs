@@ -77,10 +77,7 @@ impl DeviceManager {
         // still make the best effort to restore the original profile. A
         // restoration error is always more important than the triggering error.
         if let Err(error) = write_exact_metadata(session.as_ref(), away_metadata).await {
-            // Attempt exact restoration; prioritize restoration error.
-            if let Err(restore_err) = write_exact_metadata(session.as_ref(), original).await {
-                return Err(restore_err);
-            }
+            write_exact_metadata(session.as_ref(), original).await?;
             return Err(error);
         }
 
@@ -99,12 +96,9 @@ impl DeviceManager {
             read_complete_profile(session.as_ref(), target).await
         }
         .await;
-
         let restore_result = write_exact_metadata(session.as_ref(), original).await;
         // Restoration error remains higher priority.
-        if let Err(restore_err) = restore_result {
-            return Err(restore_err);
-        }
+        restore_result?;
         let (reloaded_snapshot, reloaded_rate) = reloaded_result?;
 
         let mismatch = first_mismatch(

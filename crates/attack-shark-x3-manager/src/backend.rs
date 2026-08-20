@@ -1277,7 +1277,7 @@ mod tests {
                     .expect("valid metadata"),
                 dpi: snapshot().dpi.clone(),
                 preferences: snapshot().preferences,
-                buttons: snapshot().buttons.clone(),
+                buttons: snapshot().buttons,
             })
             .with_polling_rate_for(profile(1), PollingRate::Hz500)
             .with_polling_rate_for(profile(2), PollingRate::Hz1000)
@@ -1322,7 +1322,7 @@ mod tests {
                     .expect("valid metadata"),
                 dpi: snapshot().dpi.clone(),
                 preferences: snapshot().preferences,
-                buttons: snapshot().buttons.clone(),
+                buttons: snapshot().buttons,
             })
             .with_polling_rate_for(profile(1), PollingRate::Hz1000)
             .with_polling_rate_for(profile(2), PollingRate::Hz500)

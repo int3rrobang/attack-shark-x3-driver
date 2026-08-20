@@ -848,11 +848,11 @@ impl DeviceOperationGuard {
 
 impl Drop for DeviceOperationGuard {
     fn drop(&mut self) {
-        if let OperationGuardBackend::Memory { key, backend } = &self.backend {
-            if let StoreBackend::Memory(mem) = backend.as_ref() {
-                let mut set = lock_memory_hashset(&mem.op_locks);
-                set.remove(key);
-            }
+        if let OperationGuardBackend::Memory { key, backend } = &self.backend
+            && let StoreBackend::Memory(mem) = backend.as_ref()
+        {
+            let mut set = lock_memory_hashset(&mem.op_locks);
+            set.remove(key);
         }
     }
 }

@@ -643,12 +643,8 @@ impl PreferencesReport {
 }
 
 const fn expected_preferences_length_for_error(actual: usize) -> usize {
-    if actual == PREFERENCES_COMPACT_LENGTH || actual == PREFERENCES_FULL_LENGTH {
+    if actual <= PREFERENCES_COMPACT_LENGTH || actual == PREFERENCES_FULL_LENGTH {
         PREFERENCES_COMPACT_LENGTH
-    } else if actual < PREFERENCES_COMPACT_LENGTH {
-        PREFERENCES_COMPACT_LENGTH
-    } else if actual < PREFERENCES_FULL_LENGTH {
-        PREFERENCES_FULL_LENGTH
     } else {
         PREFERENCES_FULL_LENGTH
     }

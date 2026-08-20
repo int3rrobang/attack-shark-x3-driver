@@ -155,7 +155,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // --- Restoration is attempted on every post-write exit ---
         if did_write {
             println!("\n  Restoring original button mapping...");
-            match handle.write_buttons(original.clone()).await {
+            match handle.write_buttons(original).await {
                 Ok(restored) => {
                     if restored != original {
                         eprintln!(

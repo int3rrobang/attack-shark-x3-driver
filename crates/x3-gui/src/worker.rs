@@ -809,10 +809,28 @@ pub fn worker_main(
                 } => {
                     match ev {
                         Ok(event) => {
-                            handle_device_event(&mut loaded, &mut manager, event, &weak, &mut discovered, &mut selected, &mut events, &mut subscriptions).await;
+                            let mut ctx = DeviceEventContext {
+                                loaded: &mut loaded,
+                                manager: &mut manager,
+                                discovered: &mut discovered,
+                                selected: &mut selected,
+                                events: &mut events,
+                                subscriptions: &mut subscriptions,
+                                weak: &weak,
+                            };
+                            handle_device_event(&mut ctx, event).await;
                         }
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            handle_device_event(&mut loaded, &mut manager, DeviceEvent::Lagged { skipped }, &weak, &mut discovered, &mut selected, &mut events, &mut subscriptions).await;
+                            let mut ctx = DeviceEventContext {
+                                loaded: &mut loaded,
+                                manager: &mut manager,
+                                discovered: &mut discovered,
+                                selected: &mut selected,
+                                events: &mut events,
+                                subscriptions: &mut subscriptions,
+                                weak: &weak,
+                            };
+                            handle_device_event(&mut ctx, DeviceEvent::Lagged { skipped }).await;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             clear_loaded_context(&mut loaded, &mut events, &mut subscriptions);
@@ -847,58 +865,76 @@ async fn subscribe_and_hold(
     loaded
 }
 
-async fn handle_device_event(
-    loaded: &mut Option<LoadedDevice>,
-    manager: &mut Option<DeviceManager>,
-    event: DeviceEvent,
-    weak: &slint::Weak<AppWindow>,
-    discovered: &mut [DiscoveredDevice],
-    selected: &mut Option<DeviceId>,
-    events: &mut Option<broadcast::Receiver<DeviceEvent>>,
-    subscriptions: &mut Option<EventSubscriptions>,
-) {
+struct DeviceEventContext<'a> {
+    loaded: &'a mut Option<LoadedDevice>,
+    manager: &'a mut Option<DeviceManager>,
+    discovered: &'a mut [DiscoveredDevice],
+    selected: &'a mut Option<DeviceId>,
+    events: &'a mut Option<broadcast::Receiver<DeviceEvent>>,
+    subscriptions: &'a mut Option<EventSubscriptions>,
+    weak: &'a slint::Weak<AppWindow>,
+}
+
+async fn handle_device_event(ctx: &mut DeviceEventContext<'_>, event: DeviceEvent) {
     match event {
         DeviceEvent::BatteryChanged(e) => {
-            if let Some(dev) = loaded.as_mut() {
+            if let Some(dev) = ctx.loaded.as_mut() {
                 dev.battery = Some(e.level);
-                emit_event_snapshot(weak, dev, "device battery level changed");
+                emit_event_snapshot(ctx.weak, dev, "device battery level changed");
             }
         }
         DeviceEvent::ActiveDpiStageChanged(e) => {
-            if let Some(dev) = loaded.as_mut() {
+            if let Some(dev) = ctx.loaded.as_mut() {
                 dev.profile.dpi.active_stage = e.active_stage;
-                emit_event_snapshot(weak, dev, "active DPI stage changed on device");
+                emit_event_snapshot(ctx.weak, dev, "active DPI stage changed on device");
             }
         }
         DeviceEvent::ProfileChanged(_)
         | DeviceEvent::ProfileSync(_)
         | DeviceEvent::SecondaryProfileChanged(_) => {
-            if let (Some(dev), Some(mgr)) = (loaded.as_mut(), manager.as_ref())
+            if let (Some(dev), Some(mgr)) = (ctx.loaded.as_mut(), ctx.manager.as_ref())
                 && let Some(profile) = reported_profile_switch(event, dev.metadata.current())
             {
                 match select_profile(mgr, dev, profile.get()).await {
                     Ok(new_loaded) => {
-                        *loaded = Some(new_loaded);
-                        if let Some(ready) = loaded.as_ref() {
+                        *ctx.loaded = Some(new_loaded);
+                        if let Some(ready) = ctx.loaded.as_ref() {
                             emit_event_snapshot(
-                                weak,
+                                ctx.weak,
                                 ready,
                                 "device profile changed; state reloaded",
                             );
                         }
                     }
-                    Err(error) => emit(weak, UiEvent::Error(error)),
+                    Err(error) => emit(ctx.weak, UiEvent::Error(error)),
                 }
             }
         }
         DeviceEvent::Disconnected => {
-            handle_disconnect(loaded, discovered, selected, weak, events, subscriptions);
+            handle_disconnect(
+                ctx.loaded,
+                ctx.discovered,
+                ctx.selected,
+                ctx.weak,
+                ctx.events,
+                ctx.subscriptions,
+            );
         }
         DeviceEvent::ConnectionChanged(e) if !e.connected => {
-            handle_disconnect(loaded, discovered, selected, weak, events, subscriptions);
+            handle_disconnect(
+                ctx.loaded,
+                ctx.discovered,
+                ctx.selected,
+                ctx.weak,
+                ctx.events,
+                ctx.subscriptions,
+            );
         }
         DeviceEvent::Lagged { skipped } => {
-            emit(weak, UiEvent::OperationError(lagged_event_message(skipped)));
+            emit(
+                ctx.weak,
+                UiEvent::OperationError(lagged_event_message(skipped)),
+            );
         }
         _ => {}
     }
@@ -914,22 +950,15 @@ fn handle_disconnect(
     events: &mut Option<broadcast::Receiver<DeviceEvent>>,
     subscriptions: &mut Option<EventSubscriptions>,
 ) {
-    let Some(dev) = loaded.as_ref() else {
+    if loaded.is_none() {
         return;
-    };
-    if let Some(entry) = discovered
-        .iter_mut()
-        .find(|entry| entry.identity.id == dev.device)
-    {
-        entry.connected = false;
     }
-    if let Some(dev) = loaded.as_ref() {
-        if let Some(entry) = discovered
+    if let Some(dev) = loaded.as_ref()
+        && let Some(entry) = discovered
             .iter_mut()
             .find(|entry| entry.identity.id == dev.device)
-        {
-            entry.connected = false;
-        }
+    {
+        entry.connected = false;
     }
     clear_loaded_context(loaded, events, subscriptions);
     *selected = None;
@@ -1000,7 +1029,7 @@ fn emit_devices(
 fn open_manager() -> Result<DeviceManager, StartupError> {
     let store = StateStore::with_default_paths()
         .map_err(|error| StartupError::Message(format!("could not open local data: {error}")))?;
-    if let Err(_) = store.load() {
+    if store.load().is_err() {
         return Err(StartupError::UnreadableState(format!(
             "The app couldn't read its local data at {}. Reset it to continue; a backup will be kept.",
             store.paths().state_file().display()
@@ -1819,17 +1848,16 @@ mod tests {
         let mut discovered: Vec<DiscoveredDevice> = Vec::new();
         let mut selected: Option<DeviceId> = None;
         let weak = slint::Weak::<AppWindow>::default();
-        handle_device_event(
-            &mut loaded,
-            &mut manager,
-            DeviceEvent::Lagged { skipped: 3 },
-            &weak,
-            &mut discovered,
-            &mut selected,
-            &mut events,
-            &mut subs,
-        )
-        .await;
+        let mut ctx = DeviceEventContext {
+            loaded: &mut loaded,
+            manager: &mut manager,
+            discovered: &mut discovered,
+            selected: &mut selected,
+            events: &mut events,
+            subscriptions: &mut subs,
+            weak: &weak,
+        };
+        handle_device_event(&mut ctx, DeviceEvent::Lagged { skipped: 3 }).await;
         assert!(
             loaded.is_some(),
             "missed updates should keep loaded context"
@@ -1901,9 +1929,7 @@ mod tests {
         });
         let outcome: Option<&str> = tokio::select! {
             res = power_cycle => Some(res),
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() { None } else { None }
-            }
+            _ = shutdown_rx.changed() => None,
             _ = cmd_rx.recv() => None,
         };
         let elapsed = start.elapsed();

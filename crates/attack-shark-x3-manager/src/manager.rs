@@ -51,11 +51,11 @@ impl DeviceManager {
                 for disc in &discovered {
                     let mut found: Option<DeviceId> = None;
                     for (id, dev_state) in state.devices.iter() {
-                        if let Some(ep) = dev_state.identity.endpoint(disc.endpoint.transport) {
-                            if ep.locator == disc.endpoint.locator {
-                                found = Some(id.clone());
-                                break;
-                            }
+                        if let Some(ep) = dev_state.identity.endpoint(disc.endpoint.transport)
+                            && ep.locator == disc.endpoint.locator
+                        {
+                            found = Some(id.clone());
+                            break;
                         }
                     }
                     if let Some(id) = found {
@@ -87,11 +87,11 @@ impl DeviceManager {
         for disc in discovered {
             let mut found_identity: Option<DeviceIdentity> = None;
             for dev_state in state.devices.values() {
-                if let Some(ep) = dev_state.identity.endpoint(disc.endpoint.transport) {
-                    if ep.locator == disc.endpoint.locator {
-                        found_identity = Some(dev_state.identity.clone());
-                        break;
-                    }
+                if let Some(ep) = dev_state.identity.endpoint(disc.endpoint.transport)
+                    && ep.locator == disc.endpoint.locator
+                {
+                    found_identity = Some(dev_state.identity.clone());
+                    break;
                 }
             }
             if let Some(identity) = found_identity {
@@ -164,23 +164,22 @@ impl DeviceManager {
         }
 
         let state = self.store.load_async().await?;
-        if let Some(selected) = state.selected_device.clone() {
-            if discovered
+        if let Some(selected) = state.selected_device.clone()
+            && discovered
                 .iter()
-                .any(|d| d.connected && &d.identity.id == &selected)
-            {
-                if let TransportSelection::Exact(t) = selection {
-                    let selected_owned = selected.clone();
-                    self.store
-                        .mutate_async(move |state| {
-                            if let Some(dev_state) = state.devices.get_mut(&selected_owned) {
-                                dev_state.identity.preferred_transport = Some(t);
-                            }
-                        })
-                        .await?;
-                }
-                return Ok(selected);
+                .any(|d| d.connected && d.identity.id == selected)
+        {
+            if let TransportSelection::Exact(t) = selection {
+                let selected_owned = selected.clone();
+                self.store
+                    .mutate_async(move |state| {
+                        if let Some(dev_state) = state.devices.get_mut(&selected_owned) {
+                            dev_state.identity.preferred_transport = Some(t);
+                        }
+                    })
+                    .await?;
             }
+            return Ok(selected);
         }
 
         let mut candidates: Vec<DeviceId> = discovered
@@ -228,14 +227,14 @@ impl DeviceManager {
     pub fn register_device(&self, identity: DeviceIdentity) -> Result<(), ManagerError> {
         let mut txn = self.store.transaction()?;
         let state = txn.state_mut();
-        if let Some(num) = identity.id.number() {
-            if state.next_device_number <= num {
-                state.next_device_number = num + 1;
-                if state.next_device_number == 0 {
-                    return Err(ManagerError::State(
-                        crate::error::StateError::invalid_state("nextDeviceNumber overflow"),
-                    ));
-                }
+        if let Some(num) = identity.id.number()
+            && state.next_device_number <= num
+        {
+            state.next_device_number = num + 1;
+            if state.next_device_number == 0 {
+                return Err(ManagerError::State(
+                    crate::error::StateError::invalid_state("nextDeviceNumber overflow"),
+                ));
             }
         }
         if state.selected_device.is_none() {
@@ -764,19 +763,19 @@ impl DeviceManager {
                 "polling rate cannot be combined with DPI/preferences/buttons; report 0x06 must remain isolated".to_owned(),
             ));
         }
-        if let Some(dpi_delta) = &update.dpi {
-            if dpi_delta.is_empty() {
-                return Err(ManagerError::InvalidUpdate(
-                    "DPI delta must provide at least one field".to_owned(),
-                ));
-            }
+        if let Some(dpi_delta) = &update.dpi
+            && dpi_delta.is_empty()
+        {
+            return Err(ManagerError::InvalidUpdate(
+                "DPI delta must provide at least one field".to_owned(),
+            ));
         }
-        if let Some(prefs_delta) = &update.preferences {
-            if prefs_delta.is_empty() {
-                return Err(ManagerError::InvalidUpdate(
-                    "preferences delta must provide at least one field".to_owned(),
-                ));
-            }
+        if let Some(prefs_delta) = &update.preferences
+            && prefs_delta.is_empty()
+        {
+            return Err(ManagerError::InvalidUpdate(
+                "preferences delta must provide at least one field".to_owned(),
+            ));
         }
 
         let (_identity, _endpoint, session, _guard) =
@@ -960,23 +959,20 @@ impl DeviceManager {
                 desired.slots[delta.slot_index()] = delta.assignment();
             }
             let write = session_ref
-                .write_buttons(desired.clone(), policy.verification)
+                .write_buttons(desired, policy.verification)
                 .await?;
-            match (&transport, &write) {
-                (TransportKind::Ble, SessionWrite::ReadbackVerified(_)) => {
-                    return Err(ManagerError::InvalidUpdate(
-                        "BLE button writes cannot produce readback evidence".to_owned(),
-                    ));
-                }
-                _ => {}
+            if let (TransportKind::Ble, SessionWrite::ReadbackVerified(_)) = (&transport, &write) {
+                return Err(ManagerError::InvalidUpdate(
+                    "BLE button writes cannot produce readback evidence".to_owned(),
+                ));
             }
-            if let SessionWrite::ReadbackVerified(actual) = &write {
-                if actual.profile != desired.profile {
-                    return Err(ManagerError::VerificationMismatch {
-                        resource: "buttons",
-                        profile: Some(desired.profile),
-                    });
-                }
+            if let SessionWrite::ReadbackVerified(actual) = &write
+                && actual.profile != desired.profile
+            {
+                return Err(ManagerError::VerificationMismatch {
+                    resource: "buttons",
+                    profile: Some(desired.profile),
+                });
             }
             buttons_pair = Some((desired, write));
         }
@@ -2334,12 +2330,11 @@ mod tests {
             PollingRate::Hz1000
         );
         assert!(
-            persisted.devices[&id]
+            !persisted.devices[&id]
                 .profiles
                 .get(&ProfileId::new(1).unwrap())
                 .map(|p| p.polling_rate.observed.is_some())
                 .unwrap_or(false)
-                == false
                 || persisted.devices[&id].profiles[&ProfileId::new(1).unwrap()]
                     .polling_rate
                     .observed

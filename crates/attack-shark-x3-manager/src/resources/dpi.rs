@@ -1155,7 +1155,7 @@ mod tests {
             "stored baseline must not trigger nested lock, got {result:?}"
         );
         let outcome = result.unwrap();
-        assert_eq!(outcome.desired.sensor.motion_sync, true);
+        assert!(outcome.desired.sensor.motion_sync);
         assert_eq!(
             opens.load(Ordering::SeqCst),
             1,

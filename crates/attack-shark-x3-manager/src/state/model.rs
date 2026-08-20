@@ -831,9 +831,10 @@ mod tests {
         assert_eq!(third.as_str(), "mouse-6");
 
         // Collision scan: if next points to existing, it scans forward.
-        let mut state2 = StateFile::default();
-        // Pre-insert mouse-1 and mouse-2 manually without advancing next.
-        state2.next_device_number = 1;
+        let mut state2 = StateFile {
+            next_device_number: 1,
+            ..StateFile::default()
+        };
         let id1 = DeviceId::new("mouse-1").unwrap();
         state2.devices.insert(
             id1.clone(),
@@ -901,12 +902,16 @@ mod tests {
         assert!(state.validate().is_err());
 
         // Also test next_device_number monotonicity failure.
-        let mut state2 = StateFile::default();
-        state2.next_device_number = 0;
+        let state2 = StateFile {
+            next_device_number: 0,
+            ..StateFile::default()
+        };
         assert!(state2.validate().is_err());
 
-        let mut state3 = StateFile::default();
-        state3.next_device_number = 1;
+        let mut state3 = StateFile {
+            next_device_number: 1,
+            ..StateFile::default()
+        };
         state3.devices.insert(
             DeviceId::new("mouse-5").unwrap(),
             DeviceState::new(device_identity("mouse-5", vec![wired_endpoint("/a")])),
@@ -1462,8 +1467,10 @@ mod tests {
         }
 
         // Direct construction with schema 3 should fail validation.
-        let mut state3 = StateFile::default();
-        state3.schema_version = 3;
+        let state3 = StateFile {
+            schema_version: 3,
+            ..StateFile::default()
+        };
         assert!(matches!(
             state3.validate(),
             Err(StateError::UnsupportedSchema { .. })

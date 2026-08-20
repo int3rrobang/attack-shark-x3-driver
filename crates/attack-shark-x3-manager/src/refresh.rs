@@ -93,8 +93,7 @@ impl DeviceManager {
         let original_owned = original_metadata;
         let tmp_owned = temporarily_expanded;
         let profiles_owned = profiles;
-        let outcome = self
-            .store()
+        self.store()
             .mutate_async(move |state| {
                 let device_state = match state.devices.get_mut(&device_owned) {
                     Some(ds) => ds,
@@ -132,8 +131,7 @@ impl DeviceManager {
                 })
             })
             .await
-            .map_err(ManagerError::State)?;
-        outcome
+            .map_err(ManagerError::State)?
     }
 }
 

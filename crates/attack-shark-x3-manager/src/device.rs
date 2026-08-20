@@ -303,10 +303,10 @@ impl DeviceIdentity {
     /// Otherwise the deterministic priority Wired -> Receiver -> BLE among stored endpoints is used.
     #[must_use]
     pub fn selected_endpoint(&self) -> Option<&DeviceEndpoint> {
-        if let Some(pref) = self.preferred_transport {
-            if let Some(endpoint) = self.endpoints.get(&pref) {
-                return Some(endpoint);
-            }
+        if let Some(pref) = self.preferred_transport
+            && let Some(endpoint) = self.endpoints.get(&pref)
+        {
+            return Some(endpoint);
         }
         // Deterministic priority
         for kind in [

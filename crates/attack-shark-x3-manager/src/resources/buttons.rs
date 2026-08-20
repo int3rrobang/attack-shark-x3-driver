@@ -332,29 +332,24 @@ impl DeviceManager {
         verification: VerificationMethod,
     ) -> Result<WriteOutcome<ButtonsState>, ManagerError> {
         let transport = session.transport();
-        let result = session
-            .write_buttons(requested.clone(), verification)
-            .await?;
-        match (&transport, &result) {
-            (TransportKind::Ble, SessionWrite::ReadbackVerified(_)) => {
-                return Err(ManagerError::InvalidUpdate(
-                    "BLE button writes cannot produce readback evidence".to_owned(),
-                ));
-            }
-            _ => {}
+        let result = session.write_buttons(requested, verification).await?;
+        if let (TransportKind::Ble, SessionWrite::ReadbackVerified(_)) = (&transport, &result) {
+            return Err(ManagerError::InvalidUpdate(
+                "BLE button writes cannot produce readback evidence".to_owned(),
+            ));
         }
-        if let SessionWrite::ReadbackVerified(actual) = &result {
-            if actual.profile != requested.profile {
-                return Err(ManagerError::VerificationMismatch {
-                    resource: "buttons",
-                    profile: Some(requested.profile),
-                });
-            }
+        if let SessionWrite::ReadbackVerified(actual) = &result
+            && actual.profile != requested.profile
+        {
+            return Err(ManagerError::VerificationMismatch {
+                resource: "buttons",
+                profile: Some(requested.profile),
+            });
         }
 
         let now = self.now();
         let device_id = device.clone();
-        let requested_for_store = requested.clone();
+        let requested_for_store = requested;
         let outcome = self
             .store()
             .mutate_async(move |state| {
@@ -422,8 +417,8 @@ pub(crate) fn persist_buttons_write(
     let profile_state = device_state.profiles.entry(requested.profile).or_default();
     let (observed, verification) = match result {
         SessionWrite::ReadbackVerified(readback) => {
-            let observed = readback.clone();
-            record_readback(&mut profile_state.buttons, requested.clone(), readback, now);
+            let observed = readback;
+            record_readback(&mut profile_state.buttons, requested, readback, now);
             let verification = profile_state
                 .buttons
                 .desired
@@ -434,7 +429,7 @@ pub(crate) fn persist_buttons_write(
             (Some(observed), verification)
         }
         SessionWrite::Acknowledged => {
-            record_ack(&mut profile_state.buttons, requested.clone(), now);
+            record_ack(&mut profile_state.buttons, requested, now);
             let verification = profile_state
                 .buttons
                 .desired
@@ -778,7 +773,7 @@ mod tests {
             let profile_state = device_state.profiles.entry(profile).or_default();
             crate::resources::state::record_ack(
                 &mut profile_state.buttons,
-                source.clone(),
+                source,
                 crate::state::Timestamp::default(),
             );
             txn.commit().expect("commit");
@@ -1138,7 +1133,7 @@ mod tests {
             let profile_state = device_state.profiles.entry(profile).or_default();
             crate::resources::state::record_ack(
                 &mut profile_state.buttons,
-                source.clone(),
+                source,
                 crate::state::Timestamp::default(),
             );
             txn.commit().expect("commit");

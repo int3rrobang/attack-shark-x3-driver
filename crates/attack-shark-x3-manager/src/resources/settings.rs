@@ -805,14 +805,14 @@ mod tests {
         let mut transaction = store.transaction().unwrap();
         // Ensure nextDeviceNumber respects allocation semantics for the shared
         // mouse-999 fixture before commit.
-        if let Some(num) = identity.id.number() {
-            if transaction.state().next_device_number <= num {
-                transaction.state_mut().next_device_number = num + 1;
-                assert!(
-                    transaction.state().next_device_number != 0,
-                    "nextDeviceNumber overflow"
-                );
-            }
+        if let Some(num) = identity.id.number()
+            && transaction.state().next_device_number <= num
+        {
+            transaction.state_mut().next_device_number = num + 1;
+            assert!(
+                transaction.state().next_device_number != 0,
+                "nextDeviceNumber overflow"
+            );
         }
         let device_state = transaction
             .state_mut()
@@ -1760,14 +1760,14 @@ mod tests {
             PollingRate::Hz1000
         );
         // Live alias 1 must not be contaminated with 1000
-        if let Some(other) = persisted.devices[&device].profiles.get(&live_before) {
-            if let Some(obs) = other.polling_rate.observed.as_ref() {
-                assert_ne!(
-                    obs.value,
-                    PollingRate::Hz1000,
-                    "standalone live rate must not contaminate other profile"
-                );
-            }
+        if let Some(other) = persisted.devices[&device].profiles.get(&live_before)
+            && let Some(obs) = other.polling_rate.observed.as_ref()
+        {
+            assert_ne!(
+                obs.value,
+                PollingRate::Hz1000,
+                "standalone live rate must not contaminate other profile"
+            );
         }
     }
 
@@ -1823,13 +1823,12 @@ mod tests {
             PollingRate::Hz1000
         );
         // Ensure other not polluted
-        if let Some(p) = persisted.devices[&device].profiles.get(&other) {
-            if let Some(obs) = &p.polling_rate.observed {
-                assert_ne!(obs.value, PollingRate::Hz1000);
-            }
+        if let Some(p) = persisted.devices[&device].profiles.get(&other)
+            && let Some(obs) = &p.polling_rate.observed
+        {
+            assert_ne!(obs.value, PollingRate::Hz1000);
         }
     }
-
     #[tokio::test]
     async fn read_polling_rate_snapshot_mismatch_errors_and_does_not_store() {
         let dir = tempfile::tempdir().unwrap();

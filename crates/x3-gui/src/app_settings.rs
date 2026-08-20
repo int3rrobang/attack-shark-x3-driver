@@ -270,14 +270,12 @@ pub fn save_gui_preferences_to_path(
     let normalized = prefs.clone().normalized();
 
     // Coalesce: compare with existing normalized prefs.
-    if path.exists() {
-        if let Ok(bytes) = fs::read(path) {
-            if let Ok(existing) = serde_json::from_slice::<GuiPreferences>(&bytes) {
-                if existing.normalized() == normalized {
-                    return Ok(false);
-                }
-            }
-        }
+    if path.exists()
+        && let Ok(bytes) = fs::read(path)
+        && let Ok(existing) = serde_json::from_slice::<GuiPreferences>(&bytes)
+        && existing.normalized() == normalized
+    {
+        return Ok(false);
     }
 
     write_atomic_gui(path, &normalized)?;
@@ -349,11 +347,11 @@ fn atomic_replace(temp: &Path, target: &Path) -> io::Result<()> {
 
 #[cfg(unix)]
 fn sync_parent(path: &Path) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            let dir = File::open(parent)?;
-            dir.sync_all()?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let dir = File::open(parent)?;
+        dir.sync_all()?;
     }
     Ok(())
 }
@@ -364,10 +362,10 @@ fn sync_parent(_path: &Path) -> io::Result<()> {
 }
 
 fn ensure_parent(path: &Path) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
     }
     Ok(())
 }
@@ -439,14 +437,16 @@ mod tests {
     fn roundtrip_survives_restart() {
         let dir = TempDir::new().unwrap();
         let path = temp_path(&dir);
-        let mut prefs = GuiPreferences::default();
-        prefs.appearance = 2;
-        prefs.product_name_choice = 1;
-        prefs.custom_product_name = "  hello world  ".to_owned();
-        prefs.dpi_min = 400.0;
-        prefs.dpi_max = 8000.0;
-        prefs.dpi_log_scale = false;
-        prefs.last_page = 3;
+        let prefs = GuiPreferences {
+            appearance: 2,
+            product_name_choice: 1,
+            custom_product_name: "  hello world  ".to_owned(),
+            dpi_min: 400.0,
+            dpi_max: 8000.0,
+            dpi_log_scale: false,
+            last_page: 3,
+            ..Default::default()
+        };
 
         let wrote = save_gui_preferences_to_path(&prefs, &path).unwrap();
         assert!(wrote, "first write should occur");
