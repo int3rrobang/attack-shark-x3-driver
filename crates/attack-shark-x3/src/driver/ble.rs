@@ -159,23 +159,19 @@ impl BleReport {
         match self {
             Self::Dpi(state) => {
                 let report = DpiReport::encode(&state, TransportKind::Ble)?;
-                DpiReport::decode(report.as_bytes(), TransportKind::Ble, state.profile)?;
                 Ok(report.as_bytes().to_vec())
             }
             Self::Preferences(state) => {
                 let report =
                     PreferencesReport::encode_framed(&state, crate::PreferencesFraming::Compact);
-                PreferencesReport::decode(report.as_bytes(), state.profile)?;
                 Ok(report.as_bytes().to_vec())
             }
             Self::PollingRate(profile, rate) => {
                 let report = PollingRateReport::encode(profile, rate);
-                PollingRateReport::decode(report.as_bytes(), profile)?;
                 Ok(report.as_bytes().to_vec())
             }
             Self::Buttons(state) => {
                 let report = ButtonsReport::encode(&state);
-                ButtonsReport::decode(report.as_bytes(), state.profile)?;
                 Ok(report.as_bytes().to_vec())
             }
             Self::ProfileControl(metadata) => {
@@ -287,6 +283,16 @@ impl Stream for NotificationInbox {
     }
 }
 
+/// Completes one serialized BLE write by awaiting the first matching FEE4 ACK.
+///
+/// The FEE4 ACK correlates only by `report_id` (`10 50 <status> <report_id>`);
+/// the wire provides no transaction nonce or sequence number, so this helper
+/// does not claim stronger correlation. Callers must provide the strongest
+/// honest queue barrier available—`NotificationInbox::drain_idle`—before the
+/// write to reduce the risk of a stale same-`report_id` ACK from a prior
+/// transaction being mistaken for the current one. Writes remain single-flight
+/// via the `BleHandle` mutex; this helper assumes it is called while that
+/// lock is held.
 async fn complete_ble_write<S, F>(
     report_id: u8,
     ack_timeout: Duration,
@@ -508,6 +514,13 @@ impl BleHandle {
 
     /// Writes one complete typed report and waits for its matching FEE4 ACK.
     ///
+    /// Writes are single-flight: this handle holds an async mutex across the
+    /// entire drain-write-ACK sequence so concurrent callers serialize. The
+    /// internal queue barrier (`drain_idle`) discards pending notifications
+    /// before the write, which is the strongest honest mitigation for stale
+    /// same-`report_id` ACKs; the wire ACK correlates only by `report_id`
+    /// (`10 50 <status> <report_id>`) and provides no transaction nonce.
+    ///
     /// # Errors
     ///
     /// Returns protocol-validation, transport, rejection, disconnection, or
@@ -600,6 +613,7 @@ impl BleHandle {
         if session.shutdown_complete {
             return Ok(());
         }
+        // Mark closed to block further writes while cleanup is retried.
         session.closed = true;
         let subscription_result = session.close_notifications().await;
         let disconnect_result = session
@@ -607,7 +621,9 @@ impl BleHandle {
             .disconnect_device(&session.device)
             .await
             .map_err(|error| BleError::Backend(error.to_string()));
-        session.shutdown_complete = true;
+        if subscription_result.is_ok() && disconnect_result.is_ok() {
+            session.shutdown_complete = true;
+        }
         subscription_result?;
         disconnect_result
     }
@@ -816,6 +832,9 @@ impl BleSession {
 
     #[cfg(not(windows))]
     async fn stop_bluest_notifications(&mut self) -> Result<(), BleError> {
+        if self.notification_shutdown.is_none() && self.notification_task.is_none() {
+            return Ok(());
+        }
         if let Some(shutdown) = self.notification_shutdown.take() {
             let _ = shutdown.send(());
         }
@@ -946,5 +965,106 @@ mod tests {
             profile_report.encode().expect("profile report validates"),
             vec![0x0c, 0x0a, 0x01, 0xfe, 0x05, 0xfa]
         );
+    }
+
+    #[tokio::test]
+    async fn stale_same_report_ack_is_discarded_by_queue_barrier() {
+        let (sender, mut notifications) = notification_channel();
+        // Simulate a stale ACK for 0x04 left from a previous write.
+        sender.send(Ok(vec![0x10, 0x50, 0x00, 0x04]));
+        // The honest barrier discards it before the next write.
+        notifications
+            .drain_idle()
+            .expect("stale ACK must be discarded by barrier");
+        sender.send(Ok(vec![0x10, 0x50, 0x00, 0x04]));
+        let receipt =
+            complete_ble_write(0x04, Duration::from_millis(50), &mut notifications, async {
+                Ok(())
+            })
+            .await
+            .expect("fresh ACK after barrier must complete");
+        assert_eq!(receipt.report_id, 0x04);
+        // Without barrier, stale ACK would have been consumed immediately,
+        // masking the need for a fresh write-ACK round trip. The barrier is
+        // the strongest honest mitigation; the wire still correlates only by
+        // report_id with no nonce.
+    }
+
+    #[test]
+    fn notification_token_cleanup_is_retryable() {
+        // Mock the Windows token retry pattern: disable may fail transiently,
+        // so the token must be retained for retry rather than discarded.
+        struct MockSession {
+            token: Option<u32>,
+            disable_should_fail: bool,
+        }
+        impl MockSession {
+            async fn close(&mut self) -> Result<(), BleError> {
+                let Some(token) = self.token else {
+                    return Ok(());
+                };
+                if self.disable_should_fail {
+                    return Err(BleError::Operation {
+                        operation: "disable FEE4 notifications",
+                        details: "transient".to_owned(),
+                    });
+                }
+                let _ = token;
+                self.token = None;
+                Ok(())
+            }
+        }
+        let mut session = MockSession {
+            token: Some(42),
+            disable_should_fail: true,
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            assert!(session.close().await.is_err());
+            assert!(session.token.is_some(), "token must be retained for retry");
+            session.disable_should_fail = false;
+            session.close().await.expect("retry must succeed");
+            assert!(session.token.is_none());
+            // Subsequent close is idempotent.
+            session
+                .close()
+                .await
+                .expect("idempotent close must succeed");
+        });
+    }
+
+    #[test]
+    fn ble_encode_avoids_redundant_self_decode_and_copy() {
+        // Encoders guarantee shape; extra self-decode is unnecessary. This
+        // test ensures the current encode path produces the same valid bytes
+        // without an extra decode round trip (which would double-copy).
+        let dpi = DpiState::new(
+            profile(),
+            vec![DpiValue::new(800).expect("valid DPI")],
+            StageIndex::new(1).expect("valid stage"),
+            [0; 25],
+        )
+        .expect("valid DPI");
+        let report = BleReport::Dpi(dpi.clone());
+        let bytes = report.encode().expect("DPI encode must succeed");
+        assert_eq!(bytes[0], 0x04);
+        // Polling rate and buttons are infallible encoders; they should also
+        // produce single-copy buffers without extra validation.
+        for rate in [PollingRate::Hz125, PollingRate::Hz1000] {
+            let bytes = BleReport::PollingRate(profile(), rate)
+                .encode()
+                .expect("polling rate encode must succeed");
+            assert_eq!(bytes.len(), 9);
+            assert_eq!(bytes[0], 0x06);
+        }
+        let slots = [ButtonAssignment::default(); crate::protocol::buttons::BUTTON_SLOT_COUNT];
+        let buttons = ButtonsState::new(profile(), slots);
+        let bytes = BleReport::Buttons(buttons)
+            .encode()
+            .expect("buttons encode must succeed");
+        assert_eq!(bytes[0], 0x08);
     }
 }

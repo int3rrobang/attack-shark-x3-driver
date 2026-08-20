@@ -16,7 +16,7 @@ const OBSERVED_UNTARGETED_PARAMETER: u8 = 0x01;
 /// This state is independent of whichever profile-backed section was most
 /// recently loaded into the device's working buffers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ProfileMetadata {
     current: ProfileId,
     maximum: ProfileId,
@@ -50,7 +50,28 @@ impl ProfileMetadata {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for ProfileMetadata {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Helper {
+            current: ProfileId,
+            maximum: ProfileId,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        ProfileMetadata::new(helper.current, helper.maximum).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Wire framing for a profile-control write.
+///
+/// `Compact` (6 bytes) is the FA61 wired write image. `Full` (10 bytes) is
+/// the normalized ten-byte report image with four trailing zero bytes observed
+/// on USB; BLE writes must use `Compact`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProfileControlFraming {
     /// Six-byte FA61 write observed on the wired transport.
@@ -67,6 +88,32 @@ impl ProfileControlFraming {
             Self::Full => PROFILE_REPORT_LENGTH,
         }
     }
+
+    /// Returns whether this framing is valid for `transport`.
+    ///
+    /// `Compact` is valid for every transport. `Full` is only valid for USB
+    /// transports (`Wired` and `Receiver`); BLE must use `Compact`.
+    #[must_use]
+    pub const fn supports_transport(self, transport: crate::TransportKind) -> bool {
+        match self {
+            Self::Compact => true,
+            Self::Full => match transport {
+                crate::TransportKind::Wired | crate::TransportKind::Receiver => true,
+                crate::TransportKind::Ble => false,
+            },
+        }
+    }
+
+    /// Valid wire lengths for `transport`.
+    #[must_use]
+    pub const fn valid_lengths_for_transport(transport: crate::TransportKind) -> &'static [usize] {
+        match transport {
+            crate::TransportKind::Ble => &[PROFILE_CONTROL_COMPACT_LENGTH],
+            crate::TransportKind::Wired | crate::TransportKind::Receiver => {
+                &[PROFILE_CONTROL_COMPACT_LENGTH, PROFILE_REPORT_LENGTH]
+            }
+        }
+    }
 }
 
 /// Edge-triggered profile current/maximum control report.
@@ -77,6 +124,13 @@ pub struct ProfileControlReport {
 }
 
 impl ProfileControlReport {
+    /// Encodes metadata with an explicit framing.
+    ///
+    /// `Compact` is valid for every transport. `Full` is the USB ten-byte
+    /// image and must not be used for BLE writes; callers needing
+    /// transport-aware validation should check
+    /// `framing.supports_transport(transport)` or use
+    /// `encode_for_transport`.
     #[must_use]
     pub fn encode(metadata: ProfileMetadata, framing: ProfileControlFraming) -> Self {
         let current = metadata.current.get();
@@ -94,6 +148,24 @@ impl ProfileControlReport {
             bytes,
             transmitted_length: framing.transmitted_length(),
         }
+    }
+
+    /// Encodes with transport-aware framing validation.
+    ///
+    /// Returns an error when the framing is not supported for `transport`
+    /// (e.g. `Full` for `Ble`).
+    pub fn encode_for_transport(
+        metadata: ProfileMetadata,
+        transport: crate::TransportKind,
+        framing: ProfileControlFraming,
+    ) -> Result<Self, ProtocolError> {
+        if !framing.supports_transport(transport) {
+            return Err(ProtocolError::InvalidReportLength {
+                expected: ProfileControlFraming::Compact.transmitted_length(),
+                actual: framing.transmitted_length(),
+            });
+        }
+        Ok(Self::encode(metadata, framing))
     }
 
     #[must_use]
@@ -165,9 +237,7 @@ impl ProfileMetadataReport {
         validate_fixed_byte(packet, 2, PROFILE_METADATA_SUBTYPE)?;
         validate_complement("current profile", packet[3], packet[4])?;
         validate_complement("maximum profile", packet[5], packet[6])?;
-        for offset in 7..PROFILE_REPORT_LENGTH {
-            validate_fixed_byte(packet, offset, 0)?;
-        }
+        validate_fixed_range(packet, 7, PROFILE_REPORT_LENGTH, 0)?;
 
         let current = ProfileId::try_from(packet[3])?;
         let maximum = ProfileId::try_from(packet[5])?;
@@ -298,9 +368,7 @@ impl ReadinessStatus {
                 actual: packet[0],
             });
         }
-        for offset in 2..READ_SELECTOR_LENGTH {
-            validate_fixed_byte(packet, offset, 0)?;
-        }
+        validate_fixed_range(packet, 2, READ_SELECTOR_LENGTH, 0)?;
         match packet[1] {
             0 => Ok(Self::NotReady),
             1 => Ok(Self::Ready),
@@ -309,7 +377,7 @@ impl ReadinessStatus {
     }
 }
 
-fn validate_complement(
+pub(crate) fn validate_complement(
     field: &'static str,
     value: u8,
     complement: u8,
@@ -325,7 +393,11 @@ fn validate_complement(
     }
 }
 
-fn validate_fixed_byte(packet: &[u8], offset: usize, expected: u8) -> Result<(), ProtocolError> {
+pub(crate) fn validate_fixed_byte(
+    packet: &[u8],
+    offset: usize,
+    expected: u8,
+) -> Result<(), ProtocolError> {
     let actual = packet[offset];
     if actual == expected {
         Ok(())
@@ -336,6 +408,18 @@ fn validate_fixed_byte(packet: &[u8], offset: usize, expected: u8) -> Result<(),
             actual,
         })
     }
+}
+
+pub(crate) fn validate_fixed_range(
+    packet: &[u8],
+    start: usize,
+    end: usize,
+    expected: u8,
+) -> Result<(), ProtocolError> {
+    for offset in start..end {
+        validate_fixed_byte(packet, offset, expected)?;
+    }
+    Ok(())
 }
 
 #[cfg(all(test, feature = "serde"))]
@@ -356,5 +440,121 @@ mod serde_tests {
         assert_eq!(restored.current().get(), 2);
         assert_eq!(restored.maximum().get(), 4);
         assert!(restored.current().get() <= restored.maximum().get());
+    }
+
+    #[test]
+    fn profile_metadata_rejects_current_greater_than_maximum() {
+        let json = r#"{"current":4,"maximum":2}"#;
+        assert!(serde_json::from_str::<ProfileMetadata>(json).is_err());
+    }
+
+    #[test]
+    fn profile_metadata_rejects_invalid_profile() {
+        let json = r#"{"current":0,"maximum":1}"#;
+        assert!(serde_json::from_str::<ProfileMetadata>(json).is_err());
+        let json2 = r#"{"current":1,"maximum":6}"#;
+        assert!(serde_json::from_str::<ProfileMetadata>(json2).is_err());
+    }
+
+    #[test]
+    fn profile_metadata_rejects_equal_is_allowed_but_greater_not() {
+        // equal is allowed (single profile enabled)
+        let json = r#"{"current":3,"maximum":3}"#;
+        assert!(serde_json::from_str::<ProfileMetadata>(json).is_ok());
+        // but current > maximum is rejected via new()
+        let json2 = r#"{"current":5,"maximum":1}"#;
+        assert!(serde_json::from_str::<ProfileMetadata>(json2).is_err());
+    }
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+    use crate::TransportKind;
+
+    fn metadata() -> ProfileMetadata {
+        ProfileMetadata::new(
+            crate::ProfileId::try_from(1).unwrap(),
+            crate::ProfileId::try_from(5).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn compact_is_valid_for_every_transport() {
+        for transport in [
+            TransportKind::Wired,
+            TransportKind::Ble,
+            TransportKind::Receiver,
+        ] {
+            assert!(ProfileControlFraming::Compact.supports_transport(transport));
+            assert_eq!(
+                ProfileControlFraming::Compact.transmitted_length(),
+                PROFILE_CONTROL_COMPACT_LENGTH
+            );
+            let report = ProfileControlReport::encode(metadata(), ProfileControlFraming::Compact);
+            assert_eq!(report.as_bytes().len(), PROFILE_CONTROL_COMPACT_LENGTH);
+            assert!(ProfileControlFraming::Compact.supports_transport(transport));
+        }
+    }
+
+    #[test]
+    fn full_is_only_valid_for_usb_transports() {
+        assert!(ProfileControlFraming::Full.supports_transport(TransportKind::Wired));
+        assert!(ProfileControlFraming::Full.supports_transport(TransportKind::Receiver));
+        assert!(!ProfileControlFraming::Full.supports_transport(TransportKind::Ble));
+        assert_eq!(
+            ProfileControlFraming::Full.transmitted_length(),
+            PROFILE_REPORT_LENGTH
+        );
+        let full = ProfileControlReport::encode(metadata(), ProfileControlFraming::Full);
+        assert_eq!(full.as_bytes().len(), PROFILE_REPORT_LENGTH);
+    }
+
+    #[test]
+    fn encode_for_transport_prevents_ble_full() {
+        assert!(
+            ProfileControlReport::encode_for_transport(
+                metadata(),
+                TransportKind::Ble,
+                ProfileControlFraming::Full
+            )
+            .is_err()
+        );
+        assert!(
+            ProfileControlReport::encode_for_transport(
+                metadata(),
+                TransportKind::Ble,
+                ProfileControlFraming::Compact
+            )
+            .is_ok()
+        );
+        assert!(
+            ProfileControlReport::encode_for_transport(
+                metadata(),
+                TransportKind::Wired,
+                ProfileControlFraming::Full
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn metadata_decode_accepts_both_declared_lengths() {
+        let mut packet = [0u8; PROFILE_REPORT_LENGTH];
+        packet[0] = PROFILE_REPORT_ID;
+        packet[1] = PROFILE_DECLARED_LENGTH;
+        packet[2] = 0x01;
+        packet[3] = 0x01;
+        packet[4] = 0xfe;
+        packet[5] = 0x05;
+        packet[6] = 0xfa;
+        assert!(ProfileMetadataReport::decode(&packet).is_ok());
+        packet[1] = PROFILE_RECEIVER_DECLARED_LENGTH;
+        assert!(
+            ProfileMetadataReport::decode_for_transport(&packet, TransportKind::Receiver).is_ok()
+        );
+        packet[1] = 0x0d;
+        assert!(ProfileMetadataReport::decode(&packet).is_err());
     }
 }

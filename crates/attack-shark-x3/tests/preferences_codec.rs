@@ -252,7 +252,7 @@ fn decoder_rejects_target_mismatch_identity_length_and_padding() {
     assert_eq!(
         PreferencesReport::decode(&packet[..14], profile(1)),
         Err(ProtocolError::InvalidReportLength {
-            expected: 13,
+            expected: 15,
             actual: 14
         })
     );
@@ -472,6 +472,7 @@ fn deep_sleep_preserves_low_configuration_nibble() {
     );
 }
 
+#[cfg(feature = "serde")]
 #[test]
 fn timing_newtypes_serde_round_trip() {
     let debounce = DebounceMs::new(8).unwrap();

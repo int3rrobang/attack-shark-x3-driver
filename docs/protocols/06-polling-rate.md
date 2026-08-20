@@ -127,8 +127,6 @@ Data (Hex):
     06 09 01 01 fe 00 00 00 00
 ```
 
-## Rust driver support
-
 Polling rate is **profile-scoped**, not global. `MouseHandle::read_polling_rate(profile)`
 arms the one-shot `0xa0` mailbox with a fresh `0x06` selector carrying the
 requested profile, waits for readiness, fetches the nine-byte report once, and
@@ -136,14 +134,21 @@ validates the report ID, declared length, profile byte, rate code, complement,
 and padding. Malformed observations are rearmed and retried under the normal
 bounded read policy.
 
+**Targeted-read vs. live-rate distinction:** `0x04`/`0x05`/`0x08` reads carry the one-based
+target in byte 2 and selector byte 4 and **load that target's working buffers**,
+which can change live mouse behavior without necessarily updating persistent `0x0c`
+current metadata. Report `0x06` **skips that loader**: byte 2 is a **save alias**
+(the deferred writer serializes the complete live DPI/preferences/buttons image into that
+slot), so a `0x06` read is a **live-rate read** and a `0x06` write is a save-alias write.
+
 **Live-read limitation:** report `0x06` skips the profile loader, so the
 readback always reflects the profile that is *currently live* on the device.
 The readback's byte 2 mirrors the armed working alias/selector, not the loaded
 image; validating it is a wire-shape check, not a live-content proof. Reading a
-non-live profile therefore returns the live profile's rate. The manager reads
+non-live profile therefore returns the live profile's rate, and the read's alias
+is mutated as a side effect. The manager reads
 the rate of the persistent current profile (see `status`), and callers must not
 treat a `0x06` read as a profile load or as persistence evidence.
-
 **Driver primitives are unchecked.** The low-level methods carry no safety
 precondition — they emit the packet directly and are named to say so:
 

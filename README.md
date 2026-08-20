@@ -11,12 +11,15 @@ license, and attribution are preserved, but X11 is no longer a production target
 
 | Transport | Host identity | CLI value | Status |
 |:----------|:--------------|:----------|:-------|
-| USB wired | VID `1d57`, PID `fa61` | `wired` | Supported |
-| 2.4 GHz receiver | VID `1d57`, PID `fa60` | `receiver` | Supported |
-| BLE GATT | FEE0 service | `ble` | Requires `--features ble`; ACK-confirmed writes only, no configuration readback |
+| USB wired | VID `1d57`, PID `fa61` | `wired` | Supported; USB configuration readback via armed `0xa0` selector (live-confirmed) |
+| 2.4 GHz receiver | VID `1d57`, PID `fa60` | `receiver` | Supported; USB configuration readback via armed `0xa0` selector (live-confirmed) |
+| BLE GATT | FEE0 service | `ble` | Requires `--features ble`; ACK-confirmed writes only (`10 50 00 <report>`), no configuration readback; ACK is parser acceptance only |
 
 FA61 and FA60 share the same X3/M600 packet dialect. Transport selection controls
-discovery and compact versus padded feature-report lengths.
+discovery and compact versus padded feature-report lengths. The device supports
+**1–8 configurable DPI stages**; the physical DPI button is a separate auxiliary HID input
+report (`03 00 10 <stage> 00`) — six physical positions were observed in captures, which is
+not the same as the 1–8 stage limit.
 
 
 ### Capability truth table
@@ -24,21 +27,24 @@ discovery and compact versus padded feature-report lengths.
 | Capability | USB (`wired`/`receiver`) | BLE (`ble`) |
 |:-----------|:-------------------------|:------------|
 | Device discovery | `devices` | `devices` (connected FEE0 only) |
-| DPI read | `dpi get` (live readback) | Unsupported |
-| DPI write | `dpi set` + readback verify | ACK-confirmed; no readback |
-| Preferences read | `prefs get` (live readback) | Unsupported |
-| Preferences write | `prefs set` + readback verify | ACK-confirmed; no readback |
-| Button table read | `bind get` (live readback) | Unsupported |
-| Button table write | `bind set` + readback verify | ACK-confirmed; no readback |
-| Polling rate read | `rate get` (live readback) | Unsupported |
-| Polling rate write | `rate set` + readback verify | ACK-confirmed; no readback |
+| DPI read | `dpi get` (live readback, loads working profile) | Unsupported |
+| DPI write | `dpi set` + readback verify | ACK-confirmed; no readback (ACK = parser acceptance only) |
+| Preferences read | `prefs get` (live readback, loads working profile) | Unsupported |
+| Preferences write | `prefs set` + readback verify | ACK-confirmed; no readback (ACK = parser acceptance only) |
+| Button table read | `bind get` (live readback, loads working profile) | Unsupported |
+| Button table write | `bind set` + readback verify | ACK-confirmed; no readback (ACK = parser acceptance only) |
+| Polling rate read | `rate get` (live-rate read; `0x06` skips loader, byte 2 is save alias) | Unsupported |
+| Polling rate write | `rate set` + readback verify (USB-only safe path; `0x06` save alias) | ACK-confirmed; no readback — requires `--allow-unverified-ble-rate-write` (ACK = parser acceptance only) |
 | Profile read/activate | `profile get` / `profile set` | ACK-confirmed; no readback |
-| Battery | `battery` (USB receiver interrupt report) | Not available |
+| Battery | `battery` (USB receiver interrupt report `03 10 40 01 <level>` 1–10 ×10%) | BLE Battery Service `0x180f`/`0x2a19` (not via `battery` CLI); `battery` command is receiver-only |
 | Durable state | Full (readback-verified provenance) | Requires `--replace-defaults` when no baseline exists |
 | Persistence verification | `verify --method profile-reload`, `verify --method power-cycle` | Not available |
 
 USB readback verification proves the device's current working state only; it does not
-prove EEPROM persistence. Report `0x06` (polling rate) persistence was separately
+prove EEPROM persistence. Targeted DPI/preferences/button reads load that target's working
+profile without necessarily changing persistent `0x0c` current metadata; `0x06` polling-rate
+skips that loader — it is a live-rate read and a save-alias write (see
+[`06-polling-rate.md`](docs/protocols/06-polling-rate.md)). Report `0x06` (polling rate) persistence was separately
 verified across a power-cycle on one wired device. [live-confirmed]
 
 ## Workspace architecture
@@ -55,7 +61,10 @@ attack-shark-x3-rust/
 │   ├── x3ctl/                    # CLI frontend: Clap-based resource-oriented commands
 │   └── x3-gui/                   # Slint desktop frontend: six-page control window,
 │                                  #   worker-thread DeviceManager access
-├── scripts/fa61-test-suite.ps1   # Windows hardware test suite
+├── scripts/
+│   ├── persistence-probe.ps1               # Wired true power-cycle persistence probe
+│   └── profile-switch-transport-probe.ps1  # Profile-switch transport comparison probe (wired/receiver)
+│   # historical scripts/fa61-test-suite.ps1 runner is not included — see docs/evidence/x3-fa61/captures/README.md
 └── fixtures/protocol/            # Protocol fixture JSONs
 ```
 
@@ -74,6 +83,8 @@ All crates default to USB. BLE requires `--features ble` on each crate in the
 dependency chain.
 
 ## Build and test
+
+Toolchain: workspace `rust-version = "1.92"` (edition 2024, resolver 3); `rust-toolchain.toml` pins `channel = "1.97.1"` (CI installs 1.97.1 on Linux and Windows).
 
 ```bash
 # Build (USB only)
@@ -94,7 +105,7 @@ cargo clippy
 # Install the CLI
 cargo install --path crates/x3ctl
 
-# Run the desktop GUI
+# Run the desktop GUI (discovers USB and BLE; most writes and all polling-rate changes require USB)
 cargo run -p x3-gui
 ```
 
@@ -167,9 +178,13 @@ cargo run -p x3ctl -- profile refresh-all
 cargo run -p x3ctl -- battery
 ```
 
-FA61 profile-targeted reads are not passive: reading DPI, preferences, buttons, or a
-complete profile can load that target's working buffers and change live mouse behavior
-without changing persistent profile metadata.
+Targeted reads for DPI (`0x04`), preferences (`0x05`), and button table (`0x08`) carry the
+one-based profile in byte 2 and selector byte 4 of the armed `0xa0` read — they load that
+target's working buffers and can change live mouse behavior without necessarily changing
+persistent `0x0c` current metadata. Report `0x06` (polling rate) skips that loader: byte 2 is a
+save alias (the deferred writer serializes the complete live DPI/preferences/buttons image into
+that slot), so a `0x06` read is a live-rate read and a `0x06` write is a save-alias write.
+Polling-rate reads therefore return the currently live rate regardless of the requested profile.
 
 `profile refresh-all` is an explicit USB-only reconciliation workflow, not a
 passive read. It temporarily raises the enabled maximum to five when necessary,
@@ -183,7 +198,7 @@ power cycle.
 ### Typed writes
 
 ```bash
-# DPI: six stages, active slot 2, 1 mm LOD, motion sync on
+# DPI: six stages (example; device supports 1–8 configurable stages), active slot 2, 1 mm LOD, motion sync on
 cargo run -p x3ctl -- dpi set \
     --stages 800,1600,2400,3200,5000,26000 \
     --active-stage 2 --lod one --ripple-control false --motion-sync true
@@ -323,20 +338,20 @@ Read [`docs/safety.md`](docs/safety.md) before hardware experiments.
 
 ## Hardware test suite
 
-The Windows test suite separates offline validation, non-mutating hardware discovery,
-and USBPcap captures:
+The historical Windows test suite `scripts/fa61-test-suite.ps1` is not included in this repository and is not currently runnable.
+Its USBPcap sessions are preserved as provenance under `docs/evidence/x3-fa61/` (see `docs/evidence/x3-fa61/captures/README.md`).
 
-```powershell
-pwsh -NoProfile -File scripts/fa61-test-suite.ps1 -Mode plan
-pwsh -NoProfile -File scripts/fa61-test-suite.ps1 -Mode offline
-pwsh -NoProfile -File scripts/fa61-test-suite.ps1 -Mode hardware -Transport wired
-pwsh -NoProfile -File scripts/fa61-test-suite.ps1 -Mode hardware -Transport receiver
-pwsh -NoProfile -File scripts/fa61-test-suite.ps1 -Mode capture-manual -IncludeAppControls
-```
+Current hardware probes in `scripts/` are:
 
-The suite follows the physical X3/M600 limits: exactly six DPI slots, no
-lighting-settings panel, and no useful configuration readback. It creates timestamped
-logs and artifacts under `test-artifacts/fa61-suite` without deleting prior runs.
+- `scripts/persistence-probe.ps1` — wired true power-cycle persistence probe. Writes a distinctive DPI stage value, waits for a configurable dwell, then performs a true power cycle (unplug → switch OFF → wait → switch ON → replug) and verifies whether the value survived. Supports repeated dwell values to gather multiple trials.
+- `scripts/profile-switch-transport-probe.ps1` — profile-switch transport comparison probe. Compares profile-related reads and switches across `wired` and `receiver` transports (read-only and switch suites) with optional USBPcap capture; the switch suite requires explicit authorization.
+
+The preserved historical capture preset exercised six DPI stages and six physical DPI-button presses as an example;
+the device itself supports **1–8 configurable DPI stages**. The physical DPI button is a separate
+auxiliary HID input (`03 00 10 <stage> 00`), not the stage configuration. USB configuration readback
+is supported via the armed `0xa0` selector (`dpi get`/`prefs get`/`bind get`/`rate get` on `wired`/`receiver`);
+historical claims of "no useful readback" are corrected. Lighting/RGB fields are present in the packet
+but have no confirmed visible effect on X3/M600 hardware.
 
 ## Linux permissions
 

@@ -181,9 +181,7 @@ impl PollingRateReport {
         }
         let rate = PollingRate::from_code(packet[3])?;
         validate_complement(packet[3], packet[4])?;
-        for offset in PADDING_START..POLLING_RATE_REPORT_LENGTH {
-            validate_fixed_byte(packet, offset, 0)?;
-        }
+        validate_fixed_range(packet, PADDING_START, POLLING_RATE_REPORT_LENGTH, 0)?;
         Ok(DecodedPollingRateReport { profile, rate })
     }
 
@@ -194,28 +192,16 @@ impl PollingRateReport {
 }
 
 fn validate_complement(value: u8, complement: u8) -> Result<(), ProtocolError> {
-    if value ^ complement == u8::MAX {
-        Ok(())
-    } else {
-        Err(ProtocolError::InvalidComplement {
-            field: "polling rate",
-            value,
-            complement,
-        })
-    }
+    crate::protocol::profile::validate_complement("polling rate", value, complement)
 }
 
-fn validate_fixed_byte(packet: &[u8], offset: usize, expected: u8) -> Result<(), ProtocolError> {
-    let actual = packet[offset];
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(ProtocolError::InvalidFixedByte {
-            offset,
-            expected,
-            actual,
-        })
-    }
+fn validate_fixed_range(
+    packet: &[u8],
+    start: usize,
+    end: usize,
+    expected: u8,
+) -> Result<(), ProtocolError> {
+    crate::protocol::profile::validate_fixed_range(packet, start, end, expected)
 }
 
 #[cfg(test)]
@@ -331,5 +317,62 @@ mod tests {
             PollingRate::try_from(333),
             Err(ProtocolError::InvalidPollingRate { value: 333 })
         ));
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    use crate::{ProfileId, ProtocolError};
+
+    fn profile(value: u8) -> ProfileId {
+        ProfileId::try_from(value).expect("test profile must be valid")
+    }
+
+    #[test]
+    fn malformed_lengths_report_truthful_expected() {
+        let packet = PollingRateReport::encode(profile(1), PollingRate::Hz1000);
+        let base = packet.as_bytes();
+        // Short packet
+        assert_eq!(
+            PollingRateReport::decode(&base[..8], profile(1)),
+            Err(ProtocolError::InvalidReportLength {
+                expected: POLLING_RATE_REPORT_LENGTH,
+                actual: 8
+            })
+        );
+        // Long packet
+        let mut long = base.to_vec();
+        long.push(0);
+        assert_eq!(
+            PollingRateReport::decode(&long, profile(1)),
+            Err(ProtocolError::InvalidReportLength {
+                expected: POLLING_RATE_REPORT_LENGTH,
+                actual: 10
+            })
+        );
+    }
+
+    #[test]
+    fn complement_and_fixed_byte_boundaries_are_precise() {
+        let packet = PollingRateReport::encode(profile(1), PollingRate::Hz500);
+        let mut bad_complement = *packet.as_bytes();
+        bad_complement[4] = !bad_complement[3] ^ 1;
+        assert!(matches!(
+            PollingRateReport::decode(&bad_complement, profile(1)),
+            Err(ProtocolError::InvalidComplement { .. })
+        ));
+        for offset in super::PADDING_START..POLLING_RATE_REPORT_LENGTH {
+            let mut bad = *packet.as_bytes();
+            bad[offset] = 1;
+            assert_eq!(
+                PollingRateReport::decode(&bad, profile(1)),
+                Err(ProtocolError::InvalidFixedByte {
+                    offset,
+                    expected: 0,
+                    actual: 1
+                })
+            );
+        }
     }
 }

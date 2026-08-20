@@ -13,12 +13,17 @@ const PAYLOAD_END: usize = CHECKSUM_OFFSET;
 const FULL_PADDING_START: usize = PREFERENCES_COMPACT_LENGTH;
 
 /// The two FA61 wire images used by report `0x05`.
+///
+/// `Compact` (13 bytes) is the canonical write image for every transport.
+/// `Full` (15 bytes) is the normalized feature-report readback observed on
+/// USB (FA60 receiver prepared reads and FA61 `hid_get_feature_report`);
+/// it appends two trailing zero bytes. BLE writes must use `Compact`; `Full`
+/// is a USB readback framing and is not advertised for BLE.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreferencesFraming {
-    /// The thirteen-byte compact image used for a write.
+    /// Thirteen-byte compact write image used for every transport.
     Compact,
-    /// The fifteen-byte normalized feature-report readback, including two
-    /// required trailing zero bytes.
+    /// Fifteen-byte USB readback image with two trailing zero bytes.
     Full,
 }
 
@@ -28,6 +33,32 @@ impl PreferencesFraming {
         match self {
             Self::Compact => PREFERENCES_COMPACT_LENGTH,
             Self::Full => PREFERENCES_FULL_LENGTH,
+        }
+    }
+
+    /// Returns whether this framing is valid for `transport`.
+    ///
+    /// `Compact` is valid for every transport. `Full` is only valid for the
+    /// USB transports (`Wired` and `Receiver`); BLE must use `Compact`.
+    #[must_use]
+    pub const fn supports_transport(self, transport: TransportKind) -> bool {
+        match self {
+            Self::Compact => true,
+            Self::Full => match transport {
+                TransportKind::Wired | TransportKind::Receiver => true,
+                TransportKind::Ble => false,
+            },
+        }
+    }
+
+    /// Valid wire lengths for `transport`.
+    #[must_use]
+    pub const fn valid_lengths_for_transport(transport: TransportKind) -> &'static [usize] {
+        match transport {
+            TransportKind::Ble => &[PREFERENCES_COMPACT_LENGTH],
+            TransportKind::Wired | TransportKind::Receiver => {
+                &[PREFERENCES_COMPACT_LENGTH, PREFERENCES_FULL_LENGTH]
+            }
         }
     }
 }
@@ -109,7 +140,7 @@ impl PreferencesState {
 /// `docs/protocols/05-preferences.md` field 6. Odd, sub-range, or
 /// out-of-range values are rejected rather than rounded or clamped.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct DebounceMs(u8);
 
 impl DebounceMs {
@@ -165,6 +196,19 @@ impl std::fmt::Display for DebounceMs {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for DebounceMs {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u8 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).ok_or_else(|| {
+            serde::de::Error::custom(format!("invalid debounce {value}; expected even 4..=50"))
+        })
+    }
+}
+
 /// A normal (standby) sleep timer, in half-minute units.
 ///
 /// User-facing values are `0.5..=30` minutes in `0.5` steps. The wire byte is
@@ -172,7 +216,7 @@ impl std::fmt::Display for DebounceMs {
 /// `docs/protocols/05-preferences.md` field 5. Out-of-range values are
 /// rejected rather than rounded or clamped.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct SleepTimer(u8);
 
 impl SleepTimer {
@@ -236,6 +280,19 @@ impl std::fmt::Display for SleepTimer {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for SleepTimer {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u8 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).ok_or_else(|| {
+            serde::de::Error::custom(format!("invalid sleep timer {value}; expected 1..=60"))
+        })
+    }
+}
+
 /// A deep-sleep timer, in whole minutes.
 ///
 /// The wire representation is split across two fields, documented in
@@ -252,7 +309,7 @@ impl std::fmt::Display for SleepTimer {
 /// and decode exactly. `PreferencesState` still preserves the raw bytes of any
 /// noncanonical state; the typed decode is an optional, checked view.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct DeepSleepMinutes(u8);
 
 impl DeepSleepMinutes {
@@ -330,6 +387,82 @@ impl std::fmt::Display for DeepSleepMinutes {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for DeepSleepMinutes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u8 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).ok_or_else(|| {
+            serde::de::Error::custom(format!("invalid deep sleep {value}; expected 1..=60"))
+        })
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::{DebounceMs, DeepSleepMinutes, SleepTimer};
+
+    #[test]
+    fn debounce_round_trip_preserves_shape() {
+        let v = DebounceMs::new(20).unwrap();
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, "20");
+        let restored: DebounceMs = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, restored);
+    }
+
+    #[test]
+    fn debounce_rejects_invalid_json() {
+        assert!(serde_json::from_str::<DebounceMs>("3").is_err());
+        assert!(serde_json::from_str::<DebounceMs>("5").is_err()); // odd
+        assert!(serde_json::from_str::<DebounceMs>("51").is_err());
+        assert!(serde_json::from_str::<DebounceMs>("2").is_err());
+        assert!(serde_json::from_str::<DebounceMs>("\"20\"").is_err());
+    }
+
+    #[test]
+    fn sleep_timer_round_trip_preserves_shape() {
+        let v = SleepTimer::new(30).unwrap();
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, "30");
+        let restored: SleepTimer = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, restored);
+        let min = SleepTimer::new(1).unwrap();
+        assert_eq!(serde_json::to_string(&min).unwrap(), "1");
+        let max = SleepTimer::new(60).unwrap();
+        assert_eq!(serde_json::to_string(&max).unwrap(), "60");
+    }
+
+    #[test]
+    fn sleep_timer_rejects_invalid_json() {
+        assert!(serde_json::from_str::<SleepTimer>("0").is_err());
+        assert!(serde_json::from_str::<SleepTimer>("61").is_err());
+        assert!(serde_json::from_str::<SleepTimer>("255").is_err());
+    }
+
+    #[test]
+    fn deep_sleep_round_trip_preserves_shape() {
+        let v = DeepSleepMinutes::new(30).unwrap();
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, "30");
+        let restored: DeepSleepMinutes = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, restored);
+        let min = DeepSleepMinutes::new(1).unwrap();
+        assert_eq!(serde_json::to_string(&min).unwrap(), "1");
+        let max = DeepSleepMinutes::new(60).unwrap();
+        assert_eq!(serde_json::to_string(&max).unwrap(), "60");
+    }
+
+    #[test]
+    fn deep_sleep_rejects_invalid_json() {
+        assert!(serde_json::from_str::<DeepSleepMinutes>("0").is_err());
+        assert!(serde_json::from_str::<DeepSleepMinutes>("61").is_err());
+        assert!(serde_json::from_str::<DeepSleepMinutes>("255").is_err());
+    }
+}
+
 /// A validated report-`0x05` decode and its exact wire framing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodedPreferencesReport {
@@ -337,7 +470,6 @@ pub struct DecodedPreferencesReport {
     pub framing: PreferencesFraming,
 }
 
-/// Encoded FA61 report-`0x05` bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PreferencesReport {
     bytes: [u8; PREFERENCES_FULL_LENGTH],
@@ -346,6 +478,11 @@ pub struct PreferencesReport {
 
 impl PreferencesReport {
     /// Encodes a state with an explicit compact or full framing.
+    ///
+    /// `Compact` is valid for every transport. `Full` is the USB readback
+    /// framing (`Wired` and `Receiver`) and must not be used for BLE writes;
+    /// callers that need transport-aware validation should check
+    /// `framing.supports_transport(transport)` before encoding.
     #[must_use]
     pub fn encode_framed(state: &PreferencesState, framing: PreferencesFraming) -> Self {
         let mut bytes = [0_u8; PREFERENCES_FULL_LENGTH];
@@ -359,6 +496,24 @@ impl PreferencesReport {
             bytes,
             transmitted_length: framing.transmitted_length(),
         }
+    }
+
+    /// Encodes with transport-aware framing validation.
+    ///
+    /// Returns an error when the framing is not supported for `transport`
+    /// (e.g. `Full` for `Ble`).
+    pub fn encode_framed_for_transport(
+        state: &PreferencesState,
+        transport: TransportKind,
+        framing: PreferencesFraming,
+    ) -> Result<Self, ProtocolError> {
+        if !framing.supports_transport(transport) {
+            return Err(ProtocolError::InvalidReportLength {
+                expected: PreferencesFraming::Compact.transmitted_length(),
+                actual: framing.transmitted_length(),
+            });
+        }
+        Ok(Self::encode_framed(state, framing))
     }
 
     /// Decodes a canonical compact write or full readback for the explicit
@@ -377,6 +532,9 @@ impl PreferencesReport {
 
     /// Decodes a preferences readback using the selected transport dialect.
     ///
+    /// Full readback framing (15 bytes) is only valid for USB transports
+    /// (`Wired` and `Receiver`); BLE must use `Compact` (13 bytes).
+    ///
     /// # Errors
     ///
     /// Rejects malformed framing, report identity, declared length, target
@@ -390,7 +548,30 @@ impl PreferencesReport {
             TransportKind::Receiver => PREFERENCES_RECEIVER_DECLARED_LENGTH,
             TransportKind::Wired | TransportKind::Ble => PREFERENCES_DECLARED_LENGTH,
         };
-        Self::decode_with_declared_length(packet, expected_profile, declared_length)
+        let decoded =
+            match Self::decode_with_declared_length(packet, expected_profile, declared_length) {
+                Ok(decoded) => decoded,
+                Err(ProtocolError::UnexpectedDeclaredLength { .. })
+                    if transport == TransportKind::Receiver
+                        && packet.get(1) == Some(&PREFERENCES_DECLARED_LENGTH) =>
+                {
+                    Self::decode_with_declared_length(
+                        packet,
+                        expected_profile,
+                        PREFERENCES_DECLARED_LENGTH,
+                    )?
+                }
+                Err(err) => return Err(err),
+            };
+        if decoded.framing == PreferencesFraming::Full
+            && !decoded.framing.supports_transport(transport)
+        {
+            return Err(ProtocolError::InvalidReportLength {
+                expected: PreferencesFraming::Compact.transmitted_length(),
+                actual: packet.len(),
+            });
+        }
+        Ok(decoded)
     }
 
     fn decode_with_declared_length(
@@ -403,7 +584,7 @@ impl PreferencesReport {
             PREFERENCES_FULL_LENGTH => PreferencesFraming::Full,
             actual => {
                 return Err(ProtocolError::InvalidReportLength {
-                    expected: PREFERENCES_COMPACT_LENGTH,
+                    expected: expected_preferences_length_for_error(actual),
                     actual,
                 });
             }
@@ -427,15 +608,7 @@ impl PreferencesReport {
             });
         }
         if framing == PreferencesFraming::Full {
-            for (offset, value) in packet[FULL_PADDING_START..].iter().copied().enumerate() {
-                if value != 0 {
-                    return Err(ProtocolError::InvalidFixedByte {
-                        offset: FULL_PADDING_START + offset,
-                        expected: 0,
-                        actual: value,
-                    });
-                }
-            }
+            validate_fixed_range(packet, FULL_PADDING_START, PREFERENCES_FULL_LENGTH, 0)?;
         }
         let actual_checksum =
             u16::from_be_bytes([packet[CHECKSUM_OFFSET], packet[CHECKSUM_OFFSET + 1]]);
@@ -466,5 +639,165 @@ impl PreferencesReport {
     #[must_use]
     pub const fn as_full_bytes(&self) -> &[u8; PREFERENCES_FULL_LENGTH] {
         &self.bytes
+    }
+}
+
+const fn expected_preferences_length_for_error(actual: usize) -> usize {
+    if actual == PREFERENCES_COMPACT_LENGTH || actual == PREFERENCES_FULL_LENGTH {
+        PREFERENCES_COMPACT_LENGTH
+    } else if actual < PREFERENCES_COMPACT_LENGTH {
+        PREFERENCES_COMPACT_LENGTH
+    } else if actual < PREFERENCES_FULL_LENGTH {
+        PREFERENCES_FULL_LENGTH
+    } else {
+        PREFERENCES_FULL_LENGTH
+    }
+}
+
+fn validate_fixed_range(
+    packet: &[u8],
+    start: usize,
+    end: usize,
+    expected: u8,
+) -> Result<(), ProtocolError> {
+    crate::protocol::profile::validate_fixed_range(packet, start, end, expected)
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+    use crate::{ProfileId, TransportKind};
+
+    fn state() -> PreferencesState {
+        PreferencesState::new(
+            ProfileId::try_from(1).unwrap(),
+            0x00,
+            0x03,
+            0xa8,
+            [0x00, 0x00, 0xff],
+            0x01,
+            0x04,
+        )
+    }
+
+    #[test]
+    fn compact_is_valid_for_every_transport() {
+        for transport in [
+            TransportKind::Wired,
+            TransportKind::Ble,
+            TransportKind::Receiver,
+        ] {
+            assert!(PreferencesFraming::Compact.supports_transport(transport));
+            let report = PreferencesReport::encode_framed(&state(), PreferencesFraming::Compact);
+            assert_eq!(report.as_bytes().len(), PREFERENCES_COMPACT_LENGTH);
+            assert!(
+                PreferencesReport::decode_for_transport(
+                    report.as_bytes(),
+                    transport,
+                    ProfileId::try_from(1).unwrap()
+                )
+                .is_ok()
+                    || transport == TransportKind::Ble
+                        && report.as_bytes().len() == PREFERENCES_COMPACT_LENGTH
+            );
+        }
+    }
+
+    #[test]
+    fn full_is_only_valid_for_usb_transports() {
+        assert!(PreferencesFraming::Full.supports_transport(TransportKind::Wired));
+        assert!(PreferencesFraming::Full.supports_transport(TransportKind::Receiver));
+        assert!(!PreferencesFraming::Full.supports_transport(TransportKind::Ble));
+        let full = PreferencesReport::encode_framed(&state(), PreferencesFraming::Full);
+        assert_eq!(full.as_bytes().len(), PREFERENCES_FULL_LENGTH);
+        assert!(
+            PreferencesReport::decode(full.as_bytes(), ProfileId::try_from(1).unwrap()).is_ok()
+        );
+        assert!(
+            PreferencesReport::decode_for_transport(
+                full.as_bytes(),
+                TransportKind::Wired,
+                ProfileId::try_from(1).unwrap()
+            )
+            .is_ok()
+        );
+        assert!(
+            PreferencesReport::decode_for_transport(
+                full.as_bytes(),
+                TransportKind::Receiver,
+                ProfileId::try_from(1).unwrap()
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            PreferencesReport::decode_for_transport(
+                full.as_bytes(),
+                TransportKind::Ble,
+                ProfileId::try_from(1).unwrap()
+            ),
+            Err(crate::ProtocolError::InvalidReportLength { .. })
+        ));
+    }
+
+    #[test]
+    fn encode_for_transport_prevents_ble_full() {
+        assert!(
+            PreferencesReport::encode_framed_for_transport(
+                &state(),
+                TransportKind::Ble,
+                PreferencesFraming::Full
+            )
+            .is_err()
+        );
+        assert!(
+            PreferencesReport::encode_framed_for_transport(
+                &state(),
+                TransportKind::Ble,
+                PreferencesFraming::Compact
+            )
+            .is_ok()
+        );
+        assert!(
+            PreferencesReport::encode_framed_for_transport(
+                &state(),
+                TransportKind::Wired,
+                PreferencesFraming::Full
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn malformed_lengths_report_truthful_expected() {
+        let compact = PreferencesReport::encode_framed(&state(), PreferencesFraming::Compact);
+        let bytes = compact.as_bytes();
+        // 12 is short, expect compact (13)
+        assert_eq!(
+            PreferencesReport::decode(&bytes[..12], ProfileId::try_from(1).unwrap()),
+            Err(crate::ProtocolError::InvalidReportLength {
+                expected: PREFERENCES_COMPACT_LENGTH,
+                actual: 12
+            })
+        );
+        // 14 is between compact and full, expect full (15)
+        let mut fourteen = bytes.to_vec();
+        fourteen.push(0);
+        assert_eq!(
+            PreferencesReport::decode(&fourteen, ProfileId::try_from(1).unwrap()),
+            Err(crate::ProtocolError::InvalidReportLength {
+                expected: PREFERENCES_FULL_LENGTH,
+                actual: 14
+            })
+        );
+        // 16 is long, expect full
+        let mut long = bytes.to_vec();
+        long.extend_from_slice(&[0, 0, 0]);
+        assert_eq!(
+            PreferencesReport::decode(&long, ProfileId::try_from(1).unwrap()),
+            Err(crate::ProtocolError::InvalidReportLength {
+                expected: PREFERENCES_FULL_LENGTH,
+                actual: 16
+            })
+        );
     }
 }

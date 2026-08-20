@@ -347,7 +347,17 @@ impl Worker {
                 Err(failure) => last_failure = failure,
             }
         }
+        let section = match request {
+            ReadbackRequest::Version => "version",
+            ReadbackRequest::ProfileMetadata => "profile metadata",
+            ReadbackRequest::PollingRate(_) => "polling rate",
+            ReadbackRequest::Dpi(_) => "dpi",
+            ReadbackRequest::Preferences(_) => "preferences",
+            ReadbackRequest::Buttons(_) => "buttons",
+        };
         Err(DriverError::ReadAttemptsExhausted {
+            section,
+            profile: request.target_profile(),
             attempts,
             last: last_failure,
         })
@@ -434,7 +444,7 @@ pub(crate) fn spawn_worker(
     transport_kind: TransportKind,
     open_transport: impl FnOnce() -> Result<Box<dyn FeatureTransport>, DriverError> + Send + 'static,
 ) -> Result<MouseHandle, DriverError> {
-    let (commands, requests) = mpsc::channel();
+    let (commands, requests) = mpsc::sync_channel(32);
     let (opened, result) = mpsc::sync_channel(1);
     let (input_events, _) = broadcast::channel(16);
     thread::Builder::new()
@@ -773,7 +783,6 @@ mod tests {
             POLLING_RATE_1,
         );
         let (handle, remaining) = handle(steps, test_policy(1));
-
         let error = handle
             .read_polling_rate(target)
             .await
@@ -781,12 +790,14 @@ mod tests {
         assert!(matches!(
             error,
             DriverError::ReadAttemptsExhausted {
+                section: "polling rate",
+                profile: Some(p),
                 attempts: 1,
                 last: ReadFailure::Protocol(ProtocolError::ProfileMismatch {
                     expected: 2,
                     actual: 1,
                 }),
-            }
+            } if p == target
         ));
         assert_eq!(remaining.load(Ordering::SeqCst), 0);
     }
@@ -1307,6 +1318,8 @@ mod tests {
         assert!(matches!(
             error,
             DriverError::ReadAttemptsExhausted {
+                section: "profile metadata",
+                profile: None,
                 attempts: 3,
                 last: ReadFailure::Protocol(ProtocolError::InvalidReadinessStatus { value: 2 }),
             }
@@ -1348,6 +1361,8 @@ mod tests {
         assert!(matches!(
             error,
             DriverError::ReadAttemptsExhausted {
+                section: "profile metadata",
+                profile: None,
                 attempts: 2,
                 last: ReadFailure::ReadinessTimeout,
             }
@@ -1363,6 +1378,48 @@ mod tests {
             .await
             .expect_err("transport failure must be returned directly");
         assert!(matches!(error, DriverError::Transport(_)));
+        assert_eq!(remaining.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn read_exhaustion_carries_section_and_profile_context() {
+        let target = profile(2);
+        let mut steps = Vec::new();
+        // Force DPI read to exhaust with readiness timeouts; target profile is 2.
+        for _ in 0..2 {
+            steps.push(Step::Send(selector(ReadbackRequest::Dpi(target))));
+            steps.push(Step::Get {
+                report_id: 0xa0,
+                capacity: 8,
+                response: not_ready(),
+            });
+        }
+        let (handle, remaining) = handle(
+            steps,
+            ReadPolicy {
+                max_attempts: NonZeroU8::new(2).expect("two is nonzero"),
+                readiness_timeout: Duration::ZERO,
+                poll_interval: Duration::ZERO,
+                write_delay: Duration::ZERO,
+            },
+        );
+        let error = handle
+            .read_dpi(target)
+            .await
+            .expect_err("DPI exhaustion must be reported");
+        match error {
+            DriverError::ReadAttemptsExhausted {
+                section,
+                profile,
+                attempts: 2,
+                last: ReadFailure::ReadinessTimeout,
+            } => {
+                assert_eq!(section, "dpi");
+                assert_eq!(profile, Some(target));
+                assert!(format!("{error}").contains("dpi"));
+            }
+            other => panic!("unexpected error shape: {other:?}"),
+        }
         assert_eq!(remaining.load(Ordering::SeqCst), 0);
     }
 }

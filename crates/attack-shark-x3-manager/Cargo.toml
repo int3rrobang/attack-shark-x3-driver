@@ -9,8 +9,8 @@ repository.workspace = true
 
 [features]
 default = ["usb"]
-usb = ["attack-shark-x3/usb"]
-ble = ["attack-shark-x3/ble"]
+usb = ["attack-shark-x3/usb", "dep:tokio"]
+ble = ["attack-shark-x3/ble", "dep:tokio"]
 
 [dependencies]
 attack-shark-x3 = { path = "../attack-shark-x3", default-features = false, features = ["serde"] }
@@ -19,10 +19,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 fs2 = "0.4"
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["rt", "sync", "time"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

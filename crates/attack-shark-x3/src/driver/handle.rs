@@ -98,8 +98,15 @@ pub enum DriverError {
     #[error("the HID worker is no longer available")]
     WorkerUnavailable,
 
-    #[error("armed read failed after {attempts} attempts: {last}")]
+    #[error("the HID worker command queue is full")]
+    WorkerBusy,
+
+    #[error(
+        "armed read for {section} (profile {profile:?}) failed after {attempts} attempts: {last}"
+    )]
     ReadAttemptsExhausted {
+        section: &'static str,
+        profile: Option<ProfileId>,
         attempts: u8,
         #[source]
         last: ReadFailure,
@@ -140,7 +147,7 @@ pub struct ProfileSnapshot {
 /// input-event subscription.
 #[derive(Clone, Debug)]
 pub struct MouseHandle {
-    pub(crate) commands: mpsc::Sender<Command>,
+    pub(crate) commands: mpsc::SyncSender<Command>,
     pub(crate) input_events: broadcast::Sender<InputEvent>,
     pub(crate) battery_level: Arc<Mutex<Option<u8>>>,
     pub(crate) input_available: Arc<AtomicBool>,
@@ -548,8 +555,11 @@ impl MouseHandle {
     ) -> Result<T, DriverError> {
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(make_command(reply))
-            .map_err(|_| DriverError::WorkerUnavailable)?;
+            .try_send(make_command(reply))
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => DriverError::WorkerBusy,
+                mpsc::TrySendError::Disconnected(_) => DriverError::WorkerUnavailable,
+            })?;
         response.await.map_err(|_| DriverError::WorkerUnavailable)?
     }
 }
@@ -628,9 +638,16 @@ pub(crate) enum Command {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        sync::{Arc, Mutex, atomic::AtomicBool},
+        time::Duration,
+    };
 
-    use super::ReadPolicy;
+    use tokio::sync::broadcast;
+
+    use crate::TransportKind;
+
+    use super::{Command, DriverError, MouseHandle, ReadPolicy};
 
     #[test]
     fn receiver_policy_remains_bounded() {
@@ -640,5 +657,52 @@ mod tests {
         assert_eq!(policy.max_attempts.get(), 4);
         assert_eq!(policy.poll_interval, Duration::from_millis(5));
         assert_eq!(policy.write_delay, Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn bounded_command_queue_returns_busy_when_full() {
+        let (commands, _receiver) = std::sync::mpsc::sync_channel::<Command>(1);
+        // Fill the single slot.
+        let (reply, _) = tokio::sync::oneshot::channel::<Result<(), DriverError>>();
+        commands
+            .try_send(Command::SendRawFeatureReport {
+                bytes: vec![0x00],
+                reply,
+            })
+            .expect("first send must succeed");
+        let (input_events, _) = broadcast::channel(16);
+        let handle = MouseHandle {
+            commands,
+            input_events,
+            battery_level: Arc::new(Mutex::new(None)),
+            input_available: Arc::new(AtomicBool::new(false)),
+            input_stop: Arc::new(AtomicBool::new(false)),
+            transport_kind: TransportKind::Wired,
+        };
+        let error = handle
+            .send_raw_feature_report(vec![0x01])
+            .await
+            .expect_err("saturated queue must be reported as busy");
+        assert!(matches!(error, DriverError::WorkerBusy));
+    }
+
+    #[tokio::test]
+    async fn disconnected_command_queue_reports_unavailable() {
+        let (commands, receiver) = std::sync::mpsc::sync_channel::<Command>(1);
+        drop(receiver);
+        let (input_events, _) = broadcast::channel(16);
+        let handle = MouseHandle {
+            commands,
+            input_events,
+            battery_level: Arc::new(Mutex::new(None)),
+            input_available: Arc::new(AtomicBool::new(false)),
+            input_stop: Arc::new(AtomicBool::new(false)),
+            transport_kind: TransportKind::Wired,
+        };
+        let error = handle
+            .send_raw_feature_report(vec![0x01])
+            .await
+            .expect_err("disconnected queue must be unavailable");
+        assert!(matches!(error, DriverError::WorkerUnavailable));
     }
 }

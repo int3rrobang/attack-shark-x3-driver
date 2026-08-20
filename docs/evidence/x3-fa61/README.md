@@ -13,8 +13,9 @@ generalized to X11 without independent evidence.
 
 The following byte-for-byte USBPcap sessions were preserved from the historical
 `scripts/fa61-test-suite.ps1` runner and its sibling `tshark_mouse` capture
-repository. Each directory contains the combined capture plus the individual
-time-sliced capture for every guided step.
+repository. The runner is not included in this repository and is not currently runnable;
+the captures below are the authoritative evidence. Each directory contains the combined
+capture plus the individual time-sliced capture for every guided step.
 
 For a handoff-oriented session index and inspection commands, see
 [`captures/README.md`](captures/README.md).

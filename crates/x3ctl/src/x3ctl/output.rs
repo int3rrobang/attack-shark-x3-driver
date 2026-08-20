@@ -29,6 +29,11 @@ impl Output {
         Self { fmt }
     }
 
+    #[must_use]
+    pub fn is_json(&self) -> bool {
+        self.fmt == OutputFormat::Json
+    }
+
     /// Render and print a successful command result.
     ///
     /// Human output is exactly the caller-provided display text. JSON output
@@ -172,5 +177,62 @@ mod tests {
     #[test]
     fn hex_is_lowercase_and_zero_padded() {
         assert_eq!(Output::hex(&[0x00, 0x01, 0xab, 0xff]), "0001abff");
+    }
+
+    #[test]
+    fn json_is_single_parseable_document_with_raw_detail() {
+        let output = Output::new(OutputFormat::Json);
+        // Simulate power-cycle combined payload: instruction + raw outcome detail
+        let payload = json!({
+            "instruction": "Unplug USB, turn the mouse off",
+            "outcome": { "profile": 1, "verified": true }
+        });
+        let rendered = output
+            .render_success("Power-cycle verification for profile 1", &payload)
+            .unwrap();
+        // Must be exactly one JSON document, no embedded newlines from double envelope
+        assert!(!rendered.contains('\n'));
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["ok"], json!(true));
+        assert_eq!(
+            parsed["data"]["instruction"],
+            json!("Unplug USB, turn the mouse off")
+        );
+        assert_eq!(parsed["data"]["outcome"]["verified"], json!(true));
+        // The human text does not leak into JSON data
+        assert!(parsed["data"].get("human").is_none());
+    }
+
+    #[test]
+    fn json_error_is_also_single_document() {
+        let output = Output::new(OutputFormat::Json);
+        let rendered = output.render_error("something failed").unwrap();
+        assert_eq!(rendered.matches('\n').count(), 0);
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["ok"], json!(false));
+    }
+
+    #[test]
+    fn is_json_distinguishes_formats() {
+        assert!(Output::new(OutputFormat::Json).is_json());
+        assert!(!Output::new(OutputFormat::Human).is_json());
+    }
+
+    #[test]
+    fn human_output_leads_with_readable_action_but_json_keeps_raw() {
+        // Human bind-like text should be readable; raw field stays in JSON data
+        let human = "Set left button to profile-cycle";
+        assert!(human.starts_with("Set left button to"));
+        let payload = json!({"slot": 0, "action": 0x34, "raw": [0x34, 0x00, 0x00]});
+        let output = Output::new(OutputFormat::Json);
+        let rendered = output.render_success(human, &payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        // JSON retains raw automation fields
+        assert_eq!(parsed["data"]["raw"], json!([0x34, 0x00, 0x00]));
+        // Human output when not JSON is verbatim readable
+        let human_out = Output::new(OutputFormat::Human)
+            .render_success(human, &payload)
+            .unwrap();
+        assert_eq!(human_out, human);
     }
 }

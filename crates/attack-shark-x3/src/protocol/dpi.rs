@@ -37,7 +37,7 @@ pub struct SensorOptions {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct DpiState {
     pub profile: ProfileId,
@@ -119,17 +119,83 @@ impl DpiState {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for DpiState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Helper {
+            profile: ProfileId,
+            stages: Vec<DpiValue>,
+            active_stage: StageIndex,
+            sensor: SensorOptions,
+            #[serde(with = "preserved_tail_hex")]
+            preserved_tail: [u8; FIXED_TAIL_LENGTH],
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        DpiState::new(
+            helper.profile,
+            helper.stages,
+            helper.active_stage,
+            helper.preserved_tail,
+        )
+        .map(|state| state.with_sensor(helper.sensor))
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Wire framing for a DPI report.
+///
+/// `Compact` (52 bytes) is the canonical write image for every transport
+/// (FA61 wired, FA60 receiver, and BLE FEE3). `Full` (56 bytes) is the
+/// normalized feature-report readback observed only on USB
+/// (`hid_get_feature_report` on FA61 and the FA60 prepared-read path); it
+/// appends four trailing zero bytes to the compact image. BLE writes must use
+/// `Compact`; `Full` is a USB readback framing and is not advertised for BLE.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DpiFraming {
+    /// 52-byte compact write image used for every transport.
     Compact,
+    /// 56-byte USB readback image with four trailing zero bytes.
     Full,
 }
 
 impl DpiFraming {
-    const fn transmitted_length(self) -> usize {
+    #[must_use]
+    pub const fn transmitted_length(self) -> usize {
         match self {
             Self::Compact => DPI_WIRED_LENGTH,
             Self::Full => DPI_RECEIVER_LENGTH,
+        }
+    }
+
+    /// Returns whether this framing is valid for `transport`.
+    ///
+    /// `Compact` is valid for every transport. `Full` is only valid for the
+    /// USB transports (`Wired` and `Receiver`); BLE must use `Compact`.
+    #[must_use]
+    pub const fn supports_transport(self, transport: TransportKind) -> bool {
+        match self {
+            Self::Compact => true,
+            Self::Full => match transport {
+                TransportKind::Wired | TransportKind::Receiver => true,
+                TransportKind::Ble => false,
+            },
+        }
+    }
+
+    /// Valid wire lengths for `transport` in preference order.
+    #[must_use]
+    pub const fn valid_lengths_for_transport(transport: TransportKind) -> &'static [usize] {
+        match transport {
+            TransportKind::Ble => &[DPI_WIRED_LENGTH],
+            TransportKind::Wired | TransportKind::Receiver => {
+                &[DPI_WIRED_LENGTH, DPI_RECEIVER_LENGTH]
+            }
         }
     }
 }
@@ -150,19 +216,25 @@ pub struct DpiReport {
 impl DpiReport {
     /// Encodes a model state with the write framing for `transport`.
     ///
+    /// Writes are always `Compact` (52 bytes) regardless of transport; `Full`
+    /// (56 bytes) is the USB readback framing and is not used for BLE writes.
+    ///
     /// # Errors
     ///
     /// Returns an error when the stage count or active stage is invalid.
     pub fn encode(state: &DpiState, transport: TransportKind) -> Result<Self, ProtocolError> {
-        let framing = match transport {
-            TransportKind::Wired | TransportKind::Ble | TransportKind::Receiver => {
-                DpiFraming::Compact
-            }
-        };
-        Self::encode_framed(state, framing)
+        let _ = transport;
+        // Compact is valid for every transport; Full is USB-only and must not
+        // be advertised for BLE. Keep writes compact for all transports.
+        Self::encode_framed(state, DpiFraming::Compact)
     }
 
     /// Encodes a model state with an explicit compact or full framing.
+    ///
+    /// `Compact` is valid for every transport. `Full` is the USB readback
+    /// framing (`Wired` and `Receiver`) and must not be used for BLE writes;
+    /// callers that need transport-aware validation should check
+    /// `framing.supports_transport(transport)` before encoding.
     ///
     /// # Errors
     ///
@@ -199,6 +271,25 @@ impl DpiReport {
             bytes,
             transmitted_length: framing.transmitted_length(),
         })
+    }
+    /// Encodes with transport-aware framing validation.
+    ///
+    /// `Compact` is valid for every transport; `Full` is only valid for
+    /// `Wired` and `Receiver`. Returns `InvalidReportLength` when the framing
+    /// is not supported for `transport`, preventing a BLE caller from
+    /// advertising an unsupported full readback framing.
+    pub fn encode_framed_for_transport(
+        state: &DpiState,
+        transport: TransportKind,
+        framing: DpiFraming,
+    ) -> Result<Self, ProtocolError> {
+        if !framing.supports_transport(transport) {
+            return Err(ProtocolError::InvalidReportLength {
+                expected: DpiFraming::Compact.transmitted_length(),
+                actual: framing.transmitted_length(),
+            });
+        }
+        Self::encode_framed(state, framing)
     }
 
     /// Decodes and validates a DPI report for an explicit target profile.
@@ -240,15 +331,7 @@ impl DpiReport {
             });
         }
         if framing == DpiFraming::Full {
-            for (offset, value) in packet[DPI_WIRED_LENGTH..].iter().copied().enumerate() {
-                if value != 0 {
-                    return Err(ProtocolError::InvalidFixedByte {
-                        offset: DPI_WIRED_LENGTH + offset,
-                        expected: 0,
-                        actual: value,
-                    });
-                }
-            }
+            validate_fixed_range(packet, DPI_WIRED_LENGTH, DPI_RECEIVER_LENGTH, 0)?;
         }
 
         let actual_checksum =
@@ -337,15 +420,26 @@ fn decode_framing(transport: TransportKind, actual: usize) -> Result<DpiFraming,
             Ok(DpiFraming::Full)
         }
         _ => Err(ProtocolError::InvalidReportLength {
-            expected: expected_write_length(transport),
+            expected: expected_length_for_error(transport, actual),
             actual,
         }),
     }
 }
 
-const fn expected_write_length(transport: TransportKind) -> usize {
+const fn expected_length_for_error(transport: TransportKind, actual: usize) -> usize {
     match transport {
-        TransportKind::Wired | TransportKind::Ble | TransportKind::Receiver => DPI_WIRED_LENGTH,
+        TransportKind::Ble => DPI_WIRED_LENGTH,
+        TransportKind::Wired | TransportKind::Receiver => {
+            if actual == DPI_WIRED_LENGTH || actual == DPI_RECEIVER_LENGTH {
+                DPI_WIRED_LENGTH
+            } else if actual < DPI_WIRED_LENGTH {
+                DPI_WIRED_LENGTH
+            } else if actual < DPI_RECEIVER_LENGTH {
+                DPI_RECEIVER_LENGTH
+            } else {
+                DPI_RECEIVER_LENGTH
+            }
+        }
     }
 }
 
@@ -389,6 +483,99 @@ fn decode_toggle(field: &'static str, value: u8) -> Result<bool, ProtocolError> 
         0 => Ok(false),
         1 => Ok(true),
         value => Err(ProtocolError::InvalidSensorValue { field, value }),
+    }
+}
+
+fn validate_fixed_range(
+    packet: &[u8],
+    start: usize,
+    end: usize,
+    expected: u8,
+) -> Result<(), ProtocolError> {
+    crate::protocol::profile::validate_fixed_range(packet, start, end, expected)
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod dpi_state_serde_tests {
+    use super::DpiState;
+    use crate::{DpiValue, ProfileId, StageIndex};
+
+    fn sample_tail() -> [u8; 25] {
+        [
+            0xff, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00, 0xff,
+            0xff, 0xff, 0x00, 0xff, 0xff, 0x40, 0x00, 0xff, 0xff, 0xff, 0x01,
+        ]
+    }
+
+    fn valid_state() -> DpiState {
+        let stages = vec![
+            DpiValue::try_from(800).unwrap(),
+            DpiValue::try_from(1600).unwrap(),
+            DpiValue::try_from(2400).unwrap(),
+        ];
+        DpiState::new(
+            ProfileId::try_from(1).unwrap(),
+            stages,
+            StageIndex::try_from(2).unwrap(),
+            sample_tail(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn dpi_state_round_trip_preserves_shape() {
+        let state = valid_state();
+        let json = serde_json::to_string(&state).unwrap();
+        // ensure shape contains expected keys and integer values
+        assert!(json.contains("\"profile\":1"));
+        assert!(json.contains("\"stages\":[800,1600,2400]"));
+        assert!(json.contains("\"activeStage\":2"));
+        assert!(json.contains("\"preservedTail\":\""));
+        let restored: DpiState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, restored);
+    }
+
+    #[test]
+    fn dpi_state_rejects_invalid_dpi_in_stages() {
+        // misaligned DPI 51 should be rejected via DpiValue deserialization
+        let json = r#"{"profile":1,"stages":[51],"activeStage":1,"sensor":{"liftOffDistance":"oneMillimeter","rippleControl":false,"angleSnap":false,"motionSync":false},"preservedTail":"ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"}"#;
+        assert!(serde_json::from_str::<DpiState>(json).is_err());
+        let json2 = r#"{"profile":1,"stages":[800,26001],"activeStage":1,"sensor":{"liftOffDistance":"oneMillimeter","rippleControl":false,"angleSnap":false,"motionSync":false},"preservedTail":"ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"}"#;
+        assert!(serde_json::from_str::<DpiState>(json2).is_err());
+    }
+
+    #[test]
+    fn dpi_state_rejects_invalid_profile() {
+        let json = r#"{"profile":0,"stages":[800],"activeStage":1,"sensor":{"liftOffDistance":"oneMillimeter","rippleControl":false,"angleSnap":false,"motionSync":false},"preservedTail":"ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"}"#;
+        assert!(serde_json::from_str::<DpiState>(json).is_err());
+        let json2 = r#"{"profile":6,"stages":[800],"activeStage":1,"sensor":{"liftOffDistance":"oneMillimeter","rippleControl":false,"angleSnap":false,"motionSync":false},"preservedTail":"ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"}"#;
+        assert!(serde_json::from_str::<DpiState>(json2).is_err());
+    }
+
+    #[test]
+    fn dpi_state_rejects_active_stage_out_of_range() {
+        let json = r#"{"profile":1,"stages":[800,1600],"activeStage":3,"sensor":{"liftOffDistance":"oneMillimeter","rippleControl":false,"angleSnap":false,"motionSync":false},"preservedTail":"ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"}"#;
+        assert!(serde_json::from_str::<DpiState>(json).is_err());
+    }
+
+    #[test]
+    fn dpi_state_rejects_empty_stages() {
+        let json = r#"{"profile":1,"stages":[],"activeStage":1,"sensor":{"liftOffDistance":"oneMillimeter","rippleControl":false,"angleSnap":false,"motionSync":false},"preservedTail":"ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"}"#;
+        assert!(serde_json::from_str::<DpiState>(json).is_err());
+    }
+
+    #[test]
+    fn dpi_state_rejects_too_many_stages() {
+        let json = r#"{"profile":1,"stages":[800,800,800,800,800,800,800,800,800],"activeStage":1,"sensor":{"liftOffDistance":"oneMillimeter","rippleControl":false,"angleSnap":false,"motionSync":false},"preservedTail":"ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"}"#;
+        assert!(serde_json::from_str::<DpiState>(json).is_err());
+    }
+
+    #[test]
+    fn dpi_state_rejects_invalid_stage_index() {
+        let json = r#"{"profile":1,"stages":[800],"activeStage":0,"sensor":{"liftOffDistance":"oneMillimeter","rippleControl":false,"angleSnap":false,"motionSync":false},"preservedTail":"ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"}"#;
+        assert!(serde_json::from_str::<DpiState>(json).is_err());
+        let json2 = r#"{"profile":1,"stages":[800],"activeStage":9,"sensor":{"liftOffDistance":"oneMillimeter","rippleControl":false,"angleSnap":false,"motionSync":false},"preservedTail":"ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"}"#;
+        assert!(serde_json::from_str::<DpiState>(json2).is_err());
     }
 }
 
@@ -492,4 +679,176 @@ mod preserved_tail_hex_tests {
     #[derive(serde::Serialize, serde::Deserialize)]
     #[serde(transparent)]
     struct Tail(#[serde(with = "preserved_tail_hex")] [u8; 25]);
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+    use crate::{DpiValue, ProfileId, StageIndex, TransportKind};
+
+    fn state() -> DpiState {
+        let stages = vec![DpiValue::try_from(800).unwrap()];
+        DpiState::new(
+            ProfileId::try_from(1).unwrap(),
+            stages,
+            StageIndex::try_from(1).unwrap(),
+            [
+                0xff, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00, 0xff,
+                0xff, 0xff, 0x00, 0xff, 0xff, 0x40, 0x00, 0xff, 0xff, 0xff, 0x01,
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn compact_is_valid_for_every_transport() {
+        for transport in [
+            TransportKind::Wired,
+            TransportKind::Ble,
+            TransportKind::Receiver,
+        ] {
+            assert!(DpiFraming::Compact.supports_transport(transport));
+            assert_eq!(DpiFraming::Compact.transmitted_length(), DPI_WIRED_LENGTH);
+            let report = DpiReport::encode_framed(&state(), DpiFraming::Compact).unwrap();
+            assert_eq!(report.as_bytes().len(), DPI_WIRED_LENGTH);
+            let decoded = DpiReport::decode(
+                report.as_bytes(),
+                transport,
+                ProfileId::try_from(1).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(decoded.framing, DpiFraming::Compact);
+            assert_eq!(decoded.transport, transport);
+        }
+    }
+
+    #[test]
+    fn full_is_only_valid_for_usb_transports() {
+        assert!(DpiFraming::Full.supports_transport(TransportKind::Wired));
+        assert!(DpiFraming::Full.supports_transport(TransportKind::Receiver));
+        assert!(!DpiFraming::Full.supports_transport(TransportKind::Ble));
+        assert_eq!(DpiFraming::Full.transmitted_length(), DPI_RECEIVER_LENGTH);
+
+        let full = DpiReport::encode_framed(&state(), DpiFraming::Full).unwrap();
+        assert_eq!(full.as_bytes().len(), DPI_RECEIVER_LENGTH);
+        // Full decodes for Wired and Receiver but not for Ble.
+        assert!(
+            DpiReport::decode(
+                full.as_bytes(),
+                TransportKind::Wired,
+                ProfileId::try_from(1).unwrap()
+            )
+            .is_ok()
+        );
+        assert!(
+            DpiReport::decode(
+                full.as_bytes(),
+                TransportKind::Receiver,
+                ProfileId::try_from(1).unwrap()
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            DpiReport::decode(
+                full.as_bytes(),
+                TransportKind::Ble,
+                ProfileId::try_from(1).unwrap()
+            ),
+            Err(ProtocolError::InvalidReportLength { .. })
+        ));
+    }
+
+    #[test]
+    fn encode_for_transport_prevents_ble_full() {
+        assert!(matches!(
+            DpiReport::encode_framed_for_transport(&state(), TransportKind::Ble, DpiFraming::Full),
+            Err(ProtocolError::InvalidReportLength { .. })
+        ));
+        assert!(
+            DpiReport::encode_framed_for_transport(
+                &state(),
+                TransportKind::Ble,
+                DpiFraming::Compact
+            )
+            .is_ok()
+        );
+        assert!(
+            DpiReport::encode_framed_for_transport(
+                &state(),
+                TransportKind::Wired,
+                DpiFraming::Full
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn malformed_lengths_report_truthful_expected() {
+        // Ble only supports 52, so any other length reports 52.
+        let short = vec![0u8; 51];
+        assert_eq!(
+            DpiReport::decode(&short, TransportKind::Ble, ProfileId::try_from(1).unwrap()),
+            Err(ProtocolError::InvalidReportLength {
+                expected: DPI_WIRED_LENGTH,
+                actual: 51
+            })
+        );
+        // Wired: 53 should hint at Full (56) rather than always Compact.
+        let mid = vec![0u8; 53];
+        assert_eq!(
+            DpiReport::decode(&mid, TransportKind::Wired, ProfileId::try_from(1).unwrap()),
+            Err(ProtocolError::InvalidReportLength {
+                expected: DPI_RECEIVER_LENGTH,
+                actual: 53
+            })
+        );
+        let long = vec![0u8; 57];
+        assert_eq!(
+            DpiReport::decode(&long, TransportKind::Wired, ProfileId::try_from(1).unwrap()),
+            Err(ProtocolError::InvalidReportLength {
+                expected: DPI_RECEIVER_LENGTH,
+                actual: 57
+            })
+        );
+    }
+
+    #[test]
+    fn valid_compact_and_full_usb_cases_remain_accepted() {
+        let compact = DpiReport::encode(&state(), TransportKind::Wired).unwrap();
+        assert_eq!(compact.as_bytes().len(), DPI_WIRED_LENGTH);
+        assert!(
+            DpiReport::decode(
+                compact.as_bytes(),
+                TransportKind::Wired,
+                ProfileId::try_from(1).unwrap()
+            )
+            .is_ok()
+        );
+        assert!(
+            DpiReport::decode(
+                compact.as_bytes(),
+                TransportKind::Receiver,
+                ProfileId::try_from(1).unwrap()
+            )
+            .is_ok()
+        );
+
+        let full = DpiReport::encode_framed(&state(), DpiFraming::Full).unwrap();
+        assert!(
+            DpiReport::decode(
+                full.as_bytes(),
+                TransportKind::Wired,
+                ProfileId::try_from(1).unwrap()
+            )
+            .is_ok()
+        );
+        assert!(
+            DpiReport::decode(
+                full.as_bytes(),
+                TransportKind::Receiver,
+                ProfileId::try_from(1).unwrap()
+            )
+            .is_ok()
+        );
+    }
 }

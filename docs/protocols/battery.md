@@ -1,7 +1,7 @@
 # Battery status
 
 The X3/M600 FA60 receiver reports battery level through an autonomous HID
-interrupt IN report on endpoint `0x83`. The level is on a **0–10 scale**
+interrupt IN report on endpoint `0x83`. The level is on a **1–10 scale**
 (not 0–100). The stock X3.exe multiplies by 10 for percentage display.
 This is confirmed by disassembly of X3.exe's message handler and a live
 capture showing `03 10 40 01 0a` while the mouse was at 100% charge.
@@ -10,7 +10,7 @@ capture showing `03 10 40 01 0a` while the mouse was at 100% charge.
 
 ```text
 03 10 40 01 <level>
-│  │  │  │  └─ battery level (0–10 scale; 0x0a = 10 → 100%)
+│  │  │  │  └─ battery level (1–10 scale; 0x0a = 10 → 100%)
 │  │  │  └──── battery status flag (0x01 observed)
 │  │  └─────── presence/connection flag (0x40)
 │  └────────── model ID (0x10 = 16)
@@ -19,8 +19,7 @@ capture showing `03 10 40 01 0a` while the mouse was at 100% charge.
 
 - **Interface**: 2
 - **Endpoint**: `0x83` (Interrupt IN)
-- **Transfer Type**: Interrupt (autonomous device push, no host request needed)
-- **Level encoding**: Byte 4 is 0–10; multiply by 10 for percentage
+- **Level encoding**: Byte 4 is 1–10; multiply by 10 for percentage
 - **Charging flag**: Delivered in the low byte of the DLL's PostMessage lParam
   (0 = charging, nonzero = discharging)
 
@@ -28,7 +27,7 @@ capture showing `03 10 40 01 0a` while the mouse was at 100% charge.
 
 | Variant | Path | Status | Evidence |
 |:--------|:-----|:-------|:---------|
-| X3/M600 FA60 receiver | Endpoint `0x83` interrupt IN, report `03 10 40 01 <level>` | **Confirmed**: level 0–10, ×10 = percentage | disassembly + capture 2026-07-24 |
+| X3/M600 FA60 receiver | Endpoint `0x83` interrupt IN, report `03 10 40 01 <level>` | **Confirmed**: level 1–10, ×10 = percentage | disassembly + capture 2026-07-24 |
 | X11 receiver | Endpoint `0x83` interrupt IN, report `03 55 40 01 <pct>` | Established: level 0–100 directly | static-analysis + implementation |
 | X3/FA61 wired | Auxiliary collection (usage_page `0x000a`, Col03) exists but emits no battery reports | **Confirmed unavailable**: firmware suppresses battery telemetry when wired; DPI button reports (`03 00 10 <stage> 00`) DO arrive on this collection | live-capture 2026-07-24 |
 | X3/M600 BLE | GATT `0x180f` / `0x2a19` | Read + notify confirmed | live-confirmed |
@@ -50,7 +49,7 @@ hiddriver_2.dll background thread (RVA 0x1560):
 
 | Bits | Field | Values |
 |------|-------|--------|
-| 15–8 | Battery level | 1–10 (0–10 scale) |
+| 15–8 | Battery level | 1–10 (1–10 scale) |
 | 7–0 | Charging flag | 0 = charging, ≠0 = discharging |
 
 ## X3.exe decode (disassembly)
@@ -62,7 +61,7 @@ hiddriver_2.dll background thread (RVA 0x1560):
 
 ; Unpack lParam
 413418: mov edx, [ebp+0xc]      ; edx = lParam from DLL
-413423: shr eax, 0x8            ; high byte = battery level (0–10)
+413423: shr eax, 0x8            ; high byte = battery level (1–10)
 413426: movzx esi, al           ; esi = level
 413429: test dl, dl             ; low byte = charging flag
 41342b: jne 0x41343b            ; nonzero → discharging
@@ -106,7 +105,7 @@ hiddriver_2.dll background thread (RVA 0x1560):
    seconds while the mouse is active.
 2. **Wireless only**: This report is only active on the 2.4 GHz receiver. Wired
    mode does not emit battery reports on this endpoint.
-3. **0–10 scale**: Byte 4 ranges from 1 to 10. Multiply by 10 for percentage.
+3. **1–10 scale**: Byte 4 ranges from 1 to 10. Multiply by 10 for percentage.
    X3.exe validates the range and discards values outside 1–10.
 4. **Suppressed while charging**: When the mouse detects VBUS (plugged into any
    USB power source), the firmware stops emitting the battery telemetry report.
@@ -163,7 +162,7 @@ fn parse_battery_report(data: &[u8]) -> Option<(u8, bool)> {
         return None;
     }
     match (data[0], data[1], data[2], data[3]) {
-        // X3/M600 FA60: level is 0–10 scale
+        // X3/M600 FA60: level is 1–10 scale
         (0x03, 0x10, 0x40, 0x01) => {
             let level = data[4];
             if level >= 1 && level <= 10 {

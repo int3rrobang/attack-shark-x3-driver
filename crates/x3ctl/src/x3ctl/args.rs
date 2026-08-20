@@ -372,8 +372,6 @@ pub struct DebugDpiArgs {
     pub angle_snap: bool,
     #[arg(long, default_value_t = false)]
     pub motion_sync: bool,
-    #[arg(long, value_enum, default_value_t = TransportArg::Wired)]
-    pub transport: TransportArg,
 }
 
 #[derive(Debug, Args)]
@@ -846,5 +844,73 @@ mod tests {
     fn bind_set_requires_both_slot_and_action() {
         assert!(Cli::try_parse_from(["x3ctl", "bind", "set", "--slot", "left"]).is_err());
         assert!(Cli::try_parse_from(["x3ctl", "bind", "set", "--action", "left-click"]).is_err());
+    }
+
+    #[test]
+    fn debug_dpi_global_transport_controls_packet_transport() {
+        // Global --transport should be the single control for debug dpi; no shadowed local.
+        let cli = Cli::try_parse_from([
+            "x3ctl",
+            "--transport",
+            "receiver",
+            "debug",
+            "dpi",
+            "--stages",
+            "800,1600",
+        ])
+        .expect("parse with leading global");
+        assert_eq!(cli.transport, TransportArg::Receiver);
+        let debug = match &cli.command {
+            Some(Command::Debug(DebugCommand::Dpi(args))) => args,
+            _ => panic!("expected debug dpi"),
+        };
+        // DebugDpiArgs no longer has its own transport field; only global exists.
+        // Verify stages still parse and other fields default correctly.
+        assert_eq!(debug.stages, vec![800, 1600]);
+
+        // Global can also be placed after the subcommand (clap global=true)
+        let cli2 = Cli::try_parse_from([
+            "x3ctl",
+            "debug",
+            "dpi",
+            "--stages",
+            "800,1600",
+            "--transport",
+            "wired",
+        ])
+        .expect("parse with trailing global");
+        // Because DebugDpiArgs has no local transport, the trailing --transport must bind to global.
+        assert_eq!(cli2.transport, TransportArg::Wired);
+
+        // Default global is Auto when not specified
+        let cli3 = Cli::try_parse_from(["x3ctl", "debug", "dpi", "--stages", "800"])
+            .expect("parse default");
+        assert_eq!(cli3.transport, TransportArg::Auto);
+    }
+
+    #[test]
+    fn global_transport_selection_is_unambiguous_for_debug() {
+        // Cli transport parsing accepts all known variants and debug sees same global
+        for (flag, expected) in [
+            ("auto", TransportArg::Auto),
+            ("wired", TransportArg::Wired),
+            ("receiver", TransportArg::Receiver),
+        ] {
+            let cli = Cli::try_parse_from(["x3ctl", "--transport", flag, "status"])
+                .unwrap_or_else(|e| panic!("{flag}: {e}"));
+            assert_eq!(cli.transport, expected);
+            // Debug should see the same global value
+            let cli_debug = Cli::try_parse_from([
+                "x3ctl",
+                "--transport",
+                flag,
+                "debug",
+                "dpi",
+                "--stages",
+                "800",
+            ])
+            .unwrap_or_else(|e| panic!("debug {flag}: {e}"));
+            assert_eq!(cli_debug.transport, expected);
+        }
     }
 }

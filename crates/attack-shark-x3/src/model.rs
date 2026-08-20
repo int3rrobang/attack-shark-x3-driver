@@ -13,7 +13,7 @@ pub enum TransportKind {
 
 /// A one-based X3 profile identifier.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ProfileId(u8);
 
 impl ProfileId {
@@ -53,7 +53,7 @@ impl std::fmt::Display for ProfileId {
 
 /// A one-based DPI stage index.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct StageIndex(u8);
 
 impl StageIndex {
@@ -93,7 +93,7 @@ impl std::fmt::Display for StageIndex {
 
 /// A DPI value supported by the X3 sensor, in DPI.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct DpiValue(u16);
 
 impl DpiValue {
@@ -132,6 +132,39 @@ impl std::fmt::Display for DpiValue {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for ProfileId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u8 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::try_from(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for StageIndex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u8 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::try_from(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for DpiValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u16 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::try_from(value).map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DpiValue, ProfileId, StageIndex};
@@ -165,5 +198,73 @@ mod tests {
         assert!(DpiValue::try_from(51).is_err());
         assert!(DpiValue::try_from(12_800).is_ok_and(|value| value.get() == 12_800));
         assert!(DpiValue::try_from(12_800).is_ok_and(|value| value.to_string() == "12800"));
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::{DpiValue, ProfileId, StageIndex};
+
+    #[test]
+    fn profile_id_round_trip_preserves_shape() {
+        let id = ProfileId::try_from(3).unwrap();
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "3");
+        let restored: ProfileId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, restored);
+    }
+
+    #[test]
+    fn profile_id_rejects_invalid_json() {
+        assert!(serde_json::from_str::<ProfileId>("0").is_err());
+        assert!(serde_json::from_str::<ProfileId>("6").is_err());
+        assert!(serde_json::from_str::<ProfileId>("\"3\"").is_err());
+        // current derived would also reject but ensure routing through TryFrom
+        let err = serde_json::from_str::<ProfileId>("0")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("InvalidProfile") || err.contains("invalid") || err.contains("profile")
+        );
+    }
+
+    #[test]
+    fn stage_index_round_trip_preserves_shape() {
+        let stage = StageIndex::try_from(4).unwrap();
+        let json = serde_json::to_string(&stage).unwrap();
+        assert_eq!(json, "4");
+        let restored: StageIndex = serde_json::from_str(&json).unwrap();
+        assert_eq!(stage, restored);
+    }
+
+    #[test]
+    fn stage_index_rejects_invalid_json() {
+        assert!(serde_json::from_str::<StageIndex>("0").is_err());
+        assert!(serde_json::from_str::<StageIndex>("9").is_err());
+        assert!(serde_json::from_str::<StageIndex>("255").is_err());
+    }
+
+    #[test]
+    fn dpi_value_round_trip_preserves_shape() {
+        let dpi = DpiValue::try_from(800).unwrap();
+        let json = serde_json::to_string(&dpi).unwrap();
+        assert_eq!(json, "800");
+        let restored: DpiValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(dpi, restored);
+        // ensure step preserved
+        let max = DpiValue::try_from(26_000).unwrap();
+        let json_max = serde_json::to_string(&max).unwrap();
+        assert_eq!(json_max, "26000");
+        let restored_max: DpiValue = serde_json::from_str(&json_max).unwrap();
+        assert_eq!(max, restored_max);
+    }
+
+    #[test]
+    fn dpi_value_rejects_invalid_json() {
+        assert!(serde_json::from_str::<DpiValue>("49").is_err());
+        assert!(serde_json::from_str::<DpiValue>("51").is_err());
+        assert!(serde_json::from_str::<DpiValue>("26001").is_err());
+        assert!(serde_json::from_str::<DpiValue>("0").is_err());
+        assert!(serde_json::from_str::<DpiValue>("26050").is_err());
     }
 }

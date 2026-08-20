@@ -10,14 +10,13 @@ repository.workspace = true
 [features]
 default = ["usb"]
 serde = ["dep:serde"]
-usb = ["dep:hidapi"]
-ble = ["dep:bluest", "dep:futures-lite", "dep:windows"]
-
+usb = ["dep:hidapi", "dep:tokio"]
+ble = ["dep:bluest", "dep:futures-lite", "dep:windows", "dep:tokio"]
 [dependencies]
 bluest = { version = "0.6.9", features = ["serde"], optional = true }
 hidapi = { version = "2", optional = true }
 futures-lite = { version = "2", optional = true }
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 thiserror = "2"
 
@@ -32,6 +31,7 @@ windows = { version = "0.48", features = [
 ], optional = true }
 
 [dev-dependencies]
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [lints]
@@ -60,4 +60,14 @@ required-features = ["usb"]
 [[example]]
 name = "hid-enum"
 path = "examples/hid-enum.rs"
+required-features = ["usb"]
+
+[[example]]
+name = "probe_layout"
+path = "examples/probe_layout.rs"
+required-features = ["usb"]
+
+[[example]]
+name = "profile-navigation-probe"
+path = "examples/profile-navigation-probe.rs"
 required-features = ["usb"]

@@ -124,12 +124,8 @@ pub(super) fn open_transport(
     kind: UsbDeviceKind,
 ) -> Result<HidFeatureTransport, DriverError> {
     let api = HidApi::new().map_err(|error| DriverError::Transport(error.to_string()))?;
-    let candidates: Vec<_> = configuration_collections(&api, kind).collect();
-    let paths: Vec<_> = candidates
-        .iter()
-        .map(|device| device.path().to_string_lossy().into_owned())
-        .collect();
-    let selected = candidates[select_candidate(selector, &paths)?];
+    let candidates: Vec<&HidDeviceInfo> = configuration_collections(&api, kind).collect();
+    let selected = candidates[select_device_candidate(selector, &candidates)?];
     let device = selected
         .open_device(&api)
         .map_err(|error| DriverError::Transport(error.to_string()))?;
@@ -141,13 +137,13 @@ pub(super) fn open_input_transport(
     kind: UsbDeviceKind,
 ) -> Result<HidInputTransport, DriverError> {
     let api = HidApi::new().map_err(|error| DriverError::Transport(error.to_string()))?;
-    let configurations: Vec<_> = configuration_collections(&api, kind).collect();
-    let configuration_paths: Vec<_> = configurations
-        .iter()
-        .map(|device| device.path().to_string_lossy().into_owned())
-        .collect();
+    let configurations: Vec<&HidDeviceInfo> = configuration_collections(&api, kind).collect();
+    // The fallback is deliberately scoped: only when a single configuration
+    // collection exists and exactly one input collection is present does the
+    // input lookup fall back to that sole collection. This keeps Linux
+    // enumeration usable on FA60/FA61 while avoiding broad ambiguous matches.
     let unambiguous_input_fallback = configurations.len() == 1;
-    let configuration = configurations[select_candidate(selector, &configuration_paths)?];
+    let configuration = configurations[select_device_candidate(selector, &configurations)?];
     let configuration_path = configuration.path().to_string_lossy();
 
     let inputs: Vec<_> = api
@@ -195,10 +191,23 @@ fn is_configuration_identity(path: &str, interface_number: i32, windows: bool) -
     if interface_number != CONFIG_INTERFACE_NUMBER {
         return false;
     }
-    !windows
-        || path
-            .to_ascii_lowercase()
-            .contains(WINDOWS_CONFIG_COLLECTION)
+    if !windows {
+        return true;
+    }
+    contains_ignore_ascii_case(path, WINDOWS_CONFIG_COLLECTION)
+}
+
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -211,25 +220,69 @@ fn is_input_collection(device: &HidDeviceInfo, kind: UsbDeviceKind) -> bool {
 
 #[cfg(target_os = "linux")]
 fn is_input_collection(device: &HidDeviceInfo, kind: UsbDeviceKind) -> bool {
+    // Tightened on Linux: require the auxiliary usage page and exclude the
+    // configuration collection. The broad interface-only check is no longer
+    // used; `open_input_transport` retains a documented single-candidate
+    // fallback only when exactly one configuration and one input collection
+    // remain and family matching fails. This preserves FA60/FA61 layouts
+    // (config on interface 2, input on auxiliary page) without over-matching.
     device.vendor_id() == ATTACK_SHARK_VENDOR_ID
         && device.product_id() == kind.product_id()
-        && device.interface_number() != CONFIG_INTERFACE_NUMBER
+        && !is_configuration_collection(device)
+        && device.usage_page() == AUXILIARY_USAGE_PAGE
 }
 
 fn same_device_family(left: &str, right: &str) -> bool {
-    fn family(path: &str) -> String {
-        let lower = path.to_ascii_lowercase();
-        lower
-            .find("&col")
-            .map_or(lower.clone(), |offset| lower[..offset].to_owned())
+    fn family_end(path: &str) -> usize {
+        let bytes = path.as_bytes();
+        if bytes.len() < 4 {
+            return path.len();
+        }
+        for index in 0..=bytes.len() - 4 {
+            if bytes[index] == b'&'
+                && bytes[index + 1].eq_ignore_ascii_case(&b'c')
+                && bytes[index + 2].eq_ignore_ascii_case(&b'o')
+                && bytes[index + 3].eq_ignore_ascii_case(&b'l')
+            {
+                return index;
+            }
+        }
+        path.len()
     }
 
-    family(left) == family(right)
+    let left_end = family_end(left);
+    let right_end = family_end(right);
+    left[..left_end].eq_ignore_ascii_case(&right[..right_end])
 }
 
+fn select_device_candidate(
+    selector: &DeviceSelector,
+    candidates: &[&HidDeviceInfo],
+) -> Result<usize, DriverError> {
+    match selector {
+        DeviceSelector::Unique => match candidates.len() {
+            0 => Err(DriverError::DeviceNotFound),
+            1 => Ok(0),
+            count => Err(DriverError::AmbiguousDevice { count }),
+        },
+        DeviceSelector::Path(expected_path) => candidates
+            .iter()
+            .position(|device| {
+                let path = device.path().to_string_lossy();
+                if cfg!(target_os = "windows") {
+                    path.eq_ignore_ascii_case(expected_path)
+                } else {
+                    path == expected_path.as_str()
+                }
+            })
+            .ok_or(DriverError::DeviceNotFound),
+    }
+}
+
+#[cfg(test)]
 fn select_candidate(
     selector: &DeviceSelector,
-    candidate_paths: &[String],
+    candidate_paths: &[&str],
 ) -> Result<usize, DriverError> {
     match selector {
         DeviceSelector::Unique => match candidate_paths.len() {
@@ -239,7 +292,13 @@ fn select_candidate(
         },
         DeviceSelector::Path(expected_path) => candidate_paths
             .iter()
-            .position(|path| path == expected_path)
+            .position(|path| {
+                if cfg!(target_os = "windows") {
+                    path.eq_ignore_ascii_case(expected_path)
+                } else {
+                    *path == expected_path
+                }
+            })
             .ok_or(DriverError::DeviceNotFound),
     }
 }
@@ -298,42 +357,26 @@ mod tests {
         assert!(!is_configuration_identity("device-col04", -1, false));
         assert!(!is_configuration_identity("/dev/hidraw1", 1, false));
     }
-
-    #[test]
-    fn input_collection_matching_ignores_windows_collection_suffix() {
-        assert!(same_device_family(
-            r"\\?\hid#vid_1d57&pid_fa61&mi_02&col04#8&abc&0&0003",
-            r"\\?\hid#vid_1d57&pid_fa61&mi_02&col01#8&abc&0&0003",
-        ));
-        assert!(!same_device_family(
-            r"\\?\hid#vid_1d57&pid_fa61&mi_02&col04#8&abc&0&0003",
-            r"\\?\hid#vid_1d57&pid_fa61&mi_03&col01#8&other&0&0003",
-        ));
-    }
-
     #[test]
     fn unique_selection_refuses_zero_or_multiple_candidates() {
         assert!(matches!(
-            select_candidate(&DeviceSelector::Unique, &[]),
+            select_candidate(&DeviceSelector::Unique, &[] as &[&str]),
             Err(DriverError::DeviceNotFound)
         ));
         assert_eq!(
-            select_candidate(&DeviceSelector::Unique, &["only".to_owned()])
+            select_candidate(&DeviceSelector::Unique, &["only"])
                 .expect("one candidate is unambiguous"),
             0
         );
         assert!(matches!(
-            select_candidate(
-                &DeviceSelector::Unique,
-                &["first".to_owned(), "second".to_owned()]
-            ),
+            select_candidate(&DeviceSelector::Unique, &["first", "second"]),
             Err(DriverError::AmbiguousDevice { count: 2 })
         ));
     }
 
     #[test]
     fn exact_path_selection_never_falls_back_to_the_first_device() {
-        let paths = ["first".to_owned(), "second".to_owned()];
+        let paths = ["first", "second"];
         assert_eq!(
             select_candidate(&DeviceSelector::path("second"), &paths)
                 .expect("exact path must select its own collection"),
@@ -342,6 +385,52 @@ mod tests {
         assert!(matches!(
             select_candidate(&DeviceSelector::path("missing"), &paths),
             Err(DriverError::DeviceNotFound)
+        ));
+    }
+
+    #[test]
+    fn same_device_family_is_case_insensitive_and_ignores_col_suffix() {
+        assert!(same_device_family(
+            r"\\?\HID#VID_1D57&PID_FA61&MI_02&COL04#8&ABC&0&0003",
+            r"\\?\hid#vid_1d57&pid_fa61&mi_02&col01#8&abc&0&0003",
+        ));
+        assert!(same_device_family(
+            r"\\?\hid#vid_1d57&pid_fa61&mi_02&COL04",
+            r"\\?\hid#vid_1d57&pid_fa61&mi_02&col01",
+        ));
+    }
+
+    #[test]
+    fn windows_path_selection_respects_case_insensitive_identifiers() {
+        let paths = ["first", "SECOND"];
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                select_candidate(&DeviceSelector::path("second"), &paths)
+                    .expect("Windows HID paths are case-insensitive"),
+                1
+            );
+            assert_eq!(
+                select_candidate(&DeviceSelector::path("SECOND"), &paths)
+                    .expect("Windows HID paths are case-insensitive"),
+                1
+            );
+        } else {
+            assert!(matches!(
+                select_candidate(&DeviceSelector::path("second"), &paths),
+                Err(DriverError::DeviceNotFound)
+            ));
+        }
+    }
+
+    #[test]
+    fn contains_ignore_ascii_case_is_allocation_free() {
+        assert!(super::contains_ignore_ascii_case(
+            r"\\?\hid#vid_1d57&pid_fa61&mi_02&col04",
+            "COL04"
+        ));
+        assert!(!super::contains_ignore_ascii_case(
+            r"\\?\hid#vid_1d57&pid_fa61&mi_02&col01",
+            "col04"
         ));
     }
 }

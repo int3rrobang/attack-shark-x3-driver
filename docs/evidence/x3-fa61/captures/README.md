@@ -11,8 +11,10 @@ individual files when isolating one operation.
 
 ## Provenance
 
-The sessions were run by the historical `scripts/fa61-test-suite.ps1` harness,
-which delegated capture to the sibling `tshark_mouse` Python package:
+The sessions were run by the historical `scripts/fa61-test-suite.ps1` harness
+(not included in this repository; not currently runnable),
+which delegated capture to the sibling `tshark_mouse` Python package. The
+historical invocations were:
 
 ```text
 pwsh -NoProfile -File scripts/fa61-test-suite.ps1 `

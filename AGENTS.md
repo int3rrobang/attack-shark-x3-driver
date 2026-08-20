@@ -72,9 +72,12 @@ The desktop frontend. Depends on `attack-shark-x3-manager` with `default-feature
 - Holds no protocol codec logic. It edits drafts and calls `DeviceManager`
   deltas (`update_dpi_delta`, `update_button_slot`, `update_polling_rate`) with
   transport or readback verification.
-- USB-only at runtime: apply operations reject BLE (configuration readback is
-  unsupported) and reject combining polling-rate changes with DPI or button
-  changes in one apply, so the report `0x06` preflight stays isolated.
+- At runtime the GUI discovers USB (`wired`/`receiver`) and BLE devices. BLE shows saved desired
+  settings (not live readback) and supports profile activation with ACK-only evidence; most
+  configuration writes, `profile refresh-all`, polling-rate changes, and both verification workflows
+  remain USB-only because configuration readback is unsupported over BLE. The GUI also
+  rejects combining polling-rate changes with DPI or button changes in one apply, so the report
+  `0x06` preflight stays isolated.
 - Deviations from workspace norms: the only crate using Tokio, and it
   `allow`s `unsafe_code` for Slint's generated item-tree glue (the sole
   carve-out from the workspace `forbid`).
@@ -119,7 +122,7 @@ Run focused tests while developing, then run the full workspace suite before com
 
 ## Rust and Clippy conventions
 
-- Edition 2024, `rust-version = "1.85"`, resolver 3.
+- Edition 2024, `rust-version = "1.92"` (workspace), `rust-toolchain.toml` pins `channel = "1.97.1"`, resolver 3.
 - `#![forbid(unsafe_code)]` is workspace policy enforced at crate root. Never weaken it.
 - Workspace-level Clippy: `all = { level = "warn", priority = -1 }`. CI treats all warnings as errors (`-D warnings`).
 - Prefer `thiserror` for error enums. Use `#[error(…)]` messages that include context (paths, values, transport).
@@ -205,15 +208,18 @@ If a new feature needs protocol knowledge, implement it in `attack-shark-x3` or 
 
 ## Protocol implementation conventions
 
+- The device supports 1–8 configurable DPI stages (`StageIndex` 1..=8, `DpiValue` 50..=26000 step 50). The physical DPI button is a separate auxiliary HID input report `03 00 10 <stage> 00` (six positions observed in captures); do not conflate the two.
+- Targeted reads for `0x04`/`0x05`/`0x08` load the target working profile via byte 2 / selector byte 4 and can change live behavior without necessarily changing persistent `0x0c` current metadata. Report `0x06` skips that loader: it is a live-rate read and a save-alias write (byte 2 names the slot the deferred writer serializes the complete live image into).
+- USB configuration readback is supported via the armed `0xa0` selector (`MouseHandle::read_*` on `wired`/`receiver`); BLE has no configuration readback path and returns ACK-only `10 50 00 <report>`.
+- Battery level on X3/M600 FA60 is 1–10 (×10 = percentage) per X3.exe disassembly and `03 10 40 01 <level>` captures; reject 0 and >10. X11 legacy is 0–100 directly.
 - Preserve established X11 wired/adapter output unless the task explicitly changes it with independent evidence.
 - Gate X3-specific layouts and checksums by the appropriate model/connection mode. Accidental compatibility from checksum overflow or default values is not evidence.
 - Packet builders remain transport-independent. USB/BLE framing and device access belong in the driver module.
 - Low-level experimental tools may expose raw writes, but production-facing APIs must validate ranges and block known-dangerous operations.
 - Do not rename unknown fields based only on host UI labels. Describe how bytes are used when semantics are unresolved.
 - Do not describe RF slots as firmware versions or profile "personas."
-- Report `0x09` custom macros remain out of scope until a separately reviewed Rust implementation exists.
-- Codec integration tests live under `crates/attack-shark-x3/tests/` using golden fixtures from `fixtures/protocol/`. Not every codec has a test yet; add one when modifying a codec.
-
+- Report `0x07` (wakeup mode) and `0x09` (custom macros) remain unsupported in the Rust driver/manager/`x3ctl`/GUI — format known from static analysis/captures, no exposed API, no fixtures, no claim of device effect.
+- Codec integration tests live under `crates/attack-shark-x3/tests/` using golden fixtures from `fixtures/protocol/` (`dpi.json`, `preferences.json`, `buttons.json`, `profile.json`). No fixtures yet for `0x06` polling rate, `0x07`, `0x09`, battery/input (`0x03` family), or checksum negative cases beyond live ACK tables; do not claim coverage that does not exist. Add one when modifying a codec.
 ## Evidence labels
 
 Use the vocabulary from `docs/README.md`:

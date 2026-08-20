@@ -210,10 +210,10 @@ impl WindowsGattSession {
     }
 
     pub(super) async fn close(&mut self) -> Result<(), BleError> {
-        let Some(token) = self.notification_token.take() else {
+        let Some(token) = self.notification_token else {
             return Ok(());
         };
-        let result = self
+        let disable_result = self
             .ack_characteristic
             .WriteClientCharacteristicConfigurationDescriptorWithResultAsync(
                 GattClientCharacteristicConfigurationDescriptorValue::None,
@@ -233,13 +233,32 @@ impl WindowsGattSession {
             .ack_characteristic
             .RemoveValueChanged(token)
             .map_err(|error| operation("remove FEE4 notification handler", error));
-        result?;
-        remove_result
+        match (&disable_result, &remove_result) {
+            (Ok(()), Ok(())) => {
+                self.notification_token = None;
+                Ok(())
+            }
+            _ => {
+                // Keep the token for retry; the CCCD may still be enabled and
+                // the handler may still be registered. The next `close` or
+                // reconnect attempt can retry the disable/remove sequence.
+                disable_result?;
+                remove_result
+            }
+        }
     }
 }
 
 impl Drop for WindowsGattSession {
     fn drop(&mut self) {
+        // Best-effort RAII cleanup for the local event handler registration.
+        // The WinRT CCCD disable (`WriteClientCharacteristicConfigurationDescriptorAsync`)
+        // is asynchronous and cannot be reliably performed in `Drop` without
+        // spawning detached async work that may outlive the runtime. If `close`
+        // was not called or failed, the handler removal here is the strongest
+        // honest local barrier; the OS will reclaim the subscription when the
+        // `GattCharacteristic`/`GattDeviceService` is released. The notification
+        // token is kept until `close` succeeds so retries remain possible.
         if let Some(token) = self.notification_token.take() {
             let _ = self.ack_characteristic.RemoveValueChanged(token);
         }

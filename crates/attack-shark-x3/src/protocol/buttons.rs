@@ -102,7 +102,7 @@ pub enum ButtonActionError {
 
 /// Four-bit X3 keyboard-shortcut modifier mask.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct KeyboardModifiers(u8);
 
 impl KeyboardModifiers {
@@ -127,9 +127,24 @@ impl KeyboardModifiers {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for KeyboardModifiers {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u8 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "invalid keyboard modifiers 0x{value:02x}; only bits 0..=3 are supported"
+            ))
+        })
+    }
+}
+
 /// A keyboard-page HID usage accepted by the X3 shortcut encoding.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct HidKeyboardUsage(u8);
 
 impl HidKeyboardUsage {
@@ -149,6 +164,21 @@ impl HidKeyboardUsage {
     #[must_use]
     pub const fn get(self) -> u8 {
         self.0
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for HidKeyboardUsage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u8 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "invalid HID keyboard usage 0x{value:02x}; expected 0x04..=0xe7"
+            ))
+        })
     }
 }
 
@@ -564,6 +594,69 @@ mod action_tests {
             X3ButtonAction::try_from(ButtonAssignment::new(0x11, 0x10, 0x04)),
             Err(ButtonActionError::InvalidKeyboardModifiers { .. })
         ));
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod validated_serde_tests {
+    use super::{HidKeyboardUsage, KeyboardModifiers};
+
+    #[test]
+    fn keyboard_modifiers_round_trip_preserves_shape() {
+        let m = KeyboardModifiers::new(0x05).unwrap();
+        let json = serde_json::to_string(&m).unwrap();
+        assert_eq!(json, "5");
+        let restored: KeyboardModifiers = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, restored);
+        // max valid 0x0f
+        let max = KeyboardModifiers::new(0x0f).unwrap();
+        assert_eq!(serde_json::to_string(&max).unwrap(), "15");
+    }
+
+    #[test]
+    fn keyboard_modifiers_rejects_invalid_json() {
+        assert!(serde_json::from_str::<KeyboardModifiers>("16").is_err());
+        assert!(serde_json::from_str::<KeyboardModifiers>("255").is_err());
+        assert!(serde_json::from_str::<KeyboardModifiers>("\"1\"").is_err());
+    }
+
+    #[test]
+    fn hid_usage_round_trip_preserves_shape() {
+        let u = HidKeyboardUsage::new(0x04).unwrap();
+        let json = serde_json::to_string(&u).unwrap();
+        assert_eq!(json, "4");
+        let restored: HidKeyboardUsage = serde_json::from_str(&json).unwrap();
+        assert_eq!(u, restored);
+        let max = HidKeyboardUsage::new(0xe7).unwrap();
+        assert_eq!(serde_json::to_string(&max).unwrap(), "231");
+    }
+
+    #[test]
+    fn hid_usage_rejects_invalid_json() {
+        assert!(serde_json::from_str::<HidKeyboardUsage>("3").is_err());
+        assert!(serde_json::from_str::<HidKeyboardUsage>("232").is_err());
+        assert!(serde_json::from_str::<HidKeyboardUsage>("0").is_err());
+        assert!(serde_json::from_str::<HidKeyboardUsage>("\"4\"").is_err());
+    }
+
+    #[test]
+    fn keyboard_shortcut_action_round_trips_with_validated_modifiers() {
+        let action = super::X3ButtonAction::KeyboardShortcut {
+            modifiers: KeyboardModifiers::new(0x01).unwrap(),
+            key: HidKeyboardUsage::new(0x04).unwrap(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        let restored: super::X3ButtonAction = serde_json::from_str(&json).unwrap();
+        assert_eq!(action, restored);
+    }
+
+    #[test]
+    fn keyboard_shortcut_rejects_invalid_modifier_via_serde() {
+        // modifier 16 (0x10) is out of range
+        let json = r#"{"keyboardShortcut":{"modifiers":16,"key":4}}"#;
+        assert!(serde_json::from_str::<super::X3ButtonAction>(json).is_err());
+        let json2 = r#"{"keyboardShortcut":{"modifiers":1,"key":3}}"#;
+        assert!(serde_json::from_str::<super::X3ButtonAction>(json2).is_err());
     }
 }
 

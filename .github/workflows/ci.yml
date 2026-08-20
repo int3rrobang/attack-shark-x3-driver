@@ -28,6 +28,18 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features
 
+      - name: Test (default features)
+        run: cargo test --workspace
+
+      - name: Check (default features, all targets)
+        run: cargo check --workspace --all-targets
+
+      - name: Check (minimal, leaf, no-default features)
+        run: cargo check -p attack-shark-x3 --no-default-features --all-targets
+
+      - name: Check (minimal, manager, no-default features)
+        run: cargo check -p attack-shark-x3-manager --no-default-features --all-targets
+
   windows:
     name: Windows (check + test)
     runs-on: windows-latest
@@ -45,3 +57,15 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --all-features
+
+      - name: Test (default features)
+        run: cargo test --workspace
+
+      - name: Check (default features, all targets)
+        run: cargo check --workspace --all-targets
+
+      - name: Check (minimal, leaf, no-default features)
+        run: cargo check -p attack-shark-x3 --no-default-features --all-targets
+
+      - name: Check (minimal, manager, no-default features)
+        run: cargo check -p attack-shark-x3-manager --no-default-features --all-targets

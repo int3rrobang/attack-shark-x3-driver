@@ -100,8 +100,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let output = Output::new(cli.output);
 
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
+    let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
@@ -127,7 +126,7 @@ async fn run(cli: &Cli, output: &Output) -> Result<(), String> {
     // Debug encoding is entirely offline. Do this before creating a state store
     // or manager so it cannot accidentally discover a device or open hardware.
     if let Command::Debug(command) = command {
-        return run_debug(command, output);
+        return run_debug(cli, command, output);
     }
 
     let action = build_action(cli, command)?;
@@ -425,7 +424,7 @@ async fn dispatch(
                     .await
                     .map_err(|error| error.to_string())?
             };
-            output.print(format!("Activated profile {profile}"), &metadata)
+            output.print(format_profile_set_human(profile, maximum), &metadata)
         }
         Action::ProfileRefreshAll => {
             let device = resolve_hardware(manager, cli, selection).await?;
@@ -542,7 +541,11 @@ async fn dispatch(
                 .await
                 .map_err(|error| error.to_string())?;
             output.print(
-                format!("Updated button {:?} to {:?}", delta.slot(), delta.action()),
+                format!(
+                    "Set {} button to {}",
+                    slot_label(delta.slot()),
+                    action_label(delta.action())
+                ),
                 &outcome,
             )
         }
@@ -569,18 +572,30 @@ async fn dispatch(
             VerificationAction::PowerCycle => {
                 let device = resolve_hardware(manager, cli, selection).await?;
                 let instruction = "Unplug USB, turn the mouse off, and wait for it to disappear. Then turn it on, reconnect, and wait for it to reappear. Unplugging USB alone isn't a real power cycle — the mouse battery keeps it running.";
-                output.print(
-                    instruction,
-                    &serde_json::json!({"instruction": instruction}),
-                )?;
-                let outcome = manager
-                    .verify_power_cycle(&device, profile)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                output.print(
-                    format!("Power-cycle verification for profile {profile}"),
-                    &outcome,
-                )
+                if output.is_json() {
+                    let outcome = manager
+                        .verify_power_cycle(&device, profile)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let payload = serde_json::json!({
+                        "instruction": instruction,
+                        "outcome": outcome,
+                    });
+                    output.print(
+                        format!("Power-cycle verification for profile {profile}"),
+                        &payload,
+                    )
+                } else {
+                    println!("{instruction}");
+                    let outcome = manager
+                        .verify_power_cycle(&device, profile)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    output.print(
+                        format!("Power-cycle verification for profile {profile}"),
+                        &outcome,
+                    )
+                }
             }
         },
         Action::Export => {
@@ -603,7 +618,7 @@ async fn dispatch(
             manager
                 .import_configuration(&identity, configuration)
                 .map_err(|error| error.to_string())?;
-            output.print(format!("Imported configuration for {device}"), &device)
+            output.print(format_import_human(&device), &device)
         }
         Action::StateSelected => {
             let selected = manager
@@ -665,15 +680,15 @@ fn resolve_state_device(manager: &DeviceManager, cli: &Cli) -> Result<DeviceId, 
         .ok_or_else(|| "no device selected; use `use <stable-id>` first".to_owned())
 }
 
-fn run_debug(command: &DebugCommand, output: &Output) -> Result<(), String> {
+fn run_debug(cli: &Cli, command: &DebugCommand, output: &Output) -> Result<(), String> {
     match command {
-        DebugCommand::Dpi(args) => debug_dpi(args, output),
+        DebugCommand::Dpi(args) => debug_dpi(cli, args, output),
         DebugCommand::Prefs(args) => debug_prefs(args, output),
         DebugCommand::Buttons(args) => debug_buttons(args, output),
     }
 }
 
-fn debug_dpi(args: &DebugDpiArgs, output: &Output) -> Result<(), String> {
+fn debug_dpi(cli: &Cli, args: &DebugDpiArgs, output: &Output) -> Result<(), String> {
     let profile = parse_profile(args.profile)?;
     let stages = args
         .stages
@@ -692,7 +707,7 @@ fn debug_dpi(args: &DebugDpiArgs, output: &Output) -> Result<(), String> {
         angle_snap: args.angle_snap,
         motion_sync: args.motion_sync,
     };
-    let packet = encode_debug_dpi(&state, transport_kind(args.transport))
+    let packet = encode_debug_dpi(&state, transport_kind(cli.transport))
         .map_err(|error| error.to_string())?;
     let human = format!(
         "DPI packet: {} bytes\n{}",
@@ -782,17 +797,23 @@ fn parse_stage(raw: u8) -> Result<StageIndex, String> {
 
 fn parse_dpi_stages(raw: &Option<String>) -> Result<Option<Vec<DpiValue>>, String> {
     let Some(raw) = raw else { return Ok(None) };
-    let values = raw
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let value = part
-                .parse::<u16>()
-                .map_err(|_| format!("invalid DPI value `{part}`"))?;
-            DpiValue::try_from(value).map_err(|error| error.to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    if raw.trim().is_empty() {
+        return Err("DPI stages must not be empty".into());
+    }
+    let mut values = Vec::new();
+    for part in raw.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            return Err(
+                "DPI stages must not contain empty elements; check for doubled commas or trailing commas".into(),
+            );
+        }
+        let value = trimmed
+            .parse::<u16>()
+            .map_err(|_| format!("invalid DPI value `{trimmed}`"))?;
+        let dpi = DpiValue::try_from(value).map_err(|error| error.to_string())?;
+        values.push(dpi);
+    }
     if values.is_empty() {
         return Err("DPI stages must not be empty".into());
     }
@@ -834,6 +855,18 @@ fn format_transport(transport: TransportKind) -> &'static str {
         TransportKind::Receiver => "receiver",
         TransportKind::Ble => "ble",
     }
+}
+
+fn format_profile_set_human(profile: ProfileId, maximum: Option<ProfileId>) -> String {
+    if let Some(maximum) = maximum {
+        format!("Updated profile setup: current {profile}, maximum {maximum}")
+    } else {
+        format!("Activated profile {profile}")
+    }
+}
+
+fn format_import_human(device: &DeviceId) -> String {
+    format!("Saved settings locally for {device} (not sent to mouse)")
 }
 
 fn resource_value<T: Clone>(snapshot: &ResourceSnapshot<T>) -> Option<T> {
@@ -954,6 +987,71 @@ fn button_action_name(action: u8) -> &'static str {
         0x36 => "profile-minus",
         0x3c => "wheel-scroll-up",
         _ => "unknown",
+    }
+}
+
+fn slot_label(slot: SafeButtonSlot) -> &'static str {
+    match slot {
+        SafeButtonSlot::Left => "left",
+        SafeButtonSlot::Right => "right",
+        SafeButtonSlot::Middle => "middle",
+        SafeButtonSlot::Dpi => "dpi",
+        SafeButtonSlot::Forward => "forward",
+        SafeButtonSlot::Backward => "backward",
+    }
+}
+
+fn action_label(action: SafeButtonAction) -> &'static str {
+    match action {
+        SafeButtonAction::Disable => "disable",
+        SafeButtonAction::LeftClick => "left-click",
+        SafeButtonAction::RightClick => "right-click",
+        SafeButtonAction::MiddleClick => "middle-click",
+        SafeButtonAction::Backward => "backward",
+        SafeButtonAction::Forward => "forward",
+        SafeButtonAction::DoubleClick => "double-click",
+        SafeButtonAction::FireButton => "fire-button",
+        SafeButtonAction::ScrollUp => "scroll-up",
+        SafeButtonAction::ScrollDown => "scroll-down",
+        SafeButtonAction::DpiCycle => "dpi-cycle",
+        SafeButtonAction::DpiPlus => "dpi-plus",
+        SafeButtonAction::DpiMinus => "dpi-minus",
+        SafeButtonAction::ProfileCycle => "profile-cycle",
+        SafeButtonAction::ProfilePlus => "profile-plus",
+        SafeButtonAction::ProfileMinus => "profile-minus",
+        SafeButtonAction::MediaPlayer => "media-player",
+        SafeButtonAction::PreviousTrack => "previous-track",
+        SafeButtonAction::NextTrack => "next-track",
+        SafeButtonAction::PlayPause => "play-pause",
+        SafeButtonAction::Stop => "stop",
+        SafeButtonAction::Mute => "mute",
+        SafeButtonAction::VolumeUp => "volume-up",
+        SafeButtonAction::VolumeDown => "volume-down",
+        SafeButtonAction::Calculator => "calculator",
+        SafeButtonAction::Email => "email",
+        SafeButtonAction::BrowserForward => "browser-forward",
+        SafeButtonAction::BrowserBackward => "browser-backward",
+        SafeButtonAction::BrowserStop => "browser-stop",
+        SafeButtonAction::MyComputer => "my-computer",
+        SafeButtonAction::BrowserRefresh => "browser-refresh",
+        SafeButtonAction::BrowserHome => "browser-home",
+        SafeButtonAction::BrowserSearch => "browser-search",
+        SafeButtonAction::BrowserFavorites => "browser-favorites",
+        SafeButtonAction::Cut => "cut",
+        SafeButtonAction::Copy => "copy",
+        SafeButtonAction::Paste => "paste",
+        SafeButtonAction::Open => "open",
+        SafeButtonAction::Save => "save",
+        SafeButtonAction::Find => "find",
+        SafeButtonAction::Redo => "redo",
+        SafeButtonAction::SelectAll => "select-all",
+        SafeButtonAction::Print => "print",
+        SafeButtonAction::CloseWindow => "close-window",
+        SafeButtonAction::SwapWindows => "swap-windows",
+        SafeButtonAction::ShowDesktop => "show-desktop",
+        SafeButtonAction::RunCommand => "run-command",
+        SafeButtonAction::LockPc => "lock-pc",
+        SafeButtonAction::ScreenCapture => "screen-capture",
     }
 }
 
@@ -1269,5 +1367,114 @@ mod tests {
     fn profile_and_device_parsers_reject_invalid_values() {
         assert!(parse_profile(0).is_err());
         assert!(parse_device_id(" ").is_err());
+    }
+
+    #[test]
+    fn dpi_stage_parser_rejects_empty_elements() {
+        for raw in [
+            "800,,1600",
+            "800,1600,",
+            ",800",
+            "800, 1600, ",
+            "800,  ,1600",
+            "800,,",
+            ",,800",
+        ] {
+            let err = parse_dpi_stages(&Some(raw.into())).expect_err(raw);
+            assert!(
+                err.contains("empty elements") || err.contains("empty"),
+                "{raw}: {err}"
+            );
+        }
+        // valid should still pass
+        assert_eq!(
+            parse_dpi_stages(&Some("800,1600".into()))
+                .unwrap()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn profile_set_human_for_maximum_does_not_claim_activation() {
+        let active = format_profile_set_human(ProfileId::try_from(2).unwrap(), None);
+        assert_eq!(active, "Activated profile 2");
+        assert!(active.contains("Activated"));
+
+        let with_max = format_profile_set_human(
+            ProfileId::try_from(2).unwrap(),
+            Some(ProfileId::try_from(4).unwrap()),
+        );
+        assert_eq!(with_max, "Updated profile setup: current 2, maximum 4");
+        assert!(!with_max.contains("Activated"), "{with_max}");
+        assert!(with_max.contains("maximum"));
+    }
+
+    #[test]
+    fn import_human_says_saved_locally_not_sent() {
+        let device = DeviceId::new("receiver:1d57:fa60:serial:x").unwrap();
+        let human = format_import_human(&device);
+        assert!(human.contains("Saved settings locally"), "{human}");
+        assert!(human.contains("not sent to mouse"), "{human}");
+        assert!(
+            !human
+                .to_ascii_lowercase()
+                .contains("imported configuration")
+        );
+    }
+
+    #[test]
+    fn bind_human_labels_are_readable() {
+        assert_eq!(slot_label(SafeButtonSlot::Left), "left");
+        assert_eq!(slot_label(SafeButtonSlot::Dpi), "dpi");
+        assert_eq!(
+            action_label(SafeButtonAction::ProfileCycle),
+            "profile-cycle"
+        );
+        assert_eq!(action_label(SafeButtonAction::LeftClick), "left-click");
+        assert_eq!(
+            action_label(SafeButtonAction::ScreenCapture),
+            "screen-capture"
+        );
+        let human = format!(
+            "Set {} button to {}",
+            slot_label(SafeButtonSlot::Left),
+            action_label(SafeButtonAction::ProfileCycle)
+        );
+        assert_eq!(human, "Set left button to profile-cycle");
+    }
+
+    #[test]
+    fn debug_dpi_uses_global_transport() {
+        let cli = args::Cli::try_parse_from([
+            "x3ctl",
+            "--transport",
+            "receiver",
+            "debug",
+            "dpi",
+            "--stages",
+            "800,1600",
+        ])
+        .expect("parse");
+        assert_eq!(cli.transport, TransportArg::Receiver);
+        // DebugDpiArgs no longer shadows; parsing --transport after debug also resolves to global
+        let cli2 = args::Cli::try_parse_from([
+            "x3ctl",
+            "debug",
+            "dpi",
+            "--stages",
+            "800,1600",
+            "--transport",
+            "wired",
+        ])
+        .expect("parse with trailing global");
+        // With global transport, trailing --transport should be interpreted as global
+        // and not as a debug-local field (which no longer exists).
+        assert_eq!(cli2.transport, TransportArg::Wired);
+        assert!(matches!(
+            cli2.command,
+            Some(Command::Debug(DebugCommand::Dpi(_)))
+        ));
     }
 }
