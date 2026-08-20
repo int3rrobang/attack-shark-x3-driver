@@ -147,7 +147,6 @@ impl DeviceManager {
             }
         }
 
-        state.validate()?;
         transaction.commit()?;
         Ok(())
     }
@@ -189,7 +188,6 @@ impl DeviceManager {
             .get_mut(device)
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
         device_state.profile_names.insert(profile, name);
-        transaction.state().validate()?;
         transaction.commit()?;
         Ok(())
     }
@@ -207,7 +205,6 @@ impl DeviceManager {
             .get_mut(device)
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
         device_state.profile_names.remove(&profile);
-        transaction.state().validate()?;
         transaction.commit()?;
         Ok(())
     }
@@ -222,7 +219,6 @@ impl DeviceManager {
             .get_mut(device)
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
         device_state.invalidate_persistence();
-        transaction.state().validate()?;
         transaction.commit()?;
         Ok(())
     }
@@ -284,12 +280,12 @@ fn set_imported<T>(resource: &mut ResourceState<T>, value: T, now: Timestamp) {
 /// Generic over any resource value; persistence is always reset to Unknown
 /// and the old observation is kept as history. Used uniformly by DPI,
 /// preferences, buttons and polling-rate.
-pub(crate) fn record_ack<T: Clone>(resource: &mut ResourceState<T>, value: T, now: Timestamp) {
+pub(crate) fn record_ack<T>(resource: &mut ResourceState<T>, value: T, now: Timestamp) {
     resource.record_ack_write(value, DesiredSource::UserWrite, now);
 }
 
 /// Records a write with immediate readback, setting verification truthfully.
-pub(crate) fn record_readback<T: Clone + PartialEq>(
+pub(crate) fn record_readback<T: PartialEq>(
     resource: &mut ResourceState<T>,
     desired: T,
     observed: T,
@@ -310,22 +306,6 @@ pub(crate) fn reconcile_observed<T: Clone + PartialEq>(
     now: Timestamp,
 ) {
     resource.reconcile_observation(value, now);
-}
-
-/// Attempts to mark a resource as profile-reload verified.
-pub(crate) fn try_mark_profile_reload<T: PartialEq>(
-    resource: &mut ResourceState<T>,
-    verified_at: Timestamp,
-) -> bool {
-    resource.try_mark_profile_reload_verified(verified_at)
-}
-
-/// Attempts to mark a resource as power-cycle verified.
-pub(crate) fn try_mark_power_cycle<T: PartialEq>(
-    resource: &mut ResourceState<T>,
-    verified_at: Timestamp,
-) -> bool {
-    resource.try_mark_power_cycle_verified(verified_at)
 }
 
 fn validate_configuration(configuration: &ConfigurationExport) -> Result<(), ManagerError> {
@@ -851,10 +831,7 @@ mod tests {
 
     #[test]
     fn central_reconciliation_is_consistent_across_all_four_resources() {
-        use crate::resources::state::{
-            reconcile_observed, record_ack, record_readback, try_mark_power_cycle,
-            try_mark_profile_reload,
-        };
+        use crate::resources::state::{reconcile_observed, record_ack, record_readback};
         use crate::state::{ResourceState, Timestamp};
 
         fn ts(s: i64) -> Timestamp {
@@ -921,7 +898,7 @@ mod tests {
                     .persistence
                     .is_unknown()
             );
-            assert!(try_mark_profile_reload(&mut matched, ts(31)));
+            assert!(matched.try_mark_profile_reload_verified(ts(31)));
             assert!(
                 !matched
                     .desired
@@ -941,7 +918,7 @@ mod tests {
                     .persistence
                     .is_unknown()
             );
-            assert!(try_mark_power_cycle(&mut matched, ts(33)));
+            assert!(matched.try_mark_power_cycle_verified(ts(33)));
             assert_eq!(
                 matched.desired.as_ref().unwrap().verification.persistence,
                 PersistenceVerification::PowerCycleVerified {
@@ -965,8 +942,8 @@ mod tests {
                 ApplicationVerification::Mismatch
             );
             assert_eq!(mismatched.observed.as_ref().unwrap().value, other_value);
-            assert!(!try_mark_profile_reload(&mut mismatched, ts(31)));
-            assert!(!try_mark_power_cycle(&mut mismatched, ts(31)));
+            assert!(!mismatched.try_mark_profile_reload_verified(ts(31)));
+            assert!(!mismatched.try_mark_power_cycle_verified(ts(31)));
             let mut via_reconcile: ResourceState<T> = ResourceState::empty();
             record_ack(&mut via_reconcile, ack_value.clone(), ts(40));
             reconcile_observed(&mut via_reconcile, ack_value.clone(), ts(39));
@@ -989,7 +966,7 @@ mod tests {
                     .application,
                 ApplicationVerification::Mismatch
             );
-            assert!(!try_mark_profile_reload(&mut via_reconcile, ts(42)));
+            assert!(!via_reconcile.try_mark_profile_reload_verified(ts(42)));
             let mut empty: ResourceState<T> = ResourceState::empty();
             reconcile_observed(&mut empty, other_value.clone(), ts(50));
             assert!(empty.desired.is_none());

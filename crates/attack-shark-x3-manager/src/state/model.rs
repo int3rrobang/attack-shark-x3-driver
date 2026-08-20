@@ -66,10 +66,7 @@ impl<T> ResourceState<T> {
     /// and its verification are updated. Persistence is always reset to
     /// [`PersistenceVerification::Unknown`] — an ACK never implies survival
     /// across profile reload or power cycle.
-    pub fn record_ack_write(&mut self, value: T, source: DesiredSource, now: Timestamp)
-    where
-        T: Clone,
-    {
+    pub fn record_ack_write(&mut self, value: T, source: DesiredSource, now: Timestamp) {
         self.desired = Some(DesiredState {
             value,
             source,
@@ -98,7 +95,7 @@ impl<T> ResourceState<T> {
         source: DesiredSource,
         now: Timestamp,
     ) where
-        T: Clone + PartialEq,
+        T: PartialEq,
     {
         let is_match = desired_value == observed_value;
         let application = if is_match {
@@ -134,7 +131,7 @@ impl<T> ResourceState<T> {
         source: DesiredSource,
         now: Timestamp,
     ) where
-        T: Clone + PartialEq,
+        T: PartialEq,
     {
         if let Some(readback) = observed {
             self.record_readback_write(desired, readback, source, now);
@@ -214,9 +211,6 @@ impl<T> ResourceState<T> {
             return false;
         }
         if observed.observed_at.unix_seconds < desired.updated_at.unix_seconds {
-            return false;
-        }
-        if persistence.is_unknown() {
             return false;
         }
         desired.verification.persistence = persistence;

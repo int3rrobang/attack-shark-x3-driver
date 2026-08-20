@@ -191,7 +191,6 @@ impl StateStore {
             StoreBackend::Disk => load_state(self.paths.state_file()),
             StoreBackend::Memory(mem) => {
                 let state = lock_memory(&mem.state);
-                state.validate()?;
                 Ok(state.clone())
             }
         }

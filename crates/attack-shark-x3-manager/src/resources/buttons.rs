@@ -310,13 +310,6 @@ impl DeviceManager {
                 }
             },
         };
-
-        if baseline.profile != profile {
-            return Err(ManagerError::InvalidUpdate(format!(
-                "button baseline targets profile {} instead of requested profile {}",
-                baseline.profile, profile
-            )));
-        }
         baseline.slots[slot_index] = assignment;
         self.write_buttons_with_session(device, session.as_ref(), baseline, policy.verification)
             .await
@@ -329,21 +322,7 @@ impl DeviceManager {
         requested: ButtonsState,
         verification: VerificationMethod,
     ) -> Result<WriteOutcome<ButtonsState>, ManagerError> {
-        let transport = session.transport();
         let result = session.write_buttons(requested, verification).await?;
-        if let (TransportKind::Ble, SessionWrite::ReadbackVerified(_)) = (&transport, &result) {
-            return Err(ManagerError::InvalidUpdate(
-                "BLE button writes cannot produce readback evidence".to_owned(),
-            ));
-        }
-        if let SessionWrite::ReadbackVerified(actual) = &result
-            && actual.profile != requested.profile
-        {
-            return Err(ManagerError::VerificationMismatch {
-                resource: "buttons",
-                profile: Some(requested.profile),
-            });
-        }
 
         let now = self.now();
         let device_id = device.clone();

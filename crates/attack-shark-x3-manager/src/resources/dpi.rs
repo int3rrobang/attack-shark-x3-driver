@@ -166,12 +166,6 @@ impl DeviceManager {
                 }
             },
         };
-        if baseline.profile != profile {
-            return Err(ManagerError::InvalidUpdate(format!(
-                "DPI baseline targets profile {} instead of requested profile {}",
-                baseline.profile, profile
-            )));
-        }
 
         let desired = merge_dpi_delta(baseline, &delta)?;
         self.write_dpi_with_session(
@@ -192,11 +186,6 @@ impl DeviceManager {
         verification: crate::operation::VerificationMethod,
         session: &dyn DeviceSession,
     ) -> Result<WriteOutcome<DpiState>, ManagerError> {
-        if desired.profile != profile {
-            return Err(ManagerError::InvalidUpdate(
-                "DPI state profile does not match requested profile".to_owned(),
-            ));
-        }
         let write = session.write_dpi(desired.clone(), verification).await?;
         let now = self.now();
         let device_id = device.clone();

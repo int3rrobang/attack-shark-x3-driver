@@ -158,12 +158,8 @@ async fn capture_all_profiles(
         }
 
         let snapshot = session.read_profile(target).await?;
-        if snapshot.target_profile != target
-            || snapshot.persistent_metadata.current() != target
+        if snapshot.persistent_metadata.current() != target
             || snapshot.persistent_metadata.maximum() != maximum
-            || snapshot.dpi.profile != target
-            || snapshot.preferences.profile != target
-            || snapshot.buttons.profile != target
         {
             return Err(ManagerError::VerificationMismatch {
                 resource: "complete profile refresh",

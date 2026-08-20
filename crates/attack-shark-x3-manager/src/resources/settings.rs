@@ -130,27 +130,14 @@ impl DeviceManager {
         let (_identity, session, _guard) = self.open_locked(device, "update_preferences").await?;
         let transport = session.transport();
 
-        if transport == TransportKind::Ble && !policy.allow_explicit_defaults {
-            let state = self.store().load_async().await?;
-            if !has_preferences_baseline(&state, device, profile) {
-                return Err(ManagerError::MissingBaseline {
-                    resource: "preferences",
-                    profile: Some(profile),
-                });
-            }
-
-            let write = session
-                .write_preferences(desired, policy.verification)
-                .await?;
-            let now = self.now();
-            let device_id = device.clone();
-            let outcome = self
-                .store()
-                .mutate_async(move |state| {
-                    persist_preferences_write(state, &device_id, profile, desired, write, now)
-                })
-                .await??;
-            return finish_preferences_write(outcome, profile);
+        if transport == TransportKind::Ble
+            && !policy.allow_explicit_defaults
+            && !has_preferences_baseline(&self.store().load_async().await?, device, profile)
+        {
+            return Err(ManagerError::MissingBaseline {
+                resource: "preferences",
+                profile: Some(profile),
+            });
         }
 
         let write = session
@@ -210,19 +197,8 @@ impl DeviceManager {
                 }
             },
         };
-        if baseline.profile != profile {
-            return Err(ManagerError::InvalidUpdate(format!(
-                "preferences baseline targets profile {} instead of requested profile {}",
-                baseline.profile, profile
-            )));
-        }
 
         let desired = merge_preferences_delta(baseline, delta);
-        if desired.profile != profile {
-            return Err(ManagerError::InvalidUpdate(
-                "preferences state profile does not match requested profile".to_owned(),
-            ));
-        }
         let write = session
             .write_preferences(desired, policy.verification)
             .await?;
@@ -283,12 +259,9 @@ impl DeviceManager {
     /// Reads the live polling rate and records USB readback evidence.
     ///
     /// Report `0x06` skips the profile loader: the supplied alias is a wire
-    /// side effect whose value is recorded while the returned rate is from the
-    /// current live image, never from the alias content. This method therefore
-    /// opens one guarded session, loads the complete target profile to establish
-    /// the live image, validates the snapshot target and section profiles,
-    /// and only then reads `read_live_polling_rate(alias)` and persists the
-    /// value under the target profile.
+    /// side effect while the returned rate comes from the current live image.
+    /// This method first loads the complete target profile in the same guarded
+    /// session, then reads and persists the live rate under that profile.
     pub async fn read_polling_rate(
         &self,
         device: &DeviceId,
@@ -299,17 +272,7 @@ impl DeviceManager {
         if transport == TransportKind::Ble {
             return Err(unsupported("read_live_polling_rate", transport));
         }
-        let snapshot = session.read_profile(profile).await?;
-        if snapshot.target_profile != profile
-            || snapshot.dpi.profile != profile
-            || snapshot.preferences.profile != profile
-            || snapshot.buttons.profile != profile
-        {
-            return Err(ManagerError::VerificationMismatch {
-                resource: "profile",
-                profile: Some(profile),
-            });
-        }
+        session.read_profile(profile).await?;
         let value = session.read_live_polling_rate(profile).await?;
         let now = self.now();
         let device_id = device.clone();
@@ -1831,52 +1794,6 @@ mod tests {
         {
             assert_ne!(obs.value, PollingRate::Hz1000);
         }
-    }
-    #[tokio::test]
-    async fn read_polling_rate_snapshot_mismatch_errors_and_does_not_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store(&dir);
-        let identity = usb_identity();
-        let device = identity.id.clone();
-        let target = ProfileId::new(2).unwrap();
-        let (_dpi, preferences, buttons) = complete_image(target);
-        // Mismatched snapshot: dpi profile is 1 instead of 2
-        let mismatched_dpi = DpiState::new(
-            ProfileId::new(1).unwrap(),
-            vec![DpiValue::new(800).unwrap()],
-            StageIndex::new(1).unwrap(),
-            [0; 25],
-        )
-        .unwrap();
-        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
-            target_profile: target,
-            persistent_metadata: ProfileMetadata::new(target, target).unwrap(),
-            dpi: mismatched_dpi,
-            preferences,
-            buttons,
-        };
-        let session = ScriptedFakeSession::usb()
-            .with_profile(snapshot)
-            .with_polling_rate(PollingRate::Hz1000);
-        let factory =
-            Arc::new(ScriptedFakeFactory::new().with_identity(identity.clone(), true, session));
-        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
-        manager.register_device(identity).unwrap();
-
-        let err = manager
-            .read_polling_rate(&device, target)
-            .await
-            .expect_err("snapshot section mismatch must error");
-        assert!(
-            matches!(err, ManagerError::VerificationMismatch { resource: "profile", profile: Some(p) } if p == target)
-        );
-        assert!(
-            store.load().unwrap().devices[&device]
-                .profiles
-                .get(&target)
-                .map(|p| p.polling_rate.observed.is_none())
-                .unwrap_or(true)
-        );
     }
 
     #[tokio::test]

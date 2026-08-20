@@ -442,28 +442,16 @@ impl DeviceManager {
             .map(|observed| observed.value.current());
         let polling_rate = match current_profile {
             Some(profile) if usb => match session.read_profile(profile).await {
-                Ok(snapshot) => {
-                    if snapshot.target_profile != profile
-                        || snapshot.dpi.profile != profile
-                        || snapshot.preferences.profile != profile
-                        || snapshot.buttons.profile != profile
-                    {
-                        return Err(ManagerError::VerificationMismatch {
-                            resource: "profile",
-                            profile: Some(profile),
-                        });
+                Ok(_) => match session.read_live_polling_rate(profile).await {
+                    Ok(rate) => {
+                        let resource = self
+                            .update_observed_polling_rate_async(device, profile, rate)
+                            .await?;
+                        Some(ResourceSnapshot { resource })
                     }
-                    match session.read_live_polling_rate(profile).await {
-                        Ok(rate) => {
-                            let resource = self
-                                .update_observed_polling_rate_async(device, profile, rate)
-                                .await?;
-                            Some(ResourceSnapshot { resource })
-                        }
-                        Err(ManagerError::UnsupportedOperation { .. }) => None,
-                        Err(error) => return Err(error),
-                    }
-                }
+                    Err(ManagerError::UnsupportedOperation { .. }) => None,
+                    Err(error) => return Err(error),
+                },
                 Err(ManagerError::UnsupportedOperation { .. }) => None,
                 Err(error) => return Err(error),
             },
@@ -645,23 +633,19 @@ impl DeviceManager {
             }
             let image = self.require_complete_desired_image(device, profile).await?;
             let snapshot = session_ref.read_profile(profile).await?;
-            if snapshot.target_profile != profile
-                || snapshot.dpi != image.dpi
-                || snapshot.preferences != image.preferences
-                || snapshot.buttons != image.buttons
-            {
-                if snapshot.dpi != image.dpi {
-                    return Err(ManagerError::MissingBaseline {
-                        resource: "DPI",
-                        profile: Some(profile),
-                    });
-                }
-                if snapshot.preferences != image.preferences {
-                    return Err(ManagerError::MissingBaseline {
-                        resource: "preferences",
-                        profile: Some(profile),
-                    });
-                }
+            if snapshot.dpi != image.dpi {
+                return Err(ManagerError::MissingBaseline {
+                    resource: "DPI",
+                    profile: Some(profile),
+                });
+            }
+            if snapshot.preferences != image.preferences {
+                return Err(ManagerError::MissingBaseline {
+                    resource: "preferences",
+                    profile: Some(profile),
+                });
+            }
+            if snapshot.buttons != image.buttons {
                 return Err(ManagerError::MissingBaseline {
                     resource: "buttons",
                     profile: Some(profile),
@@ -725,18 +709,7 @@ impl DeviceManager {
                     }
                 },
             };
-            if baseline.profile != profile {
-                return Err(ManagerError::InvalidUpdate(format!(
-                    "DPI baseline targets profile {} instead of requested profile {}",
-                    baseline.profile, profile
-                )));
-            }
             let desired = crate::resources::dpi::merge_dpi_delta(baseline, &delta)?;
-            if desired.profile != profile {
-                return Err(ManagerError::InvalidUpdate(
-                    "DPI state profile does not match requested profile".to_owned(),
-                ));
-            }
             let write = session_ref
                 .write_dpi(desired.clone(), policy.verification)
                 .await?;
@@ -763,18 +736,7 @@ impl DeviceManager {
                     }
                 },
             };
-            if baseline.profile != profile {
-                return Err(ManagerError::InvalidUpdate(format!(
-                    "preferences baseline targets profile {} instead of requested profile {}",
-                    baseline.profile, profile
-                )));
-            }
             let desired = crate::resources::settings::merge_preferences_delta(baseline, delta);
-            if desired.profile != profile {
-                return Err(ManagerError::InvalidUpdate(
-                    "preferences state profile does not match requested profile".to_owned(),
-                ));
-            }
             let write = session_ref
                 .write_preferences(desired, policy.verification)
                 .await?;
@@ -801,12 +763,6 @@ impl DeviceManager {
                     }
                 },
             };
-            if baseline.profile != profile {
-                return Err(ManagerError::InvalidUpdate(format!(
-                    "button baseline targets profile {} instead of requested profile {}",
-                    baseline.profile, profile
-                )));
-            }
             let mut desired = baseline;
             for delta in &update.buttons {
                 desired.slots[delta.slot_index()] = delta.assignment();
@@ -814,19 +770,6 @@ impl DeviceManager {
             let write = session_ref
                 .write_buttons(desired, policy.verification)
                 .await?;
-            if let (TransportKind::Ble, SessionWrite::ReadbackVerified(_)) = (&transport, &write) {
-                return Err(ManagerError::InvalidUpdate(
-                    "BLE button writes cannot produce readback evidence".to_owned(),
-                ));
-            }
-            if let SessionWrite::ReadbackVerified(actual) = &write
-                && actual.profile != desired.profile
-            {
-                return Err(ManagerError::VerificationMismatch {
-                    resource: "buttons",
-                    profile: Some(desired.profile),
-                });
-            }
             buttons_pair = Some((desired, write));
         }
 

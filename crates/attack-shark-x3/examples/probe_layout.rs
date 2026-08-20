@@ -152,90 +152,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        // --- Restoration is attempted on every post-write exit ---
+        // `write_buttons` includes an exact readback comparison, so one restore
+        // call both restores and verifies the original table.
         if did_write {
             println!("\n  Restoring original button mapping...");
             match handle.write_buttons(original).await {
-                Ok(restored) => {
-                    if restored != original {
-                        eprintln!(
-                            "  Restoration write mismatch: device did not return to original mapping"
-                        );
-                        eprintln!("  Expected: {original:?}");
-                        eprintln!("  Actual:   {restored:?}");
-                        let mismatch_msg = format!(
-                            "restoration failed: mapping mismatch (expected {original:?}, actual {restored:?})"
-                        );
-                        if let Some(orig) = probe_error.take() {
-                            eprintln!("  Original probe error was: {orig}");
-                            probe_error = Some(Box::new(io::Error::other(format!(
-                                "{orig}; {mismatch_msg}"
-                            ))) as Box<dyn Error>);
-                        } else {
-                            probe_error =
-                                Some(Box::new(io::Error::other(mismatch_msg)) as Box<dyn Error>);
+                Ok(_) => println!("  Restore verified: mapping matches original"),
+                Err(restore) => {
+                    let message = match probe_error.take() {
+                        Some(original) => {
+                            format!("{original}; restoration also failed: {restore}")
                         }
-                    }
-                }
-                Err(restore_err) => {
-                    eprintln!("  Restoration write FAILED: {restore_err}");
-                    if let Some(orig) = probe_error.take() {
-                        eprintln!("  Original probe error was: {orig}");
-                        probe_error = Some(Box::new(io::Error::other(format!(
-                            "{orig}; restoration also failed: {restore_err}"
-                        ))) as Box<dyn Error>);
-                    } else {
-                        probe_error = Some(Box::new(io::Error::other(format!(
-                            "restoration failed: {restore_err}"
-                        ))) as Box<dyn Error>);
-                    }
+                        None => format!("restoration failed: {restore}"),
+                    };
+                    probe_error = Some(Box::new(io::Error::other(message)));
                 }
             }
+        }
 
-            // --- Verification readback after restoration ---
-            match handle.read_buttons(profile).await {
-                Ok(current) => {
-                    if current != original {
-                        eprintln!(
-                            "  Verification FAILED: device did not return to original mapping"
-                        );
-                        eprintln!("  Expected: {original:?}");
-                        eprintln!("  Actual:   {current:?}");
-                        if let Some(existing) = probe_error.take() {
-                            probe_error = Some(Box::new(io::Error::other(format!(
-                                "{existing}; verification failed: mapping mismatch"
-                            ))) as Box<dyn Error>);
-                        } else {
-                            probe_error = Some(Box::new(io::Error::other(
-                                "restoration verification failed: device did not return to original mapping",
-                            )) as Box<dyn Error>);
-                        }
-                    } else {
-                        println!("  Restore verified: mapping matches original");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("  Verification read FAILED: {e}");
-                    if let Some(existing) = probe_error.take() {
-                        probe_error = Some(Box::new(io::Error::other(format!(
-                            "{existing}; verification read also failed: {e}"
-                        ))) as Box<dyn Error>);
-                    } else {
-                        probe_error = Some(Box::new(io::Error::other(format!(
-                            "verification read failed: {e}"
-                        ))) as Box<dyn Error>);
-                    }
-                }
-            }
-
-            if let Some(err) = probe_error {
+        if let Some(err) = probe_error {
+            if did_write {
                 eprintln!("  Device {device_label} ended with error: {err}");
-                if overall_error.is_none() {
-                    overall_error = Some(err);
-                }
+            } else {
+                eprintln!("  Device {device_label} probe error (no writes performed): {err}");
             }
-        } else if let Some(err) = probe_error {
-            eprintln!("  Device {device_label} probe error (no writes performed): {err}");
             if overall_error.is_none() {
                 overall_error = Some(err);
             }

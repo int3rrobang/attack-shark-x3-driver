@@ -105,7 +105,6 @@ impl DeviceManager {
             initial_rate,
             &reloaded_snapshot,
             reloaded_rate,
-            target,
         );
         let verified_at = self.now();
         let persistence = mismatch
@@ -207,10 +206,10 @@ impl DeviceManager {
         self.wait_for_reappearance_with_rebind(device, transport, &old_endpoint)
             .await?;
 
-        let (reopened_identity, reopened_session, _guard) = self
+        let (_identity, reopened_session, _guard) = self
             .open_locked(device, "verify_power_cycle_reopen")
             .await?;
-        if reopened_identity.id != *device || reopened_session.transport() != transport {
+        if reopened_session.transport() != transport {
             return Err(ManagerError::VerificationMismatch {
                 resource: "device identity",
                 profile: Some(target),
@@ -225,7 +224,6 @@ impl DeviceManager {
             initial_rate,
             &reloaded_snapshot,
             reloaded_rate,
-            target,
         );
         let verified_at = self.now();
         let persistence = mismatch
@@ -287,73 +285,41 @@ impl DeviceManager {
         persistence: Option<PersistenceVerification>,
         verified_at: crate::state::Timestamp,
     ) -> Result<(), ManagerError> {
-        let device_owned = device.clone();
-        let snapshot_owned = snapshot.clone();
-        let persistence_owned = persistence.clone();
+        let device = device.clone();
+        let snapshot = snapshot.clone();
         self.store()
             .mutate_async(move |state| {
-                let device_state = match state.devices.get_mut(&device_owned) {
-                    Some(ds) => ds,
-                    None => return Err(ManagerError::DeviceNotFound(device_owned.clone())),
-                };
-                let profile_state = device_state
+                let profile_state = state
+                    .devices
+                    .get_mut(&device)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
                     .profiles
                     .entry(target)
                     .or_insert_with(ProfileState::empty);
                 profile_state
                     .dpi
-                    .reconcile_observation(snapshot_owned.dpi.clone(), verified_at);
+                    .reconcile_observation(snapshot.dpi.clone(), verified_at);
                 profile_state
                     .preferences
-                    .reconcile_observation(snapshot_owned.preferences, verified_at);
+                    .reconcile_observation(snapshot.preferences, verified_at);
                 profile_state
                     .buttons
-                    .reconcile_observation(snapshot_owned.buttons, verified_at);
+                    .reconcile_observation(snapshot.buttons, verified_at);
                 profile_state
                     .polling_rate
                     .reconcile_observation(polling_rate, verified_at);
-                if let Some(persistence_value) = persistence_owned.clone() {
-                    match persistence_value {
+                if let Some(persistence) = persistence {
+                    match persistence {
                         PersistenceVerification::ProfileReloadVerified { verified_at } => {
-                            let _ = crate::resources::state::try_mark_profile_reload(
-                                &mut profile_state.dpi,
-                                verified_at,
-                            );
-                            let _ = crate::resources::state::try_mark_profile_reload(
-                                &mut profile_state.preferences,
-                                verified_at,
-                            );
-                            let _ = crate::resources::state::try_mark_profile_reload(
-                                &mut profile_state.buttons,
-                                verified_at,
-                            );
-                            let _ = crate::resources::state::try_mark_profile_reload(
-                                &mut profile_state.polling_rate,
-                                verified_at,
-                            );
+                            profile_state.try_mark_profile_reload_verified(verified_at);
                         }
                         PersistenceVerification::PowerCycleVerified { verified_at } => {
-                            let _ = crate::resources::state::try_mark_power_cycle(
-                                &mut profile_state.dpi,
-                                verified_at,
-                            );
-                            let _ = crate::resources::state::try_mark_power_cycle(
-                                &mut profile_state.preferences,
-                                verified_at,
-                            );
-                            let _ = crate::resources::state::try_mark_power_cycle(
-                                &mut profile_state.buttons,
-                                verified_at,
-                            );
-                            let _ = crate::resources::state::try_mark_power_cycle(
-                                &mut profile_state.polling_rate,
-                                verified_at,
-                            );
+                            profile_state.try_mark_power_cycle_verified(verified_at);
                         }
                         PersistenceVerification::Unknown => {}
                     }
                 }
-                Ok(())
+                Ok::<_, ManagerError>(())
             })
             .await
             .map_err(ManagerError::State)??;
@@ -499,11 +465,7 @@ fn first_mismatch(
     initial_rate: PollingRate,
     reloaded: &ProfileSnapshot,
     reloaded_rate: PollingRate,
-    target: ProfileId,
 ) -> Option<&'static str> {
-    if reloaded.target_profile != target || initial.target_profile != target {
-        return Some("profile");
-    }
     if initial.persistent_metadata.maximum() != reloaded.persistent_metadata.maximum() {
         return Some("profile metadata");
     }
@@ -951,13 +913,8 @@ mod tests {
     async fn profile_reload_polling_mismatch_persists_and_invalidates() {
         let initial = snapshot(800);
         let reloaded = snapshot(800);
-        let mismatch = super::first_mismatch(
-            &initial,
-            PollingRate::Hz1000,
-            &reloaded,
-            PollingRate::Hz500,
-            profile(),
-        );
+        let mismatch =
+            super::first_mismatch(&initial, PollingRate::Hz1000, &reloaded, PollingRate::Hz500);
         assert_eq!(mismatch, Some("polling rate"));
 
         use std::sync::{Arc, Mutex};

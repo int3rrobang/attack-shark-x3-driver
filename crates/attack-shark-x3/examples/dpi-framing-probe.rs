@@ -165,14 +165,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // --- Restore ---
     println!("\n--- restore ---");
-    match handle.write_dpi(backup_dpi.clone()).await {
-        Ok(restored) => {
-            if restored == backup_dpi {
-                println!("DPI restored and verified OK");
-            } else {
-                println!("WARNING: DPI restore readback differs from backup!");
-            }
-        }
+    match handle.write_dpi(backup_dpi).await {
+        Ok(_) => println!("DPI restored and verified OK"),
         Err(e) => println!("WARNING: DPI restore failed: {e}"),
     }
     settle("DPI restore").await;
