@@ -221,7 +221,7 @@ impl DeviceManager {
     /// authorized by `allow_explicit_defaults`. With no usable stored
     /// baseline and no capture authorization, `ManagerError::MissingBaseline`
     /// is returned.
-    async fn load_stored_dpi_baseline(
+    pub(crate) async fn load_stored_dpi_baseline(
         &self,
         device: &DeviceId,
         profile: ProfileId,
@@ -264,15 +264,23 @@ impl DeviceManager {
         let active_stage = StageIndex::new(1).ok_or_else(|| {
             ManagerError::InvalidUpdate("invalid captured DPI active stage".to_owned())
         })?;
-        let captured = DpiState::captured_empty_profile_one(vec![stage], active_stage)
-            .map_err(|error| ManagerError::InvalidUpdate(error.to_string()))?;
+        let captured =
+            DpiState::captured_empty_profile_one(vec![stage], active_stage).map_err(|source| {
+                ManagerError::Protocol {
+                    operation: "dpi state",
+                    source,
+                }
+            })?;
         DpiState::new(
             profile,
             captured.stages,
             captured.active_stage,
             captured.preserved_tail,
         )
-        .map_err(|error| ManagerError::InvalidUpdate(error.to_string()))
+        .map_err(|source| ManagerError::Protocol {
+            operation: "dpi state",
+            source,
+        })
     }
 }
 
@@ -283,7 +291,10 @@ fn unsupported(operation: &'static str, transport: TransportKind) -> ManagerErro
     }
 }
 
-fn merge_dpi_delta(baseline: DpiState, delta: &DpiDelta) -> Result<DpiState, ManagerError> {
+pub(crate) fn merge_dpi_delta(
+    baseline: DpiState,
+    delta: &DpiDelta,
+) -> Result<DpiState, ManagerError> {
     let mut merged = baseline;
     if let Some(stages) = delta.stages.as_ref() {
         merged.stages = stages.clone();
@@ -307,7 +318,6 @@ fn merge_dpi_delta(baseline: DpiState, delta: &DpiDelta) -> Result<DpiState, Man
         }
         merged.sensor = sensor;
     }
-
     let sensor = merged.sensor;
     let validated = DpiState::new(
         merged.profile,
@@ -315,12 +325,15 @@ fn merge_dpi_delta(baseline: DpiState, delta: &DpiDelta) -> Result<DpiState, Man
         merged.active_stage,
         merged.preserved_tail,
     )
-    .map_err(|error| ManagerError::InvalidUpdate(error.to_string()))?
+    .map_err(|source| ManagerError::Protocol {
+        operation: "dpi state",
+        source,
+    })?
     .with_sensor(sensor);
     Ok(validated)
 }
 
-fn has_dpi_baseline(state: &StateFile, device: &DeviceId, profile: ProfileId) -> bool {
+pub(crate) fn has_dpi_baseline(state: &StateFile, device: &DeviceId, profile: ProfileId) -> bool {
     state
         .devices
         .get(device)
@@ -330,7 +343,7 @@ fn has_dpi_baseline(state: &StateFile, device: &DeviceId, profile: ProfileId) ->
         })
 }
 
-fn persist_dpi_write(
+pub(crate) fn persist_dpi_write(
     state: &mut StateFile,
     device: &DeviceId,
     profile: ProfileId,
@@ -378,7 +391,7 @@ fn persist_dpi_write(
         verification,
     })
 }
-fn finish_dpi_write(
+pub(crate) fn finish_dpi_write(
     outcome: WriteOutcome<DpiState>,
     profile: ProfileId,
 ) -> Result<WriteOutcome<DpiState>, ManagerError> {
@@ -411,7 +424,6 @@ mod tests {
     fn store(dir: &tempfile::TempDir) -> StateStore {
         StateStore::open(StatePaths::new(dir.path().join("state.json")))
     }
-
     fn usb_identity() -> DeviceIdentity {
         DeviceIdentity::usb(
             TransportKind::Wired,
@@ -1148,6 +1160,82 @@ mod tests {
             opens.load(Ordering::SeqCst),
             1,
             "stored DPI delta must open exactly one session"
+        );
+    }
+
+    #[test]
+    fn merge_dpi_delta_invalid_stages_preserves_protocol_source() {
+        use attack_shark_x3::ProtocolError;
+        use std::error::Error;
+        let profile = ProfileId::new(1).unwrap();
+        let baseline = dpi(profile, 800);
+        let delta = DpiDelta {
+            stages: Some(vec![]),
+            ..DpiDelta::default()
+        };
+        let err = super::merge_dpi_delta(baseline, &delta).expect_err("empty stages must fail");
+        assert!(matches!(
+            err,
+            ManagerError::Protocol {
+                operation: "dpi state",
+                ..
+            }
+        ));
+        if let ManagerError::Protocol { operation, source } = &err {
+            assert_eq!(*operation, "dpi state");
+            assert_eq!(*source, ProtocolError::InvalidStageCount { count: 0 });
+        }
+        // Display hides technical detail, source chain preserves it.
+        assert_eq!(format!("{err}"), "invalid update for dpi state");
+        let src = err.source().unwrap();
+        assert!(src.downcast_ref::<ProtocolError>().is_some());
+        assert!(!format!("{err}").contains("InvalidStageCount"));
+        assert!(format!("{err:?}").contains("InvalidStageCount"));
+    }
+
+    #[test]
+    fn captured_evidence_dpi_failure_is_protocol_not_string() {
+        use attack_shark_x3::ProtocolError;
+        use std::error::Error;
+        // Directly exercise the mapping helpers used in captured_evidence_dpi.
+        let source = ProtocolError::InvalidDpi { value: 9999 };
+        let err = ManagerError::Protocol {
+            operation: "dpi state",
+            source,
+        };
+        assert_eq!(format!("{err}"), "invalid update for dpi state");
+        assert!(err.source().is_some());
+        let src = err
+            .source()
+            .unwrap()
+            .downcast_ref::<ProtocolError>()
+            .unwrap();
+        assert_eq!(*src, ProtocolError::InvalidDpi { value: 9999 });
+    }
+
+    #[test]
+    fn dpi_state_new_error_is_not_string_erased() {
+        use attack_shark_x3::ProtocolError;
+        use std::error::Error;
+        // Ensure DpiState construction failures map to Protocol, not InvalidUpdate string.
+        let profile = ProfileId::new(1).unwrap();
+        let err = DpiState::new(
+            profile,
+            vec![attack_shark_x3::DpiValue::new(800).unwrap(); 9],
+            StageIndex::new(1).unwrap(),
+            [0; 25],
+        )
+        .map_err(|source| ManagerError::Protocol {
+            operation: "dpi state",
+            source,
+        })
+        .expect_err("9 stages must be invalid");
+        assert!(matches!(err, ManagerError::Protocol { .. }));
+        assert!(
+            err.source()
+                .unwrap()
+                .downcast_ref::<ProtocolError>()
+                .is_some()
         );
     }
 }

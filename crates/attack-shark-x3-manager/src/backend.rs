@@ -70,8 +70,12 @@ pub(crate) trait DeviceSession: Send + Sync {
     async fn read_dpi(&self, profile: ProfileId) -> Result<DpiState, ManagerError>;
     async fn read_preferences(&self, profile: ProfileId) -> Result<PreferencesState, ManagerError>;
     async fn read_buttons(&self, profile: ProfileId) -> Result<ButtonsState, ManagerError>;
-    async fn read_polling_rate(&self, profile: ProfileId) -> Result<PollingRate, ManagerError>;
-
+    /// Reads the live polling rate; the supplied alias is a wire side effect and never identifies rate content.
+    ///
+    /// Report `0x06` skips the profile loader: the selector byte is an alias
+    /// whose value is recorded as a side effect while the returned rate is
+    /// from the current live image.
+    async fn read_live_polling_rate(&self, alias: ProfileId) -> Result<PollingRate, ManagerError>;
     async fn write_dpi(
         &self,
         state: DpiState,
@@ -331,8 +335,8 @@ impl DeviceSession for UsbSession {
         Ok(self.handle.read_buttons(profile).await?)
     }
 
-    async fn read_polling_rate(&self, profile: ProfileId) -> Result<PollingRate, ManagerError> {
-        Ok(self.handle.read_polling_rate(profile).await?)
+    async fn read_live_polling_rate(&self, alias: ProfileId) -> Result<PollingRate, ManagerError> {
+        Ok(self.handle.read_live_polling_rate(alias).await?)
     }
 
     async fn write_dpi(
@@ -482,8 +486,8 @@ impl DeviceSession for BleSession {
         Self::unsupported("read_buttons")
     }
 
-    async fn read_polling_rate(&self, _profile: ProfileId) -> Result<PollingRate, ManagerError> {
-        Self::unsupported("read_polling_rate")
+    async fn read_live_polling_rate(&self, _alias: ProfileId) -> Result<PollingRate, ManagerError> {
+        Self::unsupported("read_live_polling_rate")
     }
 
     async fn write_dpi(
@@ -586,7 +590,13 @@ pub(crate) struct ScriptedFakeSession {
     profiles: Arc<Mutex<BTreeMap<ProfileId, ProfileSnapshot>>>,
     profile_sequences: Arc<Mutex<BTreeMap<ProfileId, VecDeque<ProfileSnapshot>>>>,
     last_profiles: Arc<Mutex<BTreeMap<ProfileId, ProfileSnapshot>>>,
-    polling_rate: Arc<Mutex<Option<PollingRate>>>,
+    /// Per-profile polling rates; the live rate is `polling_rates[live_profile]`.
+    polling_rates: Arc<Mutex<BTreeMap<ProfileId, PollingRate>>>,
+    /// The currently live/working profile image; report `0x06` skips the loader
+    /// so polling reads return `polling_rates[live_profile]` regardless of alias.
+    live_profile: Arc<Mutex<ProfileId>>,
+    /// Last alias supplied to `read_live_polling_rate`; wire side effect, never content.
+    last_polling_alias: Arc<Mutex<Option<ProfileId>>>,
     battery: Arc<Mutex<Option<u8>>>,
     writes: Arc<Mutex<Vec<ScriptedWrite>>>,
     metadata_write_failure: Arc<Mutex<Option<ProfileMetadata>>>,
@@ -609,7 +619,9 @@ impl ScriptedFakeSession {
             profiles: Arc::new(Mutex::new(BTreeMap::new())),
             profile_sequences: Arc::new(Mutex::new(BTreeMap::new())),
             last_profiles: Arc::new(Mutex::new(BTreeMap::new())),
-            polling_rate: Arc::new(Mutex::new(None)),
+            polling_rates: Arc::new(Mutex::new(BTreeMap::new())),
+            live_profile: Arc::new(Mutex::new(ProfileId::new(1).expect("profile 1 valid"))),
+            last_polling_alias: Arc::new(Mutex::new(None)),
             battery: Arc::new(Mutex::new(None)),
             writes: Arc::new(Mutex::new(Vec::new())),
             metadata_write_failure: Arc::new(Mutex::new(None)),
@@ -627,6 +639,7 @@ impl ScriptedFakeSession {
 
     pub(crate) fn with_metadata(self, metadata: ProfileMetadata) -> Self {
         *lock_scripted(&self.metadata) = Some(metadata);
+        *lock_scripted(&self.live_profile) = metadata.current();
         self
     }
 
@@ -646,22 +659,45 @@ impl ScriptedFakeSession {
         }
         self
     }
-
     pub(crate) fn fail_metadata_write_for(self, metadata: ProfileMetadata) -> Self {
         *lock_scripted(&self.metadata_write_failure) = Some(metadata);
         self
     }
 
+    /// Sets the same polling rate for every profile (1..=5); convenience for legacy single-rate tests.
     pub(crate) fn with_polling_rate(self, rate: PollingRate) -> Self {
-        *lock_scripted(&self.polling_rate) = Some(rate);
+        {
+            let mut rates = lock_scripted(&self.polling_rates);
+            for id in 1..=5 {
+                if let Ok(profile) = ProfileId::try_from(id) {
+                    rates.insert(profile, rate);
+                }
+            }
+        }
         self
+    }
+
+    /// Sets a per-profile polling rate.
+    pub(crate) fn with_polling_rate_for(self, profile: ProfileId, rate: PollingRate) -> Self {
+        lock_scripted(&self.polling_rates).insert(profile, rate);
+        self
+    }
+
+    /// Forces the live/working profile; subsequent `read_live_polling_rate` returns this profile's rate.
+    pub(crate) fn with_live_profile(self, profile: ProfileId) -> Self {
+        *lock_scripted(&self.live_profile) = profile;
+        self
+    }
+
+    /// Returns the last alias supplied to `read_live_polling_rate`, if any.
+    pub(crate) fn last_polling_alias(&self) -> Option<ProfileId> {
+        *lock_scripted(&self.last_polling_alias)
     }
 
     pub(crate) fn with_battery(self, level: u8) -> Self {
         *lock_scripted(&self.battery) = Some(level);
         self
     }
-
     /// Snapshot of every hardware write the fake has performed, in order.
     pub(crate) fn writes(&self) -> Vec<ScriptedWrite> {
         lock_scripted(&self.writes).clone()
@@ -736,6 +772,7 @@ impl DeviceSession for ScriptedFakeSession {
         if let Some(metadata) = lock_scripted(&self.metadata).as_ref().copied() {
             snapshot.persistent_metadata = metadata;
         }
+        *lock_scripted(&self.live_profile) = profile;
         Ok(snapshot)
     }
 
@@ -743,51 +780,59 @@ impl DeviceSession for ScriptedFakeSession {
         if self.is_ble() {
             return self.unsupported("read_dpi");
         }
-        lock_scripted(&self.profiles)
+        let result = lock_scripted(&self.profiles)
             .get(&profile)
             .map(|snapshot| snapshot.dpi.clone())
             .ok_or(ManagerError::MissingBaseline {
                 resource: "DPI",
                 profile: Some(profile),
-            })
+            })?;
+        *lock_scripted(&self.live_profile) = profile;
+        Ok(result)
     }
 
     async fn read_preferences(&self, profile: ProfileId) -> Result<PreferencesState, ManagerError> {
         if self.is_ble() {
             return self.unsupported("read_preferences");
         }
-        lock_scripted(&self.profiles)
+        let result = lock_scripted(&self.profiles)
             .get(&profile)
             .map(|snapshot| snapshot.preferences)
             .ok_or(ManagerError::MissingBaseline {
                 resource: "preferences",
                 profile: Some(profile),
-            })
+            })?;
+        *lock_scripted(&self.live_profile) = profile;
+        Ok(result)
     }
 
     async fn read_buttons(&self, profile: ProfileId) -> Result<ButtonsState, ManagerError> {
         if self.is_ble() {
             return self.unsupported("read_buttons");
         }
-        lock_scripted(&self.profiles)
+        let result = lock_scripted(&self.profiles)
             .get(&profile)
             .map(|snapshot| snapshot.buttons)
             .ok_or(ManagerError::MissingBaseline {
                 resource: "buttons",
                 profile: Some(profile),
-            })
+            })?;
+        *lock_scripted(&self.live_profile) = profile;
+        Ok(result)
     }
 
-    async fn read_polling_rate(&self, profile: ProfileId) -> Result<PollingRate, ManagerError> {
+    async fn read_live_polling_rate(&self, alias: ProfileId) -> Result<PollingRate, ManagerError> {
         if self.is_ble() {
-            return self.unsupported("read_polling_rate");
+            return self.unsupported("read_live_polling_rate");
         }
-        lock_scripted(&self.polling_rate)
-            .as_ref()
+        *lock_scripted(&self.last_polling_alias) = Some(alias);
+        let live = *lock_scripted(&self.live_profile);
+        lock_scripted(&self.polling_rates)
+            .get(&live)
             .copied()
             .ok_or(ManagerError::MissingBaseline {
                 resource: "polling rate",
-                profile: Some(profile),
+                profile: Some(alias),
             })
     }
 
@@ -852,7 +897,11 @@ impl DeviceSession for ScriptedFakeSession {
             return Err(self.readback_unsupported("write_polling_rate_unchecked"));
         }
         lock_scripted(&self.writes).push(ScriptedWrite::PollingRate(profile, rate));
-        *lock_scripted(&self.polling_rate) = Some(rate);
+        // Report `0x06` is a save alias: the deferred writer serializes the live
+        // image into `profile`, so the target slot's rate becomes `rate`. The live
+        // image's rate is also the new rate when the session's live profile is
+        // the target; otherwise the live rate stays until the target is loaded.
+        lock_scripted(&self.polling_rates).insert(profile, rate);
         Ok(self.write_outcome(rate, verification))
     }
 
@@ -867,6 +916,8 @@ impl DeviceSession for ScriptedFakeSession {
         }
         lock_scripted(&self.writes).push(ScriptedWrite::ProfileMetadata(metadata));
         *lock_scripted(&self.metadata) = Some(metadata);
+        // Real activation establishes the new live profile; mirror it.
+        *lock_scripted(&self.live_profile) = metadata.current();
         Ok(self.write_outcome(metadata, self.verification))
     }
 
@@ -1146,8 +1197,9 @@ mod tests {
                 .expect("read back buttons"),
             buttons
         );
+        // Polling is live: after the targeted reads above, live is profile 2.
         assert_eq!(
-            usb.read_polling_rate(profile(2))
+            usb.read_live_polling_rate(profile(2))
                 .await
                 .expect("read back polling rate"),
             PollingRate::Hz1000
@@ -1212,5 +1264,114 @@ mod tests {
             .await,
             Err(ManagerError::UnsupportedOperation { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn live_polling_alias_is_side_effect_not_content() {
+        // Per-profile rates with live profile 1.
+        let session = ScriptedFakeSession::usb()
+            .with_profile(snapshot())
+            .with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                target_profile: profile(1),
+                persistent_metadata: attack_shark_x3::ProfileMetadata::new(profile(1), profile(5))
+                    .expect("valid metadata"),
+                dpi: snapshot().dpi.clone(),
+                preferences: snapshot().preferences,
+                buttons: snapshot().buttons.clone(),
+            })
+            .with_polling_rate_for(profile(1), PollingRate::Hz500)
+            .with_polling_rate_for(profile(2), PollingRate::Hz1000)
+            .with_live_profile(profile(1));
+        // Standalone alias 2 returns live profile 1 rate and records alias.
+        let rate_via_alias2 = session
+            .read_live_polling_rate(profile(2))
+            .await
+            .expect("live polling rate via alias 2 must succeed");
+        assert_eq!(
+            rate_via_alias2,
+            PollingRate::Hz500,
+            "alias 2 must return live 1 rate, exposing cross-profile contamination"
+        );
+        assert_eq!(session.last_polling_alias(), Some(profile(2)));
+        // Loading target 2 establishes it as live; alias 2 now returns profile 2 rate.
+        session
+            .read_profile(profile(2))
+            .await
+            .expect("loading profile 2 must succeed");
+        let rate_after_load = session
+            .read_live_polling_rate(profile(2))
+            .await
+            .expect("live polling after load must succeed");
+        assert_eq!(rate_after_load, PollingRate::Hz1000);
+        // Even alias 1 now returns live 2 rate.
+        let rate_via_alias1 = session
+            .read_live_polling_rate(profile(1))
+            .await
+            .expect("alias 1 must now return live 2 rate");
+        assert_eq!(rate_via_alias1, PollingRate::Hz1000);
+        assert_eq!(session.last_polling_alias(), Some(profile(1)));
+    }
+
+    #[tokio::test]
+    async fn polling_write_updates_target_slot_and_live_visibility() {
+        let session = ScriptedFakeSession::usb()
+            .with_profile(snapshot())
+            .with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                target_profile: profile(1),
+                persistent_metadata: attack_shark_x3::ProfileMetadata::new(profile(1), profile(5))
+                    .expect("valid metadata"),
+                dpi: snapshot().dpi.clone(),
+                preferences: snapshot().preferences,
+                buttons: snapshot().buttons.clone(),
+            })
+            .with_polling_rate_for(profile(1), PollingRate::Hz1000)
+            .with_polling_rate_for(profile(2), PollingRate::Hz500)
+            .with_live_profile(profile(1));
+        // Write alias 2 while live is 1: target slot updated, live unchanged.
+        session
+            .write_polling_rate_unchecked(
+                profile(2),
+                PollingRate::Hz250,
+                VerificationMethod::Readback,
+            )
+            .await
+            .expect("write alias 2 must succeed");
+        let still_live1 = session
+            .read_live_polling_rate(profile(2))
+            .await
+            .expect("alias 2 while live 1 must still return live 1 rate");
+        assert_eq!(still_live1, PollingRate::Hz1000);
+        // Load target 2: now live 2 returns the newly written rate.
+        session.read_profile(profile(2)).await.expect("load 2");
+        let now_live2 = session
+            .read_live_polling_rate(profile(1))
+            .await
+            .expect("alias 1 while live 2 must return live 2 rate");
+        assert_eq!(now_live2, PollingRate::Hz250);
+        // Write via live 2 alias: immediate visibility.
+        session
+            .write_polling_rate_unchecked(
+                profile(2),
+                PollingRate::Hz500,
+                VerificationMethod::Readback,
+            )
+            .await
+            .expect("write alias 2 while live 2");
+        let immediate = session
+            .read_live_polling_rate(profile(2))
+            .await
+            .expect("must see new live rate");
+        assert_eq!(immediate, PollingRate::Hz500);
+        // Metadata activation updates live profile.
+        let meta = attack_shark_x3::ProfileMetadata::new(profile(2), profile(5)).expect("metadata");
+        session
+            .write_profile_metadata(meta)
+            .await
+            .expect("metadata write");
+        let after_meta = session
+            .read_live_polling_rate(profile(1))
+            .await
+            .expect("after metadata activation live is 2");
+        assert_eq!(after_meta, PollingRate::Hz500);
     }
 }

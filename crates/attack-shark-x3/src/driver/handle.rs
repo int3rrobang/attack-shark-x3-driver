@@ -342,20 +342,23 @@ impl MouseHandle {
             .await
     }
 
-    /// Reads the live polling rate through a serialized USB readback armed for
-    /// the explicit target profile.
+    /// Reads the live polling rate; the supplied alias is a wire side effect and never identifies rate content.
     ///
-    /// Report `0x06` skips the profile loader, so the readback reflects the
-    /// profile that is currently live on the device. The readback's profile
-    /// byte is validated against the requested profile and the armed selector
-    /// carries the requested profile.
+    /// Report `0x06` skips the profile loader: the selector byte is an alias
+    /// whose value is recorded as a side effect while the returned rate is
+    /// from the current live image. The readback's profile byte is checked
+    /// only for wire-shape validity against the alias and the armed selector
+    /// carries the alias.
     ///
     /// # Errors
     ///
     /// Returns transport, retry-exhaustion, protocol-validation, or worker
     /// lifecycle errors.
-    pub async fn read_polling_rate(&self, profile: ProfileId) -> Result<PollingRate, DriverError> {
-        self.request(|reply| Command::PollingRate { profile, reply })
+    pub async fn read_live_polling_rate(
+        &self,
+        alias: ProfileId,
+    ) -> Result<PollingRate, DriverError> {
+        self.request(|reply| Command::LivePollingRate { alias, reply })
             .await
     }
 
@@ -580,8 +583,8 @@ pub(crate) enum Command {
         profile: ProfileId,
         reply: Reply<ButtonsState>,
     },
-    PollingRate {
-        profile: ProfileId,
+    LivePollingRate {
+        alias: ProfileId,
         reply: Reply<PollingRate>,
     },
     WriteDpi {

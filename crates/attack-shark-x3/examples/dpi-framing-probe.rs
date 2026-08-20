@@ -32,16 +32,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let profile = ProfileId::try_from(1)?;
 
     // --- Backup ---
+    // Profile-scoped polling rate requires anchoring the live image: the
+    // complete target profile must be loaded/read on the same serialized
+    // handle immediately before the live polling-rate read. Report 0x06
+    // skips the profile loader, so the alias byte is a wire side effect
+    // only and does not by itself prove profile content.
     println!("\n--- backup ---");
-    let backup_dpi = handle.read_dpi(profile).await?;
-    settle("DPI read").await;
-    let backup_rate = handle.read_polling_rate(profile).await?;
-    settle("polling-rate read").await;
-    let backup_prefs = handle.read_preferences(profile).await?;
-    settle("preferences read").await;
+    let backup_snapshot = handle.read_profile(profile).await?;
+    settle("profile read").await;
+    let backup_dpi = backup_snapshot.dpi.clone();
+    let backup_prefs = backup_snapshot.preferences.clone();
+    let backup_rate = handle.read_live_polling_rate(profile).await?;
+    settle("polling-rate read (live, alias is wire side effect)").await;
     println!("DPI stages: {:?}", backup_dpi.stages);
     println!("active stage: {}", backup_dpi.active_stage);
-    println!("polling rate: {backup_rate}");
+    println!("polling rate (live after loading profile {profile}): {backup_rate}");
     println!("preferences debounce: {}", backup_prefs.debounce);
 
     // --- Encode full-framed packet ---
@@ -69,12 +74,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     settle("full-framed write").await;
 
     // --- Health checks ---
+    // To claim a polling rate for profile P, the same serialized handle
+    // must have just loaded/read the complete P profile before the live
+    // read. Report 0x06 is live-only; alias does not identify content.
     println!("\n--- health checks ---");
 
-    // (a) DPI readback
-    let dpi_ok = match handle.read_dpi(profile).await {
-        Ok(state) => {
-            let matches = state == backup_dpi;
+    // Reload the complete profile on the same handle so the following
+    // live polling-rate read is anchored to profile P's live image.
+    let health_snapshot = match handle.read_profile(profile).await {
+        Ok(snapshot) => Some(snapshot),
+        Err(e) => {
+            println!("profile read: FAILED ({e})");
+            None
+        }
+    };
+    settle("profile readback").await;
+
+    // (a) DPI readback - derived from the anchored complete profile
+    let dpi_ok = match &health_snapshot {
+        Some(snapshot) => {
+            let state = &snapshot.dpi;
+            let matches = *state == backup_dpi;
             println!(
                 "DPI readback: OK (state {} backup)",
                 if matches { "matches" } else { "DIFFERS from" }
@@ -89,34 +109,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             matches
         }
-        Err(e) => {
-            println!("DPI readback: FAILED ({e})");
+        None => {
+            println!("DPI readback: FAILED (profile load failed)");
             false
         }
     };
-    settle("DPI readback").await;
 
-    // (b) Polling rate read (unrelated report 0x06)
-    let rate_ok = match handle.read_polling_rate(profile).await {
+    // (b) Polling rate read - live image after anchoring profile P
+    let rate_ok = match handle.read_live_polling_rate(profile).await {
         Ok(rate) => {
             let matches = rate == backup_rate;
             println!(
-                "polling-rate read: OK ({rate}, {} backup)",
+                "polling-rate read (live, alias {profile} is wire alias only): OK ({rate}, {} backup live rate)",
                 if matches { "matches" } else { "DIFFERS from" }
             );
             matches
         }
         Err(e) => {
-            println!("polling-rate read: FAILED ({e})");
+            println!("polling-rate read (live): FAILED ({e})");
             false
         }
     };
-    settle("polling-rate read").await;
+    settle("polling-rate read (live)").await;
 
-    // (c) Preferences read (unrelated report 0x05)
-    let prefs_ok = match handle.read_preferences(profile).await {
-        Ok(prefs) => {
-            let matches = prefs == backup_prefs;
+    // (c) Preferences read - derived from the same anchored profile
+    let prefs_ok = match &health_snapshot {
+        Some(snapshot) => {
+            let prefs = &snapshot.preferences;
+            let matches = *prefs == backup_prefs;
             println!(
                 "preferences read: OK (debounce={}, {} backup)",
                 prefs.debounce,
@@ -124,8 +144,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
             matches
         }
-        Err(e) => {
-            println!("preferences read: FAILED ({e})");
+        None => {
+            println!("preferences read: FAILED (profile load failed)");
             false
         }
     };
@@ -157,10 +177,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     settle("DPI restore").await;
 
-    // Final health check
-    match handle.read_polling_rate(profile).await {
-        Ok(rate) => println!("final polling-rate check: {rate} (device responsive)"),
-        Err(e) => println!("final polling-rate check: FAILED ({e})"),
+    // Final health check - pure responsiveness, not profile proof.
+    // Alias is wire side effect only; result is labeled live.
+    match handle.read_live_polling_rate(profile).await {
+        Ok(rate) => println!(
+            "final live polling-rate check: {rate} (device responsive, live value, alias is wire alias only)"
+        ),
+        Err(e) => println!("final live polling-rate check: FAILED ({e})"),
     }
 
     Ok(())

@@ -499,12 +499,28 @@ impl DeviceManager {
             .and_then(|snapshot| snapshot.resource.observed.as_ref())
             .map(|observed| observed.value.current());
         let polling_rate = match current_profile {
-            Some(profile) if usb => match session.read_polling_rate(profile).await {
-                Ok(rate) => {
-                    let resource = self
-                        .update_observed_polling_rate_async(device, profile, rate)
-                        .await?;
-                    Some(ResourceSnapshot { resource })
+            Some(profile) if usb => match session.read_profile(profile).await {
+                Ok(snapshot) => {
+                    if snapshot.target_profile != profile
+                        || snapshot.dpi.profile != profile
+                        || snapshot.preferences.profile != profile
+                        || snapshot.buttons.profile != profile
+                    {
+                        return Err(ManagerError::VerificationMismatch {
+                            resource: "profile",
+                            profile: Some(profile),
+                        });
+                    }
+                    match session.read_live_polling_rate(profile).await {
+                        Ok(rate) => {
+                            let resource = self
+                                .update_observed_polling_rate_async(device, profile, rate)
+                                .await?;
+                            Some(ResourceSnapshot { resource })
+                        }
+                        Err(ManagerError::UnsupportedOperation { .. }) => None,
+                        Err(error) => return Err(error),
+                    }
                 }
                 Err(ManagerError::UnsupportedOperation { .. }) => None,
                 Err(error) => return Err(error),
@@ -595,6 +611,9 @@ impl DeviceManager {
             SessionWrite::ReadbackVerified(actual) => {
                 let now = self.now();
                 let device_owned = device.clone();
+                let target_copy = target;
+                let actual_copy = actual;
+                let usb_flag = usb;
                 let inner: Result<(), ManagerError> = self
                     .store
                     .mutate_async(move |state| {
@@ -602,17 +621,17 @@ impl DeviceManager {
                             .devices
                             .get_mut(&device_owned)
                             .ok_or_else(|| ManagerError::DeviceNotFound(device_owned.clone()))?;
-                        if usb {
+                        if usb_flag {
                             crate::resources::state::record_readback(
                                 &mut device_state.profile_metadata,
-                                target,
-                                actual,
+                                target_copy,
+                                actual_copy,
                                 now,
                             );
                         } else {
                             crate::resources::state::record_ack(
                                 &mut device_state.profile_metadata,
-                                target,
+                                target_copy,
                                 now,
                             );
                         }
@@ -620,6 +639,12 @@ impl DeviceManager {
                     })
                     .await?;
                 inner?;
+                if usb && actual != target {
+                    return Err(ManagerError::VerificationMismatch {
+                        resource: "profile metadata",
+                        profile: Some(profile),
+                    });
+                }
                 Ok(actual)
             }
             SessionWrite::Acknowledged => {
@@ -663,6 +688,9 @@ impl DeviceManager {
             SessionWrite::ReadbackVerified(actual) => {
                 let now = self.now();
                 let device_owned = device.clone();
+                let target_copy = target;
+                let actual_copy = actual;
+                let usb_flag = usb;
                 let inner: Result<(), ManagerError> = self
                     .store
                     .mutate_async(move |state| {
@@ -670,17 +698,17 @@ impl DeviceManager {
                             .devices
                             .get_mut(&device_owned)
                             .ok_or_else(|| ManagerError::DeviceNotFound(device_owned.clone()))?;
-                        if usb {
+                        if usb_flag {
                             crate::resources::state::record_readback(
                                 &mut device_state.profile_metadata,
-                                target,
-                                actual,
+                                target_copy,
+                                actual_copy,
                                 now,
                             );
                         } else {
                             crate::resources::state::record_ack(
                                 &mut device_state.profile_metadata,
-                                target,
+                                target_copy,
                                 now,
                             );
                         }
@@ -688,6 +716,12 @@ impl DeviceManager {
                     })
                     .await?;
                 inner?;
+                if usb && actual != target {
+                    return Err(ManagerError::VerificationMismatch {
+                        resource: "profile metadata",
+                        profile: Some(current),
+                    });
+                }
                 Ok(actual)
             }
             SessionWrite::Acknowledged => {
@@ -712,6 +746,306 @@ impl DeviceManager {
                 Ok(target)
             }
         }
+    }
+    pub async fn apply_profile_update(
+        &self,
+        device: &DeviceId,
+        profile: ProfileId,
+        update: crate::operation::ProfileUpdate,
+        policy: crate::operation::UpdatePolicy,
+    ) -> Result<crate::operation::ProfileUpdateOutcome, ManagerError> {
+        if update.is_empty() {
+            return Err(ManagerError::InvalidUpdate(
+                "profile update must provide at least one field".to_owned(),
+            ));
+        }
+        if update.has_polling() && update.has_non_rate() {
+            return Err(ManagerError::InvalidUpdate(
+                "polling rate cannot be combined with DPI/preferences/buttons; report 0x06 must remain isolated".to_owned(),
+            ));
+        }
+        if let Some(dpi_delta) = &update.dpi {
+            if dpi_delta.is_empty() {
+                return Err(ManagerError::InvalidUpdate(
+                    "DPI delta must provide at least one field".to_owned(),
+                ));
+            }
+        }
+        if let Some(prefs_delta) = &update.preferences {
+            if prefs_delta.is_empty() {
+                return Err(ManagerError::InvalidUpdate(
+                    "preferences delta must provide at least one field".to_owned(),
+                ));
+            }
+        }
+
+        let (_identity, _endpoint, session, _guard) =
+            self.open_locked(device, "apply_profile_update").await?;
+        let transport = session.transport();
+        let session_ref: &dyn DeviceSession = session.as_ref();
+
+        if let Some(desired_rate) = update.polling_rate {
+            if transport == TransportKind::Ble {
+                return Err(ManagerError::ExplicitAuthorizationRequired {
+                    operation: "update_polling_rate",
+                    transport: TransportKind::Ble,
+                });
+            }
+            let image = self.require_complete_desired_image(device, profile).await?;
+            let snapshot = session_ref.read_profile(profile).await?;
+            if snapshot.target_profile != profile
+                || snapshot.dpi != image.dpi
+                || snapshot.preferences != image.preferences
+                || snapshot.buttons != image.buttons
+            {
+                if snapshot.dpi != image.dpi {
+                    return Err(ManagerError::MissingBaseline {
+                        resource: "DPI",
+                        profile: Some(profile),
+                    });
+                }
+                if snapshot.preferences != image.preferences {
+                    return Err(ManagerError::MissingBaseline {
+                        resource: "preferences",
+                        profile: Some(profile),
+                    });
+                }
+                return Err(ManagerError::MissingBaseline {
+                    resource: "buttons",
+                    profile: Some(profile),
+                });
+            }
+            let current = session_ref.read_live_polling_rate(profile).await?;
+            let write = if current == desired_rate {
+                SessionWrite::ReadbackVerified(current)
+            } else {
+                session_ref
+                    .write_polling_rate_unchecked(profile, desired_rate, policy.verification)
+                    .await?
+            };
+            let now = self.now();
+            let device_id = device.clone();
+            let outcome = self
+                .store
+                .mutate_async(move |state| {
+                    crate::resources::settings::persist_polling_write(
+                        state,
+                        &device_id,
+                        profile,
+                        desired_rate,
+                        write,
+                        now,
+                    )
+                })
+                .await??;
+            let finished = crate::resources::settings::finish_polling_write(outcome, profile)?;
+            return Ok(crate::operation::ProfileUpdateOutcome {
+                polling_rate: Some(finished),
+                ..Default::default()
+            });
+        }
+
+        // Non-rate composite: DPI, preferences, buttons share one session.
+        let mut dpi_pair: Option<(
+            attack_shark_x3::DpiState,
+            SessionWrite<attack_shark_x3::DpiState>,
+        )> = None;
+        let mut prefs_pair: Option<(
+            attack_shark_x3::PreferencesState,
+            SessionWrite<attack_shark_x3::PreferencesState>,
+        )> = None;
+        let mut buttons_pair: Option<(
+            attack_shark_x3::ButtonsState,
+            SessionWrite<attack_shark_x3::ButtonsState>,
+        )> = None;
+
+        if let Some(delta) = update.dpi {
+            let baseline = match transport {
+                TransportKind::Ble => {
+                    self.load_stored_dpi_baseline(device, profile, policy.allow_explicit_defaults)
+                        .await?
+                }
+                TransportKind::Wired | TransportKind::Receiver => match policy.baseline {
+                    crate::operation::BaselineSource::Live => session_ref.read_dpi(profile).await?,
+                    crate::operation::BaselineSource::Stored => {
+                        self.load_stored_dpi_baseline(device, profile, false)
+                            .await?
+                    }
+                },
+            };
+            if baseline.profile != profile {
+                return Err(ManagerError::InvalidUpdate(format!(
+                    "DPI baseline targets profile {} instead of requested profile {}",
+                    baseline.profile, profile
+                )));
+            }
+            let desired = crate::resources::dpi::merge_dpi_delta(baseline, &delta)?;
+            if desired.profile != profile {
+                return Err(ManagerError::InvalidUpdate(
+                    "DPI state profile does not match requested profile".to_owned(),
+                ));
+            }
+            let write = session_ref
+                .write_dpi(desired.clone(), policy.verification)
+                .await?;
+            dpi_pair = Some((desired, write));
+        }
+
+        if let Some(delta) = update.preferences {
+            let baseline = match transport {
+                TransportKind::Ble => {
+                    self.load_stored_preferences_baseline(
+                        device,
+                        profile,
+                        policy.allow_explicit_defaults,
+                    )
+                    .await?
+                }
+                TransportKind::Wired | TransportKind::Receiver => match policy.baseline {
+                    crate::operation::BaselineSource::Live => {
+                        session_ref.read_preferences(profile).await?
+                    }
+                    crate::operation::BaselineSource::Stored => {
+                        self.load_stored_preferences_baseline(device, profile, false)
+                            .await?
+                    }
+                },
+            };
+            if baseline.profile != profile {
+                return Err(ManagerError::InvalidUpdate(format!(
+                    "preferences baseline targets profile {} instead of requested profile {}",
+                    baseline.profile, profile
+                )));
+            }
+            let desired = crate::resources::settings::merge_preferences_delta(baseline, delta);
+            if desired.profile != profile {
+                return Err(ManagerError::InvalidUpdate(
+                    "preferences state profile does not match requested profile".to_owned(),
+                ));
+            }
+            let write = session_ref
+                .write_preferences(desired, policy.verification)
+                .await?;
+            prefs_pair = Some((desired, write));
+        }
+
+        if !update.buttons.is_empty() {
+            let baseline = match transport {
+                TransportKind::Ble => {
+                    self.load_stored_buttons_baseline(
+                        device,
+                        profile,
+                        policy.allow_explicit_defaults,
+                    )
+                    .await?
+                }
+                TransportKind::Wired | TransportKind::Receiver => match policy.baseline {
+                    crate::operation::BaselineSource::Live => {
+                        session_ref.read_buttons(profile).await?
+                    }
+                    crate::operation::BaselineSource::Stored => {
+                        self.load_stored_buttons_baseline(device, profile, false)
+                            .await?
+                    }
+                },
+            };
+            if baseline.profile != profile {
+                return Err(ManagerError::InvalidUpdate(format!(
+                    "button baseline targets profile {} instead of requested profile {}",
+                    baseline.profile, profile
+                )));
+            }
+            let mut desired = baseline;
+            for delta in &update.buttons {
+                desired.slots[delta.slot_index()] = delta.assignment();
+            }
+            let write = session_ref
+                .write_buttons(desired.clone(), policy.verification)
+                .await?;
+            match (&transport, &write) {
+                (TransportKind::Ble, SessionWrite::ReadbackVerified(_)) => {
+                    return Err(ManagerError::InvalidUpdate(
+                        "BLE button writes cannot produce readback evidence".to_owned(),
+                    ));
+                }
+                _ => {}
+            }
+            if let SessionWrite::ReadbackVerified(actual) = &write {
+                if actual.profile != desired.profile {
+                    return Err(ManagerError::VerificationMismatch {
+                        resource: "buttons",
+                        profile: Some(desired.profile),
+                    });
+                }
+            }
+            buttons_pair = Some((desired, write));
+        }
+
+        let now = self.now();
+        let device_id = device.clone();
+        let (dpi_outcome, prefs_outcome, buttons_outcome) = self
+            .store
+            .mutate_async(move |state| {
+                let mut dpi_out: Option<crate::operation::WriteOutcome<attack_shark_x3::DpiState>> =
+                    None;
+                let mut prefs_out: Option<
+                    crate::operation::WriteOutcome<attack_shark_x3::PreferencesState>,
+                > = None;
+                let mut btn_out: Option<
+                    crate::operation::WriteOutcome<attack_shark_x3::ButtonsState>,
+                > = None;
+                if let Some((desired, write)) = dpi_pair {
+                    let out = crate::resources::dpi::persist_dpi_write(
+                        state, &device_id, profile, desired, write, now,
+                    )?;
+                    dpi_out = Some(out);
+                }
+                if let Some((desired, write)) = prefs_pair {
+                    let out = crate::resources::settings::persist_preferences_write(
+                        state, &device_id, profile, desired, write, now,
+                    )?;
+                    prefs_out = Some(out);
+                }
+                if let Some((desired, write)) = buttons_pair {
+                    let out = crate::resources::buttons::persist_buttons_write(
+                        state, &device_id, desired, write, now,
+                    )?;
+                    btn_out = Some(out);
+                }
+                Ok::<_, ManagerError>((dpi_out, prefs_out, btn_out))
+            })
+            .await??;
+
+        let dpi_final = if let Some(out) = dpi_outcome {
+            Some(crate::resources::dpi::finish_dpi_write(out, profile)?)
+        } else {
+            None
+        };
+        let prefs_final = if let Some(out) = prefs_outcome {
+            Some(crate::resources::settings::finish_preferences_write(
+                out, profile,
+            )?)
+        } else {
+            None
+        };
+        let buttons_final = if let Some(out) = buttons_outcome {
+            if out.verification.application == crate::state::ApplicationVerification::Mismatch {
+                return Err(ManagerError::VerificationMismatch {
+                    resource: "buttons",
+                    profile: Some(profile),
+                });
+            }
+            Some(out)
+        } else {
+            None
+        };
+
+        Ok(crate::operation::ProfileUpdateOutcome {
+            dpi: dpi_final,
+            preferences: prefs_final,
+            buttons: buttons_final,
+            polling_rate: None,
+        })
     }
 
     pub fn device_identity(&self, device: &DeviceId) -> Result<DeviceIdentity, ManagerError> {
@@ -765,11 +1099,11 @@ impl DeviceManager {
             ) -> Result<attack_shark_x3::ButtonsState, ManagerError> {
                 self.inner.read_buttons(profile).await
             }
-            async fn read_polling_rate(
+            async fn read_live_polling_rate(
                 &self,
-                profile: ProfileId,
+                alias: ProfileId,
             ) -> Result<attack_shark_x3::PollingRate, ManagerError> {
-                self.inner.read_polling_rate(profile).await
+                self.inner.read_live_polling_rate(alias).await
             }
             async fn write_dpi(
                 &self,
@@ -924,14 +1258,19 @@ fn is_usb_transport(transport: TransportKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::DeviceManager;
-    use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession};
+    use crate::backend::{DeviceSession, ScriptedFakeFactory, ScriptedFakeSession, SessionWrite};
     use crate::device::{
         DeviceEndpoint, DeviceId, DeviceIdentity, DeviceLocator, TransportSelection,
     };
     use crate::error::ManagerError;
     use crate::operation::DiscoveredEndpoint;
-    use crate::state::{DesiredSource, DesiredState, StatePaths, StateStore, Verification};
-    use attack_shark_x3::{PollingRate, ProfileMetadata, TransportKind};
+    use crate::state::{
+        ApplicationVerification, DesiredSource, DesiredState, StatePaths, StateStore, Verification,
+    };
+    use attack_shark_x3::{
+        ButtonAssignment, ButtonsState, DpiState, DpiValue, PollingRate, PreferencesState,
+        ProfileId, ProfileMetadata, StageIndex, TransportKind,
+    };
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -988,6 +1327,169 @@ mod tests {
         }
         txn.commit().unwrap();
         id
+    }
+
+    struct MismatchWrapper {
+        inner: ScriptedFakeSession,
+        mismatched: ProfileMetadata,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl DeviceSession for MismatchWrapper {
+        fn transport(&self) -> TransportKind {
+            self.inner.transport()
+        }
+        async fn read_profile_metadata(&self) -> Result<ProfileMetadata, ManagerError> {
+            self.inner.read_profile_metadata().await
+        }
+        async fn read_profile(
+            &self,
+            profile: ProfileId,
+        ) -> Result<attack_shark_x3::driver::ProfileSnapshot, ManagerError> {
+            self.inner.read_profile(profile).await
+        }
+        async fn read_dpi(&self, profile: ProfileId) -> Result<DpiState, ManagerError> {
+            self.inner.read_dpi(profile).await
+        }
+        async fn read_preferences(
+            &self,
+            profile: ProfileId,
+        ) -> Result<PreferencesState, ManagerError> {
+            self.inner.read_preferences(profile).await
+        }
+        async fn read_buttons(&self, profile: ProfileId) -> Result<ButtonsState, ManagerError> {
+            self.inner.read_buttons(profile).await
+        }
+        async fn read_live_polling_rate(
+            &self,
+            alias: ProfileId,
+        ) -> Result<PollingRate, ManagerError> {
+            self.inner.read_live_polling_rate(alias).await
+        }
+        async fn write_dpi(
+            &self,
+            state: DpiState,
+            verification: crate::operation::VerificationMethod,
+        ) -> Result<SessionWrite<DpiState>, ManagerError> {
+            self.inner.write_dpi(state, verification).await
+        }
+        async fn write_preferences(
+            &self,
+            state: PreferencesState,
+            verification: crate::operation::VerificationMethod,
+        ) -> Result<SessionWrite<PreferencesState>, ManagerError> {
+            self.inner.write_preferences(state, verification).await
+        }
+        async fn write_buttons(
+            &self,
+            state: ButtonsState,
+            verification: crate::operation::VerificationMethod,
+        ) -> Result<SessionWrite<ButtonsState>, ManagerError> {
+            self.inner.write_buttons(state, verification).await
+        }
+        async fn write_polling_rate_unchecked(
+            &self,
+            profile: ProfileId,
+            rate: PollingRate,
+            verification: crate::operation::VerificationMethod,
+        ) -> Result<SessionWrite<PollingRate>, ManagerError> {
+            self.inner
+                .write_polling_rate_unchecked(profile, rate, verification)
+                .await
+        }
+        async fn write_profile_metadata(
+            &self,
+            _metadata: ProfileMetadata,
+        ) -> Result<SessionWrite<ProfileMetadata>, ManagerError> {
+            Ok(SessionWrite::ReadbackVerified(self.mismatched))
+        }
+        async fn read_battery(&self, timeout: Duration) -> Result<u8, ManagerError> {
+            self.inner.read_battery(timeout).await
+        }
+        fn subscribe_events(&self) -> crate::backend::SessionEvents {
+            self.inner.subscribe_events()
+        }
+    }
+
+    struct UnsupportedPollSession {
+        metadata: ProfileMetadata,
+        snapshot: attack_shark_x3::driver::ProfileSnapshot,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl DeviceSession for UnsupportedPollSession {
+        fn transport(&self) -> TransportKind {
+            TransportKind::Wired
+        }
+        async fn read_profile_metadata(&self) -> Result<ProfileMetadata, ManagerError> {
+            Ok(self.metadata)
+        }
+        async fn read_profile(
+            &self,
+            _profile: ProfileId,
+        ) -> Result<attack_shark_x3::driver::ProfileSnapshot, ManagerError> {
+            Ok(self.snapshot.clone())
+        }
+        async fn read_dpi(&self, _p: ProfileId) -> Result<DpiState, ManagerError> {
+            unreachable!()
+        }
+        async fn read_preferences(&self, _p: ProfileId) -> Result<PreferencesState, ManagerError> {
+            unreachable!()
+        }
+        async fn read_buttons(&self, _p: ProfileId) -> Result<ButtonsState, ManagerError> {
+            unreachable!()
+        }
+        async fn read_live_polling_rate(
+            &self,
+            _alias: ProfileId,
+        ) -> Result<PollingRate, ManagerError> {
+            Err(ManagerError::UnsupportedOperation {
+                operation: "read_live_polling_rate",
+                transport: TransportKind::Wired,
+            })
+        }
+        async fn write_dpi(
+            &self,
+            _s: DpiState,
+            _v: crate::operation::VerificationMethod,
+        ) -> Result<SessionWrite<DpiState>, ManagerError> {
+            unreachable!()
+        }
+        async fn write_preferences(
+            &self,
+            _s: PreferencesState,
+            _v: crate::operation::VerificationMethod,
+        ) -> Result<SessionWrite<PreferencesState>, ManagerError> {
+            unreachable!()
+        }
+        async fn write_buttons(
+            &self,
+            _s: ButtonsState,
+            _v: crate::operation::VerificationMethod,
+        ) -> Result<SessionWrite<ButtonsState>, ManagerError> {
+            unreachable!()
+        }
+        async fn write_polling_rate_unchecked(
+            &self,
+            _p: ProfileId,
+            _r: PollingRate,
+            _v: crate::operation::VerificationMethod,
+        ) -> Result<SessionWrite<PollingRate>, ManagerError> {
+            unreachable!()
+        }
+        async fn write_profile_metadata(
+            &self,
+            _m: ProfileMetadata,
+        ) -> Result<SessionWrite<ProfileMetadata>, ManagerError> {
+            unreachable!()
+        }
+        async fn read_battery(&self, _t: Duration) -> Result<u8, ManagerError> {
+            Err(ManagerError::UnsupportedOperation {
+                operation: "read_battery",
+                transport: TransportKind::Wired,
+            })
+        }
+        fn subscribe_events(&self) -> crate::backend::SessionEvents {
+            crate::backend::SessionEvents { input: None }
+        }
     }
 
     #[tokio::test]
@@ -1230,8 +1732,34 @@ mod tests {
             attack_shark_x3::ProfileId::new(3).unwrap(),
         )
         .unwrap();
+        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+            target_profile: ProfileId::new(1).unwrap(),
+            persistent_metadata: metadata,
+            dpi: DpiState::new(
+                ProfileId::new(1).unwrap(),
+                vec![DpiValue::new(800).unwrap()],
+                StageIndex::new(1).unwrap(),
+                [0; 25],
+            )
+            .unwrap(),
+            preferences: PreferencesState::new(
+                ProfileId::new(1).unwrap(),
+                0,
+                0,
+                0,
+                [0, 0, 0],
+                0,
+                0,
+            ),
+            buttons: ButtonsState::new(
+                ProfileId::new(1).unwrap(),
+                [ButtonAssignment::default();
+                    attack_shark_x3::protocol::buttons::BUTTON_SLOT_COUNT],
+            ),
+        };
         let session = ScriptedFakeSession::usb()
             .with_metadata(metadata)
+            .with_profile(snapshot)
             .with_polling_rate(PollingRate::Hz1000)
             .with_battery(87);
         let factory = Arc::new(
@@ -1747,5 +2275,1006 @@ mod tests {
         let _guard2 = store
             .acquire_operation_lock(&id, Duration::from_millis(50), "test2")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_status_loads_target_before_live_rate_and_stores_under_target() {
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint(r"\\?\hid#status-seq");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let target = ProfileId::new(2).unwrap();
+        let metadata = ProfileMetadata::new(target, ProfileId::new(3).unwrap()).unwrap();
+        let snapshot2 = attack_shark_x3::driver::ProfileSnapshot {
+            target_profile: target,
+            persistent_metadata: metadata,
+            dpi: DpiState::new(
+                target,
+                vec![DpiValue::new(800).unwrap()],
+                StageIndex::new(1).unwrap(),
+                [0; 25],
+            )
+            .unwrap(),
+            preferences: PreferencesState::new(target, 1, 1, 0, [0, 0, 0], 0, 0),
+            buttons: ButtonsState::new(
+                target,
+                [ButtonAssignment::default();
+                    attack_shark_x3::protocol::buttons::BUTTON_SLOT_COUNT],
+            ),
+        };
+        let session = ScriptedFakeSession::usb()
+            .with_metadata(metadata)
+            .with_profile(snapshot2.clone())
+            .with_polling_rate_for(ProfileId::new(1).unwrap(), PollingRate::Hz125)
+            .with_polling_rate_for(target, PollingRate::Hz1000)
+            .with_live_profile(ProfileId::new(1).unwrap());
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_endpoint(make_discovered(endpoint.clone(), true), session.clone()),
+        );
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager
+            .register_device(DeviceIdentity::new(id.clone(), None).with_endpoint(endpoint.clone()))
+            .unwrap_or(());
+        let status = manager.read_status(&id).await.unwrap();
+        let polling = status
+            .polling_rate
+            .expect("status must include polling for USB current");
+        assert_eq!(
+            polling.resource.observed.as_ref().unwrap().value,
+            PollingRate::Hz1000
+        );
+        let persisted = store.load().unwrap();
+        assert_eq!(
+            persisted.devices[&id].profiles[&target]
+                .polling_rate
+                .observed
+                .as_ref()
+                .unwrap()
+                .value,
+            PollingRate::Hz1000
+        );
+        assert!(
+            persisted.devices[&id]
+                .profiles
+                .get(&ProfileId::new(1).unwrap())
+                .map(|p| p.polling_rate.observed.is_some())
+                .unwrap_or(false)
+                == false
+                || persisted.devices[&id].profiles[&ProfileId::new(1).unwrap()]
+                    .polling_rate
+                    .observed
+                    .as_ref()
+                    .map(|o| o.value)
+                    != Some(PollingRate::Hz1000)
+        );
+        assert_eq!(session.last_polling_alias(), Some(target));
+    }
+
+    #[tokio::test]
+    async fn read_status_omits_unsupported_rate_without_misassociation() {
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint(r"\\?\hid#status-unsupported");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let metadata =
+            ProfileMetadata::new(ProfileId::new(1).unwrap(), ProfileId::new(3).unwrap()).unwrap();
+        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+            target_profile: ProfileId::new(1).unwrap(),
+            persistent_metadata: metadata,
+            dpi: DpiState::new(
+                ProfileId::new(1).unwrap(),
+                vec![DpiValue::new(800).unwrap()],
+                StageIndex::new(1).unwrap(),
+                [0; 25],
+            )
+            .unwrap(),
+            preferences: PreferencesState::new(
+                ProfileId::new(1).unwrap(),
+                0,
+                0,
+                0,
+                [0, 0, 0],
+                0,
+                0,
+            ),
+            buttons: ButtonsState::new(
+                ProfileId::new(1).unwrap(),
+                [ButtonAssignment::default();
+                    attack_shark_x3::protocol::buttons::BUTTON_SLOT_COUNT],
+            ),
+        };
+        struct Factory {
+            endpoint: DeviceEndpoint,
+            metadata: ProfileMetadata,
+            snapshot: attack_shark_x3::driver::ProfileSnapshot,
+        }
+        #[async_trait::async_trait(?Send)]
+        impl crate::backend::SessionFactory for Factory {
+            async fn list(
+                &self,
+                _selection: TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+                Ok(vec![DiscoveredEndpoint {
+                    endpoint: self.endpoint.clone(),
+                    connected: true,
+                }])
+            }
+            async fn open(
+                &self,
+                _endpoint: &DeviceEndpoint,
+            ) -> Result<Box<dyn DeviceSession>, ManagerError> {
+                Ok(Box::new(UnsupportedPollSession {
+                    metadata: self.metadata,
+                    snapshot: self.snapshot.clone(),
+                }))
+            }
+        }
+        let factory = Arc::new(Factory {
+            endpoint: endpoint.clone(),
+            metadata,
+            snapshot,
+        });
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        let status = manager.read_status(&id).await.unwrap();
+        assert!(status.profile_metadata.is_some());
+        assert!(
+            status.polling_rate.is_none(),
+            "unsupported live rate must be omitted, not misassociated"
+        );
+        let persisted = store.load().unwrap();
+        assert!(
+            persisted.devices[&id]
+                .profiles
+                .get(&ProfileId::new(1).unwrap())
+                .map(|p| p.polling_rate.observed.is_none())
+                .unwrap_or(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_profile_usb_mismatch_is_persisted_and_errors() {
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint(r"\\?\hid#activate-mismatch");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let target = ProfileId::new(2).unwrap();
+        let mismatched =
+            ProfileMetadata::new(ProfileId::new(3).unwrap(), ProfileId::new(5).unwrap()).unwrap();
+        let target_metadata = ProfileMetadata::new(target, ProfileId::new(5).unwrap()).unwrap();
+        let inner = ScriptedFakeSession::usb().with_metadata(
+            ProfileMetadata::new(ProfileId::new(1).unwrap(), ProfileId::new(5).unwrap()).unwrap(),
+        );
+        struct Factory {
+            endpoint: DeviceEndpoint,
+            inner: ScriptedFakeSession,
+            mismatched: ProfileMetadata,
+        }
+        #[async_trait::async_trait(?Send)]
+        impl crate::backend::SessionFactory for Factory {
+            async fn list(
+                &self,
+                _selection: TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+                Ok(vec![DiscoveredEndpoint {
+                    endpoint: self.endpoint.clone(),
+                    connected: true,
+                }])
+            }
+            async fn open(
+                &self,
+                _endpoint: &DeviceEndpoint,
+            ) -> Result<Box<dyn DeviceSession>, ManagerError> {
+                Ok(Box::new(MismatchWrapper {
+                    inner: self.inner.clone(),
+                    mismatched: self.mismatched,
+                }))
+            }
+        }
+        let factory = Arc::new(Factory {
+            endpoint: endpoint.clone(),
+            inner,
+            mismatched,
+        });
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        let err = manager
+            .activate_profile(&id, target)
+            .await
+            .expect_err("mismatch must error");
+        assert!(
+            matches!(err, ManagerError::VerificationMismatch { resource: "profile metadata", profile: Some(p) } if p == target)
+        );
+        let persisted = store.load().unwrap();
+        let res = &persisted.devices[&id].profile_metadata;
+        assert_eq!(res.desired.as_ref().unwrap().value, target_metadata);
+        assert_eq!(res.observed.as_ref().unwrap().value, mismatched);
+        assert_eq!(
+            res.desired.as_ref().unwrap().verification.application,
+            ApplicationVerification::Mismatch
+        );
+    }
+
+    #[tokio::test]
+    async fn set_profile_metadata_usb_mismatch_is_persisted_and_errors() {
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint(r"\\?\hid#set-mismatch");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let current = ProfileId::new(2).unwrap();
+        let maximum = ProfileId::new(5).unwrap();
+        let target = ProfileMetadata::new(current, maximum).unwrap();
+        let mismatched = ProfileMetadata::new(ProfileId::new(4).unwrap(), maximum).unwrap();
+        let inner = ScriptedFakeSession::usb();
+        struct Factory {
+            endpoint: DeviceEndpoint,
+            inner: ScriptedFakeSession,
+            mismatched: ProfileMetadata,
+        }
+        #[async_trait::async_trait(?Send)]
+        impl crate::backend::SessionFactory for Factory {
+            async fn list(
+                &self,
+                _s: TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+                Ok(vec![DiscoveredEndpoint {
+                    endpoint: self.endpoint.clone(),
+                    connected: true,
+                }])
+            }
+            async fn open(
+                &self,
+                _e: &DeviceEndpoint,
+            ) -> Result<Box<dyn DeviceSession>, ManagerError> {
+                Ok(Box::new(MismatchWrapper {
+                    inner: self.inner.clone(),
+                    mismatched: self.mismatched,
+                }))
+            }
+        }
+        let factory = Arc::new(Factory {
+            endpoint: endpoint.clone(),
+            inner,
+            mismatched,
+        });
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        let err = manager
+            .set_profile_metadata(&id, current, maximum)
+            .await
+            .expect_err("mismatch must error");
+        assert!(
+            matches!(err, ManagerError::VerificationMismatch { resource: "profile metadata", profile: Some(p) } if p == current)
+        );
+        let persisted = store.load().unwrap();
+        let res = &persisted.devices[&id].profile_metadata;
+        assert_eq!(res.desired.as_ref().unwrap().value, target);
+        assert_eq!(res.observed.as_ref().unwrap().value, mismatched);
+        assert_eq!(
+            res.desired.as_ref().unwrap().verification.application,
+            ApplicationVerification::Mismatch
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_profile_ble_ack_succeeds_without_mismatch_check() {
+        let store = StateStore::memory();
+        let endpoint = ble_endpoint("ble-activate-ack");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let session = ScriptedFakeSession::ble();
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_endpoint(make_discovered(endpoint.clone(), true), session),
+        );
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        let target = ProfileId::new(2).unwrap();
+        let result = manager.activate_profile(&id, target).await.unwrap();
+        assert_eq!(result.current(), target);
+        let persisted = store.load().unwrap();
+        let res = &persisted.devices[&id].profile_metadata;
+        assert_eq!(
+            res.desired.as_ref().unwrap().verification.application,
+            ApplicationVerification::Acknowledged
+        );
+        assert!(res.observed.is_none());
+    }
+    // -----------------------------------------------------------------------
+    // Composite profile update scripted tests
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn apply_profile_update_empty_rejected_before_open() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct CountingFactory {
+            inner: ScriptedFakeFactory,
+            opens: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait(?Send)]
+        impl crate::backend::SessionFactory for CountingFactory {
+            async fn list(
+                &self,
+                s: TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+                self.inner.list(s).await
+            }
+            async fn open(
+                &self,
+                e: &DeviceEndpoint,
+            ) -> Result<Box<dyn DeviceSession>, ManagerError> {
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                self.inner.open(e).await
+            }
+        }
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint(r"\\?\hid#empty");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let opens = Arc::new(AtomicUsize::new(0));
+        let inner = ScriptedFakeFactory::new().with_endpoint(
+            make_discovered(endpoint.clone(), true),
+            ScriptedFakeSession::usb(),
+        );
+        let factory = Arc::new(CountingFactory {
+            inner,
+            opens: opens.clone(),
+        });
+        let manager = DeviceManager::with_store_and_factory(store, factory);
+        let err = manager
+            .apply_profile_update(
+                &id,
+                ProfileId::new(1).unwrap(),
+                crate::operation::ProfileUpdate::default(),
+                crate::operation::UpdatePolicy::default(),
+            )
+            .await
+            .expect_err("empty must be rejected");
+        assert!(matches!(err, ManagerError::InvalidUpdate(_)));
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            0,
+            "empty must be rejected before open"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_profile_update_mixed_rate_rejected_before_open() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct CountingFactory {
+            inner: ScriptedFakeFactory,
+            opens: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait(?Send)]
+        impl crate::backend::SessionFactory for CountingFactory {
+            async fn list(
+                &self,
+                s: TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+                self.inner.list(s).await
+            }
+            async fn open(
+                &self,
+                e: &DeviceEndpoint,
+            ) -> Result<Box<dyn DeviceSession>, ManagerError> {
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                self.inner.open(e).await
+            }
+        }
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint(r"\\?\hid#mixed");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let opens = Arc::new(AtomicUsize::new(0));
+        let inner = ScriptedFakeFactory::new().with_endpoint(
+            make_discovered(endpoint.clone(), true),
+            ScriptedFakeSession::usb(),
+        );
+        let factory = Arc::new(CountingFactory {
+            inner,
+            opens: opens.clone(),
+        });
+        let manager = DeviceManager::with_store_and_factory(store, factory);
+        let update = crate::operation::ProfileUpdate {
+            dpi: Some(crate::resources::dpi::DpiDelta {
+                active_stage: Some(StageIndex::new(1).unwrap()),
+                ..Default::default()
+            }),
+            polling_rate: Some(PollingRate::Hz1000),
+            ..Default::default()
+        };
+        let err = manager
+            .apply_profile_update(
+                &id,
+                ProfileId::new(1).unwrap(),
+                update,
+                crate::operation::UpdatePolicy::default(),
+            )
+            .await
+            .expect_err("mixed must be rejected");
+        assert!(matches!(err, ManagerError::InvalidUpdate(_)));
+        assert!(err.to_string().contains("polling rate cannot be combined"));
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            0,
+            "mixed must be rejected before open"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_profile_update_multi_button_one_write() {
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint(r"\\?\hid#multi-btn");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let profile = ProfileId::new(1).unwrap();
+        let baseline = ButtonsState::default_for_profile(profile);
+        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+            target_profile: profile,
+            persistent_metadata: ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap(),
+            dpi: DpiState::new(
+                profile,
+                vec![DpiValue::new(800).unwrap()],
+                StageIndex::new(1).unwrap(),
+                [0; 25],
+            )
+            .unwrap(),
+            preferences: PreferencesState::new(profile, 0, 0, 0, [0, 0, 0], 0, 0),
+            buttons: baseline,
+        };
+        let session = ScriptedFakeSession::usb().with_profile(snapshot);
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_endpoint(make_discovered(endpoint.clone(), true), session.clone()),
+        );
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        let update = crate::operation::ProfileUpdate {
+            buttons: vec![
+                crate::resources::buttons::ButtonSlotDelta::new(
+                    crate::resources::buttons::SafeButtonSlot::Forward,
+                    crate::resources::buttons::SafeButtonAction::Copy,
+                ),
+                crate::resources::buttons::ButtonSlotDelta::new(
+                    crate::resources::buttons::SafeButtonSlot::Backward,
+                    crate::resources::buttons::SafeButtonAction::Paste,
+                ),
+            ],
+            ..Default::default()
+        };
+        let outcome = manager
+            .apply_profile_update(
+                &id,
+                profile,
+                update,
+                crate::operation::UpdatePolicy::default(),
+            )
+            .await
+            .unwrap();
+        assert!(outcome.buttons.is_some());
+        let writes = session.writes();
+        let button_writes: Vec<_> = writes
+            .iter()
+            .filter(|w| matches!(w, crate::backend::ScriptedWrite::Buttons(_)))
+            .collect();
+        assert_eq!(
+            button_writes.len(),
+            1,
+            "multiple button deltas must merge into one write"
+        );
+        if let crate::backend::ScriptedWrite::Buttons(state) = &button_writes[0] {
+            assert_eq!(
+                state.slots[crate::resources::buttons::SafeButtonSlot::Forward.index()],
+                crate::resources::buttons::SafeButtonAction::Copy.to_assignment()
+            );
+            assert_eq!(
+                state.slots[crate::resources::buttons::SafeButtonSlot::Backward.index()],
+                crate::resources::buttons::SafeButtonAction::Paste.to_assignment()
+            );
+        }
+        let persisted = store.load().unwrap().devices[&id].profiles[&profile]
+            .buttons
+            .desired
+            .as_ref()
+            .unwrap()
+            .value;
+        assert_eq!(
+            persisted.slots[crate::resources::buttons::SafeButtonSlot::Forward.index()],
+            crate::resources::buttons::SafeButtonAction::Copy.to_assignment()
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_profile_update_non_rate_one_session() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct CountingFactory {
+            inner: ScriptedFakeFactory,
+            opens: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait(?Send)]
+        impl crate::backend::SessionFactory for CountingFactory {
+            async fn list(
+                &self,
+                s: TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+                self.inner.list(s).await
+            }
+            async fn open(
+                &self,
+                e: &DeviceEndpoint,
+            ) -> Result<Box<dyn DeviceSession>, ManagerError> {
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                self.inner.open(e).await
+            }
+        }
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint(r"\\?\hid#one-session");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let profile = ProfileId::new(1).unwrap();
+        let dpi = DpiState::new(
+            profile,
+            vec![DpiValue::new(800).unwrap(), DpiValue::new(1600).unwrap()],
+            StageIndex::new(1).unwrap(),
+            [0; 25],
+        )
+        .unwrap();
+        let prefs = PreferencesState::new(profile, 0, 0, 0, [0, 0, 0], 0, 0);
+        let buttons = ButtonsState::default_for_profile(profile);
+        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+            target_profile: profile,
+            persistent_metadata: ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap(),
+            dpi: dpi.clone(),
+            preferences: prefs,
+            buttons,
+        };
+        let session = ScriptedFakeSession::usb()
+            .with_profile(snapshot.clone())
+            .with_metadata(ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap())
+            .with_polling_rate(PollingRate::Hz1000);
+        // Provide complete desired image for polling isolation not needed here; for non-rate we need baselines via live reads.
+        let opens = Arc::new(AtomicUsize::new(0));
+        let inner = ScriptedFakeFactory::new()
+            .with_endpoint(make_discovered(endpoint.clone(), true), session.clone());
+        let factory = Arc::new(CountingFactory {
+            inner,
+            opens: opens.clone(),
+        });
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        // Seed stored baseline for polling metadata requirement is not needed for non-rate path.
+        let update = crate::operation::ProfileUpdate {
+            dpi: Some(crate::resources::dpi::DpiDelta {
+                active_stage: Some(StageIndex::new(2).unwrap()),
+                ..Default::default()
+            }),
+            preferences: Some(crate::resources::settings::PreferencesDelta {
+                sleep_timer: Some(10),
+                ..Default::default()
+            }),
+            buttons: vec![crate::resources::buttons::ButtonSlotDelta::new(
+                crate::resources::buttons::SafeButtonSlot::Forward,
+                crate::resources::buttons::SafeButtonAction::Copy,
+            )],
+            ..Default::default()
+        };
+        let outcome = manager
+            .apply_profile_update(
+                &id,
+                profile,
+                update,
+                crate::operation::UpdatePolicy::default(),
+            )
+            .await
+            .unwrap();
+        assert!(outcome.dpi.is_some());
+        assert!(outcome.preferences.is_some());
+        assert!(outcome.buttons.is_some());
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            1,
+            "non-rate composite must open exactly one session"
+        );
+        let writes = session.writes();
+        assert_eq!(writes.len(), 3, "should have three resource writes");
+    }
+
+    #[tokio::test]
+    async fn apply_profile_update_rate_only_safe_path() {
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint(r"\\?\hid#rate-only");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let profile = ProfileId::new(2).unwrap();
+        let dpi = DpiState::new(
+            profile,
+            vec![DpiValue::new(800).unwrap()],
+            StageIndex::new(1).unwrap(),
+            [0; 25],
+        )
+        .unwrap();
+        let prefs = PreferencesState::new(profile, 1, 1, 0, [0, 0, 0], 0, 0);
+        let buttons = ButtonsState::default_for_profile(profile);
+        let metadata = ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap();
+        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+            target_profile: profile,
+            persistent_metadata: metadata,
+            dpi: dpi.clone(),
+            preferences: prefs,
+            buttons,
+        };
+        // Seed durable desired image and metadata for safe polling preflight.
+        {
+            let mut txn = store.transaction().unwrap();
+            let dev = txn.state_mut().devices.get_mut(&id).unwrap();
+            dev.profile_metadata.desired = Some(DesiredState {
+                value: metadata,
+                source: DesiredSource::UserWrite,
+                verification: Verification::not_sent(),
+                updated_at: crate::state::Timestamp { unix_seconds: 1 },
+            });
+            dev.profile_metadata.observed = Some(crate::state::ObservedState {
+                value: metadata,
+                source: crate::state::ObservationSource::UsbReadback,
+                observed_at: crate::state::Timestamp { unix_seconds: 1 },
+            });
+            let ps = dev
+                .profiles
+                .entry(profile)
+                .or_insert_with(crate::state::ProfileState::empty);
+            ps.dpi.desired = Some(DesiredState {
+                value: dpi.clone(),
+                source: DesiredSource::UserWrite,
+                verification: Verification::not_sent(),
+                updated_at: crate::state::Timestamp { unix_seconds: 1 },
+            });
+            ps.preferences.desired = Some(DesiredState {
+                value: prefs,
+                source: DesiredSource::UserWrite,
+                verification: Verification::not_sent(),
+                updated_at: crate::state::Timestamp { unix_seconds: 1 },
+            });
+            ps.buttons.desired = Some(DesiredState {
+                value: buttons,
+                source: DesiredSource::UserWrite,
+                verification: Verification::not_sent(),
+                updated_at: crate::state::Timestamp { unix_seconds: 1 },
+            });
+            txn.commit().unwrap();
+        }
+        let session = ScriptedFakeSession::usb()
+            .with_metadata(metadata)
+            .with_profile(snapshot)
+            .with_polling_rate_for(ProfileId::new(1).unwrap(), PollingRate::Hz125)
+            .with_polling_rate_for(profile, PollingRate::Hz500)
+            .with_live_profile(ProfileId::new(1).unwrap());
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_endpoint(make_discovered(endpoint.clone(), true), session.clone()),
+        );
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        // Updating to same rate should not perform hardware write, just record.
+        let same_update = crate::operation::ProfileUpdate {
+            polling_rate: Some(PollingRate::Hz1000),
+            ..Default::default()
+        };
+        // First set current live to 1000 via snapshot? Actually live is 1 with 125, after loading target 2 it becomes 500, so writing to 1000 will be new.
+        let outcome = manager
+            .apply_profile_update(
+                &id,
+                profile,
+                same_update,
+                crate::operation::UpdatePolicy::default(),
+            )
+            .await
+            .unwrap();
+        assert!(outcome.polling_rate.is_some());
+        // Polling write should have occurred (since current 500 != 1000)
+        let writes = session.writes();
+        assert!(writes.iter().any(|w| matches!(w, crate::backend::ScriptedWrite::PollingRate(p, r) if *p==profile && *r==PollingRate::Hz1000)));
+        // Now repeat with rate already 1000 -> no hardware write (current equals desired)
+        // After previous write, live rate for profile 2 is 1000, but live_profile is still profile 2 after read_profile, so current == desired.
+        let second = crate::operation::ProfileUpdate {
+            polling_rate: Some(PollingRate::Hz1000),
+            ..Default::default()
+        };
+        let writes_before = session.writes().len();
+        let outcome2 = manager
+            .apply_profile_update(
+                &id,
+                profile,
+                second,
+                crate::operation::UpdatePolicy::default(),
+            )
+            .await
+            .unwrap();
+        assert!(outcome2.polling_rate.is_some());
+        assert_eq!(
+            session.writes().len(),
+            writes_before,
+            "redundant rate write must be avoided"
+        );
+        let persisted = store.load().unwrap().devices[&id].profiles[&profile]
+            .polling_rate
+            .desired
+            .as_ref()
+            .unwrap()
+            .value;
+        assert_eq!(persisted, PollingRate::Hz1000);
+    }
+
+    #[tokio::test]
+    async fn apply_profile_update_readback_mismatch_is_persisted_and_errors() {
+        struct MismatchSession {
+            inner: ScriptedFakeSession,
+            mismatch_dpi: DpiState,
+        }
+        #[async_trait::async_trait(?Send)]
+        impl DeviceSession for MismatchSession {
+            fn transport(&self) -> TransportKind {
+                self.inner.transport()
+            }
+            async fn read_profile_metadata(&self) -> Result<ProfileMetadata, ManagerError> {
+                self.inner.read_profile_metadata().await
+            }
+            async fn read_profile(
+                &self,
+                p: ProfileId,
+            ) -> Result<attack_shark_x3::driver::ProfileSnapshot, ManagerError> {
+                self.inner.read_profile(p).await
+            }
+            async fn read_dpi(&self, p: ProfileId) -> Result<DpiState, ManagerError> {
+                self.inner.read_dpi(p).await
+            }
+            async fn read_preferences(
+                &self,
+                p: ProfileId,
+            ) -> Result<PreferencesState, ManagerError> {
+                self.inner.read_preferences(p).await
+            }
+            async fn read_buttons(&self, p: ProfileId) -> Result<ButtonsState, ManagerError> {
+                self.inner.read_buttons(p).await
+            }
+            async fn read_live_polling_rate(
+                &self,
+                a: ProfileId,
+            ) -> Result<PollingRate, ManagerError> {
+                self.inner.read_live_polling_rate(a).await
+            }
+            async fn write_dpi(
+                &self,
+                _state: DpiState,
+                _v: crate::operation::VerificationMethod,
+            ) -> Result<SessionWrite<DpiState>, ManagerError> {
+                // Return mismatched readback regardless of requested.
+                Ok(SessionWrite::ReadbackVerified(self.mismatch_dpi.clone()))
+            }
+            async fn write_preferences(
+                &self,
+                s: PreferencesState,
+                v: crate::operation::VerificationMethod,
+            ) -> Result<SessionWrite<PreferencesState>, ManagerError> {
+                self.inner.write_preferences(s, v).await
+            }
+            async fn write_buttons(
+                &self,
+                s: ButtonsState,
+                v: crate::operation::VerificationMethod,
+            ) -> Result<SessionWrite<ButtonsState>, ManagerError> {
+                self.inner.write_buttons(s, v).await
+            }
+            async fn write_polling_rate_unchecked(
+                &self,
+                p: ProfileId,
+                r: PollingRate,
+                v: crate::operation::VerificationMethod,
+            ) -> Result<SessionWrite<PollingRate>, ManagerError> {
+                self.inner.write_polling_rate_unchecked(p, r, v).await
+            }
+            async fn write_profile_metadata(
+                &self,
+                m: ProfileMetadata,
+            ) -> Result<SessionWrite<ProfileMetadata>, ManagerError> {
+                self.inner.write_profile_metadata(m).await
+            }
+            async fn read_battery(&self, t: Duration) -> Result<u8, ManagerError> {
+                self.inner.read_battery(t).await
+            }
+            fn subscribe_events(&self) -> crate::backend::SessionEvents {
+                self.inner.subscribe_events()
+            }
+        }
+        let store = StateStore::memory();
+        let endpoint = wired_endpoint(r"\\?\hid#mismatch");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let profile = ProfileId::new(1).unwrap();
+        let baseline = DpiState::new(
+            profile,
+            vec![DpiValue::new(800).unwrap()],
+            StageIndex::new(1).unwrap(),
+            [0; 25],
+        )
+        .unwrap();
+        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+            target_profile: profile,
+            persistent_metadata: ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap(),
+            dpi: baseline.clone(),
+            preferences: PreferencesState::new(profile, 0, 0, 0, [0, 0, 0], 0, 0),
+            buttons: ButtonsState::default_for_profile(profile),
+        };
+        let inner = ScriptedFakeSession::usb().with_profile(snapshot);
+        let mismatch = DpiState::new(
+            profile,
+            vec![DpiValue::new(1600).unwrap()],
+            StageIndex::new(1).unwrap(),
+            [0; 25],
+        )
+        .unwrap();
+        let session = MismatchSession {
+            inner: inner.clone(),
+            mismatch_dpi: mismatch.clone(),
+        };
+        struct Factory {
+            endpoint: DeviceEndpoint,
+            session: MismatchSession,
+        }
+        #[async_trait::async_trait(?Send)]
+        impl crate::backend::SessionFactory for Factory {
+            async fn list(
+                &self,
+                _s: TransportSelection,
+            ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+                Ok(vec![DiscoveredEndpoint {
+                    endpoint: self.endpoint.clone(),
+                    connected: true,
+                }])
+            }
+            async fn open(
+                &self,
+                _e: &DeviceEndpoint,
+            ) -> Result<Box<dyn DeviceSession>, ManagerError> {
+                Ok(Box::new(MismatchSession {
+                    inner: self.session.inner.clone(),
+                    mismatch_dpi: self.session.mismatch_dpi.clone(),
+                }))
+            }
+        }
+        let factory = Arc::new(Factory {
+            endpoint: endpoint.clone(),
+            session,
+        });
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        let update = crate::operation::ProfileUpdate {
+            dpi: Some(crate::resources::dpi::DpiDelta {
+                stages: Some(vec![DpiValue::new(1200).unwrap()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = manager
+            .apply_profile_update(
+                &id,
+                profile,
+                update,
+                crate::operation::UpdatePolicy {
+                    verification: crate::operation::VerificationMethod::Readback,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("mismatch must error");
+        assert!(matches!(
+            err,
+            ManagerError::VerificationMismatch {
+                resource: "DPI",
+                ..
+            }
+        ));
+        let persisted = store.load().unwrap();
+        let dpi_state = &persisted.devices[&id].profiles[&profile].dpi;
+        assert_eq!(
+            dpi_state.desired.as_ref().unwrap().verification.application,
+            ApplicationVerification::Mismatch
+        );
+        assert!(
+            dpi_state
+                .desired
+                .as_ref()
+                .unwrap()
+                .value
+                .stages
+                .contains(&DpiValue::new(1200).unwrap())
+        );
+        assert_eq!(dpi_state.observed.as_ref().unwrap().value, mismatch);
+    }
+
+    #[tokio::test]
+    async fn apply_profile_update_ble_baseline_policy() {
+        let store = StateStore::memory();
+        let endpoint = ble_endpoint("ble-baseline");
+        let id = insert_device_with_endpoint(&store, endpoint.clone());
+        let profile = ProfileId::new(1).unwrap();
+        // Seed stored baseline for BLE.
+        let stored_dpi = DpiState::new(
+            profile,
+            vec![DpiValue::new(800).unwrap()],
+            StageIndex::new(1).unwrap(),
+            [0; 25],
+        )
+        .unwrap();
+        {
+            let mut txn = store.transaction().unwrap();
+            let ps = txn
+                .state_mut()
+                .devices
+                .get_mut(&id)
+                .unwrap()
+                .profiles
+                .entry(profile)
+                .or_default();
+            ps.dpi.desired = Some(DesiredState {
+                value: stored_dpi.clone(),
+                source: DesiredSource::UserWrite,
+                verification: Verification::not_sent(),
+                updated_at: crate::state::Timestamp { unix_seconds: 1 },
+            });
+            txn.commit().unwrap();
+        }
+        let session = ScriptedFakeSession::ble();
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_endpoint(make_discovered(endpoint.clone(), true), session.clone()),
+        );
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        // BLE with stored baseline should succeed using stored baseline.
+        let update = crate::operation::ProfileUpdate {
+            dpi: Some(crate::resources::dpi::DpiDelta {
+                active_stage: Some(StageIndex::new(1).unwrap()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let outcome = manager
+            .apply_profile_update(
+                &id,
+                profile,
+                update.clone(),
+                crate::operation::UpdatePolicy::default(),
+            )
+            .await
+            .unwrap();
+        assert!(outcome.dpi.is_some());
+        // BLE without baseline and without allow_explicit_defaults must fail MissingBaseline before write.
+        let store2 = StateStore::memory();
+        let endpoint2 = ble_endpoint("ble-no-baseline");
+        let id2 = insert_device_with_endpoint(&store2, endpoint2.clone());
+        let session2 = ScriptedFakeSession::ble();
+        let factory2 = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_endpoint(make_discovered(endpoint2.clone(), true), session2),
+        );
+        let manager2 = DeviceManager::with_store_and_factory(store2, factory2);
+        let err = manager2
+            .apply_profile_update(
+                &id2,
+                profile,
+                update,
+                crate::operation::UpdatePolicy::default(),
+            )
+            .await
+            .expect_err("missing baseline");
+        assert!(matches!(
+            err,
+            ManagerError::MissingBaseline {
+                resource: "DPI",
+                ..
+            }
+        ));
+        // With allow_explicit_defaults, BLE should use captured evidence.
+        let err2 = manager2
+            .apply_profile_update(
+                &id2,
+                profile,
+                crate::operation::ProfileUpdate {
+                    dpi: Some(crate::resources::dpi::DpiDelta {
+                        active_stage: Some(StageIndex::new(1).unwrap()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                crate::operation::UpdatePolicy {
+                    allow_explicit_defaults: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(
+            err2.is_ok(),
+            "with allow_explicit_defaults BLE should succeed via captured evidence, got {err2:?}"
+        );
     }
 }

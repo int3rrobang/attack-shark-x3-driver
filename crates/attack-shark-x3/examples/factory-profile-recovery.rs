@@ -105,10 +105,11 @@ async fn apply() -> Result<(), Box<dyn Error>> {
         handle.write_preferences(expected.preferences).await?;
         println!("writing profile {profile} buttons");
         handle.write_buttons(expected.buttons).await?;
-        // Polling rate is per-profile: report `0x06` skips the profile loader
-        // and its deferred writer serializes the live image into the slot
-        // named by byte 2, so the rate is targeted at the profile that is
-        // live at submission and confirmed by a fresh 0x06 readback.
+        // Polling rate is per-profile but report `0x06` skips the profile
+        // loader and its deferred writer serializes the live image into the
+        // slot named by byte 2, so the rate is targeted at the profile that
+        // is live at submission and confirmed by a fresh live readback.
+        // The readback is live-only; alias is wire alias only.
         let verified = handle
             .write_polling_rate_unchecked(profile, PollingRate::Hz1000)
             .await?;
@@ -161,14 +162,21 @@ async fn verify() -> Result<(), Box<dyn Error>> {
             ))
             .into());
         }
-        let rate = handle.read_polling_rate(profile).await?;
+        // Polling rate is live; report 0x06 skips the profile loader so
+        // alias is a wire side effect only. The preceding read_profile on
+        // the same serialized handle anchors the live image to the target
+        // profile before the live read, otherwise the rate cannot be
+        // claimed for profile P.
+        let rate = handle.read_live_polling_rate(profile).await?;
         if rate != PollingRate::Hz1000 {
             return Err(io::Error::other(format!(
-                "profile {profile} polling-rate persistence mismatch: expected 1000 Hz, got {rate}"
+                "profile {profile} live polling-rate persistence mismatch: expected 1000 Hz, got {rate} (live value, alias was wire alias only)"
             ))
             .into());
         }
-        println!("profile {profile} persisted state verified");
+        println!(
+            "profile {profile} persisted state verified (including live polling rate anchored to profile {profile})"
+        );
     }
 
     activate_if_needed(&handle, metadata, profile_one).await?;

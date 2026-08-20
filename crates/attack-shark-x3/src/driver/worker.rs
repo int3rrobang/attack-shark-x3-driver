@@ -59,8 +59,8 @@ impl Worker {
                 Command::Buttons { profile, reply } => {
                     let _ = reply.send(self.read_buttons(profile));
                 }
-                Command::PollingRate { profile, reply } => {
-                    let _ = reply.send(self.read_polling_rate(profile));
+                Command::LivePollingRate { alias, reply } => {
+                    let _ = reply.send(self.read_live_polling_rate(alias));
                 }
                 Command::WriteDpi { state, reply } => {
                     let _ = reply.send(self.write_dpi(&state));
@@ -147,11 +147,10 @@ impl Worker {
                 .map(|report| report.state)
         })
     }
-
-    fn read_polling_rate(&mut self, profile: ProfileId) -> Result<PollingRate, DriverError> {
+    fn read_live_polling_rate(&mut self, alias: ProfileId) -> Result<PollingRate, DriverError> {
         let transport_kind = self.transport_kind;
-        self.armed_read(ReadbackRequest::PollingRate(profile), move |packet| {
-            PollingRateReport::decode_for_transport(packet, transport_kind, profile)
+        self.armed_read(ReadbackRequest::PollingRate(alias), move |packet| {
+            PollingRateReport::decode_for_transport(packet, transport_kind, alias)
                 .map(|report| report.rate)
         })
     }
@@ -242,7 +241,7 @@ impl Worker {
     ) -> Result<PollingRate, DriverError> {
         self.send_polling_rate_unchecked(profile, rate)?;
         self.sleep_after_write();
-        let actual = self.read_polling_rate(profile)?;
+        let actual = self.read_live_polling_rate(profile)?;
         if actual != rate {
             return Err(DriverError::WriteVerificationMismatch {
                 section: "polling rate",
@@ -764,7 +763,7 @@ mod tests {
         let (handle, remaining) = handle(steps, test_policy(2));
 
         let actual = handle
-            .read_polling_rate(target)
+            .read_live_polling_rate(target)
             .await
             .expect("polling-rate readback must decode");
         assert_eq!(actual, PollingRate::Hz1000);
@@ -784,9 +783,10 @@ mod tests {
         );
         let (handle, remaining) = handle(steps, test_policy(1));
         let error = handle
-            .read_polling_rate(target)
+            .read_live_polling_rate(target)
             .await
             .expect_err("readback profile byte mismatch must fail");
+
         assert!(matches!(
             error,
             DriverError::ReadAttemptsExhausted {

@@ -83,15 +83,20 @@ receiver quiet period, rearms a fresh targeted read, and requires the decoded
 state to match before reporting success. This proves immediate readback only,
 not persistence.
 
-Polling-rate reads and writes use the same serialized worker and are
-profile-targeted: `MouseHandle::read_polling_rate(profile)` (USB-only) and the
-unchecked primitives `MouseHandle::write_polling_rate_unchecked(profile, rate)`
+Polling-rate reads and writes use the same serialized worker. The low-level
+read is `MouseHandle::read_live_polling_rate(alias)` (USB-only) — alias is a
+wire side effect and content is the current live rate — and the unchecked
+primitives are `MouseHandle::write_polling_rate_unchecked(profile, rate)`
 (with `send_polling_rate_unchecked(profile, rate)` for the transport-only
-path). Report `0x06` skips the profile loader, so reads reflect the currently
-live profile, and byte 2 is a save alias: the deferred writer persists the
-complete live image into that slot, so safe writes go through the manager's
-preflight (complete desired non-rate image, metadata `current == target`,
-no-op when the rate already matches) — see
+path). Report `0x06` skips the profile loader, so a bare live-rate read
+reflects the currently live profile and byte 2 is a save alias: the deferred
+writer persists the complete live image into that slot. Profile-scoped meaning
+therefore requires a preceding complete profile load in the same session; the
+manager's safe `DeviceManager::read_polling_rate(target)` does exactly that —
+`read_profile(target)` followed immediately by `read_live_polling_rate(alias)`
+in one guarded session, validated, and persisted under the target profile — and
+safe writes go through the manager's preflight (complete desired non-rate
+image, metadata `current == target`, no-op when the rate already matches) — see
 [`06-polling-rate.md`](../protocols/06-polling-rate.md). The manager's
 `--validation transport` (default) submits the report without post-write
 readback; `--validation readback` performs the fresh armed read and requires
@@ -101,8 +106,7 @@ reconnect. Over BLE the safe rate path fails with
 `ExplicitAuthorizationRequired`; the only BLE write is the explicit
 `--allow-unverified-ble-rate-write` override, whose parser ACK is the strongest
 evidence BLE offers — there is no byte-for-byte readback path, so readback
-validation is rejected over BLE and `read_polling_rate` remains USB-only.
-
+validation is rejected over BLE and `read_live_polling_rate` remains USB-only.
 Profile activation preserves the reported maximum, rejects idempotent or
 disabled targets, writes the model-correct `0x0c` edge, holds the same
 transport-specific targeted-traffic quiet period, and verifies metadata without

@@ -53,10 +53,10 @@ impl PreferencesDelta {
 /// the complete live image under the target alias, so the safe path never
 /// emits it unless every non-rate section of the freshly read live profile
 /// exactly equals this desired image.
-struct CompleteDesiredImage {
-    dpi: DpiState,
-    preferences: PreferencesState,
-    buttons: ButtonsState,
+pub(crate) struct CompleteDesiredImage {
+    pub(crate) dpi: DpiState,
+    pub(crate) preferences: PreferencesState,
+    pub(crate) buttons: ButtonsState,
 }
 
 fn missing_section_baseline(resource: &'static str, profile: ProfileId) -> ManagerError {
@@ -245,7 +245,7 @@ impl DeviceManager {
     /// authorized by `allow_explicit_defaults`. With no usable stored
     /// baseline and no capture authorization, `ManagerError::MissingBaseline`
     /// is returned.
-    async fn load_stored_preferences_baseline(
+    pub(crate) async fn load_stored_preferences_baseline(
         &self,
         device: &DeviceId,
         profile: ProfileId,
@@ -279,12 +279,15 @@ impl DeviceManager {
         })
     }
 
-    /// Reads the live polling rate for the explicit profile and records USB
-    /// readback evidence.
+    /// Reads the live polling rate and records USB readback evidence.
     ///
-    /// Report `0x06` skips the profile loader, so the readback reflects the
-    /// profile that is currently live on the device; the result is validated
-    /// against the requested profile and the armed selector carries it.
+    /// Report `0x06` skips the profile loader: the supplied alias is a wire
+    /// side effect whose value is recorded while the returned rate is from the
+    /// current live image, never from the alias content. This method therefore
+    /// opens one guarded session, loads the complete target profile to establish
+    /// the live image, validates the snapshot target and section profiles,
+    /// and only then reads `read_live_polling_rate(alias)` and persists the
+    /// value under the target profile.
     pub async fn read_polling_rate(
         &self,
         device: &DeviceId,
@@ -293,10 +296,20 @@ impl DeviceManager {
         let (_identity, session) = self.open_session(device).await?;
         let transport = session.transport();
         if transport == TransportKind::Ble {
-            return Err(unsupported("read_polling_rate", transport));
+            return Err(unsupported("read_live_polling_rate", transport));
         }
-
-        let value = session.read_polling_rate(profile).await?;
+        let snapshot = session.read_profile(profile).await?;
+        if snapshot.target_profile != profile
+            || snapshot.dpi.profile != profile
+            || snapshot.preferences.profile != profile
+            || snapshot.buttons.profile != profile
+        {
+            return Err(ManagerError::VerificationMismatch {
+                resource: "profile",
+                profile: Some(profile),
+            });
+        }
+        let value = session.read_live_polling_rate(profile).await?;
         let now = self.now();
         let device_id = device.clone();
         let resource = self
@@ -369,7 +382,7 @@ impl DeviceManager {
 
         // Avoid a redundant 0x06 write when the live rate already matches:
         // the fresh read is honest matching observed evidence.
-        let current = session.read_polling_rate(profile).await?;
+        let current = session.read_live_polling_rate(profile).await?;
         if current == desired {
             let write = SessionWrite::ReadbackVerified(current);
             let now = self.now();
@@ -449,7 +462,7 @@ impl DeviceManager {
     /// profile plus persistent profile metadata naming the target as the
     /// current profile. Each missing section is reported by name before any
     /// write.
-    async fn require_complete_desired_image(
+    pub(crate) async fn require_complete_desired_image(
         &self,
         device: &DeviceId,
         profile: ProfileId,
@@ -519,7 +532,7 @@ const CAPTURED_EVIDENCE_HOST_COLOR: [u8; 3] = [0xff, 0x00, 0x00];
 const CAPTURED_EVIDENCE_SLEEP_TIMER: u8 = 5;
 const CAPTURED_EVIDENCE_DEBOUNCE: u8 = 0x00;
 
-fn captured_evidence_preferences(profile: ProfileId) -> PreferencesState {
+pub(crate) fn captured_evidence_preferences(profile: ProfileId) -> PreferencesState {
     PreferencesState::new(
         profile,
         CAPTURED_EVIDENCE_LIGHT_MODE,
@@ -531,7 +544,7 @@ fn captured_evidence_preferences(profile: ProfileId) -> PreferencesState {
     )
 }
 
-fn merge_preferences_delta(
+pub(crate) fn merge_preferences_delta(
     baseline: PreferencesState,
     delta: PreferencesDelta,
 ) -> PreferencesState {
@@ -546,7 +559,11 @@ fn merge_preferences_delta(
     )
 }
 
-fn has_preferences_baseline(state: &StateFile, device: &DeviceId, profile: ProfileId) -> bool {
+pub(crate) fn has_preferences_baseline(
+    state: &StateFile,
+    device: &DeviceId,
+    profile: ProfileId,
+) -> bool {
     state
         .devices
         .get(device)
@@ -557,7 +574,7 @@ fn has_preferences_baseline(state: &StateFile, device: &DeviceId, profile: Profi
         })
 }
 
-fn persist_preferences_write(
+pub(crate) fn persist_preferences_write(
     state: &mut StateFile,
     device: &DeviceId,
     profile: ProfileId,
@@ -606,7 +623,7 @@ fn persist_preferences_write(
     })
 }
 
-fn persist_polling_write(
+pub(crate) fn persist_polling_write(
     state: &mut StateFile,
     device: &DeviceId,
     profile: ProfileId,
@@ -655,7 +672,7 @@ fn persist_polling_write(
     })
 }
 
-fn finish_preferences_write(
+pub(crate) fn finish_preferences_write(
     outcome: WriteOutcome<PreferencesState>,
     profile: ProfileId,
 ) -> Result<WriteOutcome<PreferencesState>, ManagerError> {
@@ -668,7 +685,7 @@ fn finish_preferences_write(
     Ok(outcome)
 }
 
-fn finish_polling_write(
+pub(crate) fn finish_polling_write(
     outcome: WriteOutcome<PollingRate>,
     profile: ProfileId,
 ) -> Result<WriteOutcome<PollingRate>, ManagerError> {
@@ -1701,5 +1718,188 @@ mod tests {
             rate.observed.as_ref().unwrap().source,
             ObservationSource::UsbReadback
         );
+    }
+    #[tokio::test]
+    async fn read_polling_rate_loads_target_and_stores_under_target_not_live_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let target = ProfileId::new(2).unwrap();
+        let live_before = ProfileId::new(1).unwrap();
+        let (dpi, preferences, buttons) = complete_image(target);
+        // Per-profile rates: live_before = 125, target = 1000
+        let session = ScriptedFakeSession::usb()
+            .with_profile(matching_snapshot(target, dpi, preferences, buttons))
+            .with_polling_rate_for(live_before, PollingRate::Hz125)
+            .with_polling_rate_for(target, PollingRate::Hz1000)
+            .with_live_profile(live_before);
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            session.clone(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        let snapshot = manager.read_polling_rate(&device, target).await.unwrap();
+        assert_eq!(
+            snapshot.resource.observed.as_ref().unwrap().value,
+            PollingRate::Hz1000
+        );
+        assert_eq!(session.last_polling_alias(), Some(target));
+        let persisted = store.load().unwrap();
+        // Stored under target
+        assert_eq!(
+            persisted.devices[&device].profiles[&target]
+                .polling_rate
+                .observed
+                .as_ref()
+                .unwrap()
+                .value,
+            PollingRate::Hz1000
+        );
+        // Live alias 1 must not be contaminated with 1000
+        if let Some(other) = persisted.devices[&device].profiles.get(&live_before) {
+            if let Some(obs) = other.polling_rate.observed.as_ref() {
+                assert_ne!(
+                    obs.value,
+                    PollingRate::Hz1000,
+                    "standalone live rate must not contaminate other profile"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn read_polling_rate_standalone_live_mismatch_cannot_contaminate() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let target = ProfileId::new(2).unwrap();
+        let other = ProfileId::new(1).unwrap();
+        let (dpi_target, pref_target, btn_target) = complete_image(target);
+        // Snapshot for target correctly describes target; live before is other with rate 500, target rate 1000
+        let session = ScriptedFakeSession::usb()
+            .with_profile(matching_snapshot(
+                other,
+                dpi_target.clone(),
+                pref_target,
+                btn_target,
+            ))
+            .with_profile(matching_snapshot(
+                target,
+                dpi_target.clone(),
+                pref_target,
+                btn_target,
+            ))
+            .with_polling_rate_for(other, PollingRate::Hz500)
+            .with_polling_rate_for(target, PollingRate::Hz1000)
+            .with_live_profile(other);
+        // Force live to other: after our safe path, we load target, so live becomes target and rate should be 1000, not 500
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            session.clone(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        // Directly read polling for target; should get target's rate, not live's 500
+        let snap = manager.read_polling_rate(&device, target).await.unwrap();
+        assert_eq!(
+            snap.resource.observed.as_ref().unwrap().value,
+            PollingRate::Hz1000
+        );
+        let persisted = store.load().unwrap();
+        assert_eq!(
+            persisted.devices[&device].profiles[&target]
+                .polling_rate
+                .observed
+                .as_ref()
+                .unwrap()
+                .value,
+            PollingRate::Hz1000
+        );
+        // Ensure other not polluted
+        if let Some(p) = persisted.devices[&device].profiles.get(&other) {
+            if let Some(obs) = &p.polling_rate.observed {
+                assert_ne!(obs.value, PollingRate::Hz1000);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn read_polling_rate_snapshot_mismatch_errors_and_does_not_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        let device = identity.id.clone();
+        let target = ProfileId::new(2).unwrap();
+        let (_dpi, preferences, buttons) = complete_image(target);
+        // Mismatched snapshot: dpi profile is 1 instead of 2
+        let mismatched_dpi = DpiState::new(
+            ProfileId::new(1).unwrap(),
+            vec![DpiValue::new(800).unwrap()],
+            StageIndex::new(1).unwrap(),
+            [0; 25],
+        )
+        .unwrap();
+        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+            target_profile: target,
+            persistent_metadata: ProfileMetadata::new(target, target).unwrap(),
+            dpi: mismatched_dpi,
+            preferences,
+            buttons,
+        };
+        let session = ScriptedFakeSession::usb()
+            .with_profile(snapshot)
+            .with_polling_rate(PollingRate::Hz1000);
+        let factory =
+            Arc::new(ScriptedFakeFactory::new().with_identity(identity.clone(), true, session));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        let err = manager
+            .read_polling_rate(&device, target)
+            .await
+            .expect_err("snapshot section mismatch must error");
+        assert!(
+            matches!(err, ManagerError::VerificationMismatch { resource: "profile", profile: Some(p) } if p == target)
+        );
+        assert!(
+            store.load().unwrap().devices[&device]
+                .profiles
+                .get(&target)
+                .map(|p| p.polling_rate.observed.is_none())
+                .unwrap_or(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn read_polling_rate_ble_is_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = ble_identity();
+        let device = identity.id.clone();
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            ScriptedFakeSession::ble(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+        let err = manager
+            .read_polling_rate(&device, ProfileId::new(1).unwrap())
+            .await
+            .expect_err("BLE must be unsupported");
+        assert!(matches!(
+            err,
+            ManagerError::UnsupportedOperation {
+                operation: "read_live_polling_rate",
+                transport: TransportKind::Ble
+            }
+        ));
     }
 }

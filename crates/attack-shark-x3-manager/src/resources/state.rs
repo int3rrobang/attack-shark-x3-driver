@@ -312,7 +312,6 @@ pub(crate) fn reconcile_observed<T: Clone + PartialEq>(
     resource.reconcile_observation(value, now);
 }
 
-#[allow(dead_code)]
 /// Attempts to mark a resource as profile-reload verified.
 pub(crate) fn try_mark_profile_reload<T: PartialEq>(
     resource: &mut ResourceState<T>,
@@ -321,7 +320,6 @@ pub(crate) fn try_mark_profile_reload<T: PartialEq>(
     resource.try_mark_profile_reload_verified(verified_at)
 }
 
-#[allow(dead_code)]
 /// Attempts to mark a resource as power-cycle verified.
 pub(crate) fn try_mark_power_cycle<T: PartialEq>(
     resource: &mut ResourceState<T>,

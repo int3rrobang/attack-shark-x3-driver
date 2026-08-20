@@ -326,7 +326,7 @@ impl DeviceManager {
             .await
     }
 
-    async fn write_buttons_with_session(
+    pub(crate) async fn write_buttons_with_session(
         &self,
         device: &DeviceId,
         session: &dyn DeviceSession,
@@ -376,7 +376,7 @@ impl DeviceManager {
     /// image, then [`ButtonsState::default_for_profile`] only when
     /// `allow_explicit_defaults` is enabled, and finally
     /// [`ManagerError::MissingBaseline`] when nothing is stored.
-    async fn load_stored_buttons_baseline(
+    pub(crate) async fn load_stored_buttons_baseline(
         &self,
         device: &DeviceId,
         profile: ProfileId,
@@ -410,7 +410,7 @@ impl DeviceManager {
     }
 }
 
-fn persist_buttons_write(
+pub(crate) fn persist_buttons_write(
     state: &mut StateFile,
     device: &DeviceId,
     requested: ButtonsState,
