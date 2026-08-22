@@ -71,3 +71,17 @@ required-features = ["usb"]
 name = "profile-navigation-probe"
 path = "examples/profile-navigation-probe.rs"
 required-features = ["usb"]
+[[example]]
+name = "macro-wired"
+path = "examples/macro-wired.rs"
+required-features = ["usb"]
+
+[[example]]
+name = "profile-activate"
+path = "examples/profile-activate.rs"
+required-features = ["usb"]
+
+[[example]]
+name = "reset-macros"
+path = "examples/reset-macros.rs"
+required-features = ["usb"]
