@@ -1,30 +1,42 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use tokio::sync::{broadcast, mpsc, watch};
+use tokio::time::{Duration, Instant, MissedTickBehavior};
 
 use crate::AppWindow;
 use crate::presentation::{
-    MAX_DPI_STAGES, SAFE_BUTTON_SLOTS, add_tail_metadata, button_action_name, format_byte,
+    CeremonyPrompt, MAX_DPI_STAGES, SAFE_BUTTON_SLOTS, add_tail_metadata, button_action_name,
+    ceremony_detail, ceremony_instruction, ceremony_prompt_label, ceremony_title, format_byte,
     format_error_string, format_refresh_summary, hide_tail_metadata, is_ble_identity,
     lift_off_choice_value, on_off, product_id_label_for_identity, profile_update_status,
     reported_profile_switch, round_dpi_step, safe_button_action, transport_label,
-    transport_label_for_identity, workflow_summary,
+    transport_label_for_identity, unassociated_detail, unassociated_name, workflow_summary,
 };
 use crate::projection::apply_event;
 use attack_shark_x3::{DebounceMs, DeepSleepMinutes, SleepTimer};
 use attack_shark_x3_manager::{
-    BaselineSource, ButtonSlotDelta, ConfigurationExport, DesiredSource, DeviceEvent, DeviceId,
-    DeviceIdentity, DeviceManager, DeviceStatus, DiscoveredDevice, DpiDelta, DpiValue,
-    EventSubscriptions, LiftOffDistance, ManagerError, PersistenceVerification, PollingRate,
-    PreferencesDelta, ProfileId, ProfileMetadata, ProfileUpdate, ProfileUpdateOutcome,
-    ResourceState, SafeButtonSlot, SensorOptionsDelta, StageIndex, StateFile, StateStore,
-    TransportSelection, UpdatePolicy, VerificationMethod,
+    BaselineSource, ButtonSlotDelta, ConfigurationExport, DesiredSource, DeviceEndpoint,
+    DeviceEvent, DeviceId, DeviceIdentity, DeviceLocator, DeviceManager, DeviceStatus,
+    DeviceTopologyEvent, DiscoveredDevice, DiscoveredEndpoint, DpiDelta, DpiValue,
+    EventSubscriptions, IdentityCeremonyAction, IdentityCeremonyKind, IdentityCeremonyProgress,
+    IdentityCeremonyStage, IdentityMode, IdentityResolution, LiftOffDistance, ManagerError,
+    PersistenceVerification, PollingRate, PreferencesDelta, ProfileId, ProfileMetadata,
+    ProfileUpdate, ProfileUpdateBaseline, ProfileUpdateOutcome, ResolvedConnection, ResourceState,
+    SafeButtonSlot, SensorOptionsDelta, StageIndex, StateFile, StateStore, TransportKind,
+    TransportSelection, UnassociatedReason, UpdatePolicy, VerificationMethod,
 };
+
+type EndpointTopology = BTreeSet<(TransportKind, DeviceLocator, bool)>;
+const HOTPLUG_SETTLE_DELAY: Duration = Duration::from_millis(750);
 
 #[derive(Debug)]
 pub enum Command {
     Startup,
     Refresh,
+    AutoRefresh,
     RefreshAllProfiles,
     SelectDevice(String),
     SelectProfile(u8),
@@ -39,6 +51,23 @@ pub enum Command {
     InvalidateState,
     VerifyProfile,
     VerifyPowerCycle,
+    /// Begins a physical-identity ceremony. `target` selects the logical
+    /// mouse for Restore and BLE association and is ignored otherwise.
+    /// `subject` indexes the worker's latest unassociated list and supplies
+    /// the discovered connection the user picked as the ceremony subject.
+    BeginCeremony {
+        kind: IdentityCeremonyKind,
+        target: Option<DeviceId>,
+        subject: Option<usize>,
+    },
+    /// Advances the running ceremony with a typed manager action. `endpoint`
+    /// and `target` mirror the manager API; the worker supplies the presented
+    /// endpoint itself for Reconnected/Capture/Associate.
+    CeremonyAction {
+        action: IdentityCeremonyAction,
+        endpoint: Option<DeviceEndpoint>,
+        target: Option<DeviceId>,
+    },
     Shutdown,
 }
 
@@ -151,6 +180,41 @@ pub struct DeviceListEntry {
     pub connected: bool,
 }
 
+/// One discovered connection with no associated logical mouse, taken from
+/// `DiscoveryView::connections`. Never persisted and never given a temporary
+/// `mouse-N`; only an association decision creates or attaches a mouse.
+pub struct UnassociatedEntry {
+    pub endpoint: DeviceEndpoint,
+    pub resolution: IdentityResolution,
+}
+
+/// UI row for an unassociated connection; the capability flags decide which
+/// ceremony actions the row offers.
+pub struct UnassociatedRow {
+    pub name: String,
+    pub detail: String,
+    pub can_add: bool,
+    pub can_restore: bool,
+    pub can_adopt: bool,
+    pub can_associate: bool,
+}
+
+/// Typed, UI-ready projection of one identity-ceremony progress report. All
+/// user-facing copy is resolved here (and in `presentation`) so the `Slint`
+/// surface only renders strings; the typed `prompt` (the popup's primary
+/// action) remains available for logic and tests.
+pub struct CeremonyView {
+    pub title: String,
+    pub instruction: String,
+    pub detail: String,
+    pub prompt: CeremonyPrompt,
+    pub prompt_label: String,
+    pub can_cancel: bool,
+    pub migration_offered: bool,
+    /// Machine-readable diagnostic for `Failed`; not user-facing copy.
+    pub failed: Option<String>,
+}
+
 /// Typed decodes of one preferences image, resolved through the manager's
 /// typed helpers so the GUI never duplicates the wire formulas.
 pub struct PreferenceFields {
@@ -170,13 +234,24 @@ pub enum UiEvent {
     /// stage, profile change) while the UI is otherwise idle. Unlike explicit
     /// operation/load snapshots it preserves an open draft.
     EventSnapshot(Box<LiveSnapshot>),
+    /// Battery telemetry never changes editable configuration or draft
+    /// validity, so it is projected independently from device snapshots.
+    BatteryChanged(u8),
     Devices(Vec<DeviceListEntry>),
+    /// Unassociated connections from the last discovery scan, presented
+    /// distinctly from logical mice.
+    Unassociated(Vec<UnassociatedRow>),
     Verification(bool),
     /// An operation failed but the currently loaded device state is still
     /// valid and is left displayed.
     OperationError(String),
     Error(String),
     StateUnreadable(String),
+    /// A typed, UI-ready projection of the running identity ceremony.
+    CeremonyProgress(Box<CeremonyView>),
+    /// A ceremony command failed; the ceremony surface stays open and the
+    /// message is shown inside it. The durable journal may still be active.
+    CeremonyError(String),
 }
 
 pub enum StartupError {
@@ -200,7 +275,10 @@ pub fn clear_loaded_context(
 }
 
 pub(crate) fn is_coalescable_command(cmd: &Command) -> bool {
-    matches!(cmd, Command::Startup | Command::Refresh)
+    matches!(
+        cmd,
+        Command::Startup | Command::Refresh | Command::AutoRefresh
+    )
 }
 
 pub fn worker_main(
@@ -220,6 +298,21 @@ pub fn worker_main(
         let mut events: Option<broadcast::Receiver<DeviceEvent>> = None;
         let mut subscriptions: Option<EventSubscriptions> = None;
         let mut pending: Option<Command> = None;
+        // Identity-ceremony state: the installation mode from the last scan,
+        // the unassociated connections, and the running ceremony's kind,
+        // restore/associate target, and presented-endpoint hint.
+        let mut mode: IdentityMode = IdentityMode::Legacy;
+        let mut unassociated: Vec<UnassociatedEntry> = Vec::new();
+        let mut ceremony_kind: Option<IdentityCeremonyKind> = None;
+        let mut ceremony_target: Option<DeviceId> = None;
+        let mut ceremony_hint: Option<DeviceEndpoint> = None;
+
+        let mut visible_topology = EndpointTopology::new();
+        let mut topology_events: Option<mpsc::Receiver<DeviceTopologyEvent>> = None;
+        let mut topology_refresh_at: Option<Instant> = None;
+        let mut topology_poll =
+            tokio::time::interval_at(Instant::now() + Duration::from_secs(2), Duration::from_secs(2));
+        topology_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -247,8 +340,9 @@ pub fn worker_main(
                     }
                     // handle command
                     let is_coalescable = is_coalescable_command(&command);
+                    let is_auto_refresh = matches!(command, Command::AutoRefresh);
                     match command {
-                        Command::Startup | Command::Refresh => {
+                        Command::Startup | Command::Refresh | Command::AutoRefresh => {
                             emit(&weak, UiEvent::Busy("discovering devices".into()));
                             match open_manager() {
                                 Err(StartupError::UnreadableState(detail)) => {
@@ -267,17 +361,37 @@ pub fn worker_main(
                                     emit(&weak, UiEvent::Error(detail));
                                 }
                                 Ok(new_manager) => {
-                                    match new_manager.list_devices(TransportSelection::Auto).await {
+                                    if topology_events.is_none() {
+                                        topology_events =
+                                            subscribe_topology_events(&new_manager).await;
+                                    }
+                                    match new_manager.discover(TransportSelection::Auto).await {
                                         Err(error) => {
                                             clear_loaded_context(&mut loaded, &mut events, &mut subscriptions);
                                             manager = Some(new_manager);
+                                            unassociated.clear();
+                                            visible_topology.clear();
                                             emit(&weak, UiEvent::Devices(Vec::new()));
+                                            emit(&weak, UiEvent::Unassociated(Vec::new()));
                                             emit(&weak, UiEvent::Error(format!("device discovery failed: {error}")));
                                         }
-                                        Ok(found) => {
-                                            discovered = found;
+                                        Ok(view) => {
+                                            visible_topology = connection_topology(&view.connections);
+                                            mode = view.mode;
+                                            discovered = view.devices;
+                                            unassociated = entries_from_connections(&view.connections);
                                             selected = new_manager.selected_device().ok().flatten();
                                             emit_devices(&weak, &discovered, selected.as_ref());
+                                            emit_unassociated(&weak, &unassociated);
+                                            // Resume a durable identity ceremony left in flight.
+                                            emit_current_ceremony(
+                                                &weak,
+                                                &new_manager,
+                                                &discovered,
+                                                &mut ceremony_kind,
+                                                &mut ceremony_target,
+                                                &mut ceremony_hint,
+                                            );
                                             match new_manager.resolve_device(None, TransportSelection::Auto).await {
                                                 Ok(resolved) => {
                                                     selected = Some(resolved.clone());
@@ -288,7 +402,19 @@ pub fn worker_main(
                                                             loaded = Some(new_loaded);
                                                             emit_devices(&weak, &discovered, selected.as_ref());
                                                             if let Some(ready) = loaded.as_ref() {
-                                                                emit_snapshot(&weak, ready, "mouse settings loaded");
+                                                                if is_auto_refresh {
+                                                                    emit_event_snapshot(
+                                                                        &weak,
+                                                                        ready,
+                                                                        "mouse reconnected; settings loaded",
+                                                                    );
+                                                                } else {
+                                                                    emit_snapshot(
+                                                                        &weak,
+                                                                        ready,
+                                                                        "mouse settings loaded",
+                                                                    );
+                                                                }
                                                             }
                                                         }
                                                         Err(error) => {
@@ -303,7 +429,12 @@ pub fn worker_main(
                                                     clear_loaded_context(&mut loaded, &mut events, &mut subscriptions);
                                                     manager = Some(new_manager);
                                                     emit_devices(&weak, &discovered, selected.as_ref());
-                                                    emit(&weak, UiEvent::Error("no compatible device is connected; connect one and press Refresh".into()));
+                                                    let message = if is_auto_refresh {
+                                                        "no compatible mouse is connected; reconnect one to continue"
+                                                    } else {
+                                                        "no compatible device is connected; connect one and press Refresh"
+                                                    };
+                                                    emit(&weak, UiEvent::Error(message.into()));
                                                 }
                                                 Err(ManagerError::AmbiguousDevice { .. }) => {
                                                     clear_loaded_context(&mut loaded, &mut events, &mut subscriptions);
@@ -399,10 +530,16 @@ pub fn worker_main(
                                 emit(&weak, UiEvent::Error("no mouse is ready; press Refresh to try again".into()));
                                 continue;
                             };
+                            emit(&weak, UiEvent::Busy("saving settings to your mouse".into()));
+                            subscriptions = None;
+                            events = None;
+                            let current_device = current.device.clone();
+                            let current_profile = current.metadata.current();
                             match apply_draft(manager_ref, current, &draft).await {
                                 Ok((status, profile)) => {
-                                    match read_loaded(manager_ref, &current.device, Some(profile)).await {
+                                    match read_loaded(manager_ref, &current_device, Some(profile)).await {
                                         Ok(new_loaded) => {
+                                            let new_loaded = subscribe_and_hold(manager_ref, new_loaded, &mut events, &mut subscriptions).await;
                                             loaded = Some(new_loaded);
                                             if let Some(ready) = loaded.as_ref() {
                                                 emit_snapshot(&weak, ready, &status);
@@ -414,8 +551,9 @@ pub fn worker_main(
                                     }
                                 }
                                 Err(error) => {
-                                    match read_loaded(manager_ref, &current.device, Some(current.metadata.current())).await {
+                                    match read_loaded(manager_ref, &current_device, Some(current_profile)).await {
                                         Ok(new_loaded) => {
+                                            let new_loaded = subscribe_and_hold(manager_ref, new_loaded, &mut events, &mut subscriptions).await;
                                             loaded = Some(new_loaded);
                                             if let Some(ready) = loaded.as_ref() {
                                                 emit_snapshot(&weak, ready, &format!("some settings may have been applied; the current mouse settings were loaded: {error}"));
@@ -783,6 +921,159 @@ pub fn worker_main(
                                 Err(error) => emit(&weak, UiEvent::Error(format_error_string("power-off check failed", error))),
                             }
                         }
+                        Command::BeginCeremony { kind, target, subject } => {
+                            let Some(manager_ref) = manager.as_ref() else {
+                                emit(&weak, UiEvent::Error("the app isn't ready; press Refresh to try again".into()));
+                                continue;
+                            };
+                            if let Some(index) = subject {
+                                match unassociated.get(index) {
+                                    Some(entry) => {
+                                        ceremony_hint = Some(entry.endpoint.clone());
+                                    }
+                                    None => {
+                                        emit(&weak, UiEvent::CeremonyError("the mouse list changed; press Refresh and try again".into()));
+                                        continue;
+                                    }
+                                }
+                            }
+                            // "Add another mouse" is the single user-facing
+                            // label for both the first Legacy → Persistent
+                            // transition and later additions; the manager
+                            // distinguishes the ceremony kinds by the
+                            // installation mode.
+                            let kind = if kind == IdentityCeremonyKind::AddMouse && mode.is_legacy()
+                            {
+                                IdentityCeremonyKind::InitialEnrollment
+                            } else {
+                                kind
+                            };
+                            ceremony_kind = Some(kind);
+                            ceremony_target = target.clone();
+                            emit(&weak, UiEvent::Busy("starting setup…".into()));
+                            match manager_ref.begin_identity_ceremony(kind, target).await {
+                                Ok(progress) => {
+                                    handle_ceremony_progress(
+                                        manager_ref,
+                                        &mut discovered,
+                                        &mut unassociated,
+                                        &mut mode,
+                                        &mut selected,
+                                        &mut loaded,
+                                        &mut events,
+                                        &mut subscriptions,
+                                        &mut ceremony_kind,
+                                        &mut ceremony_target,
+                                        &mut ceremony_hint,
+                                        &weak,
+                                        &progress,
+                                    )
+                                    .await;
+                                }
+                                Err(ManagerError::IdentitySetupInProgress { .. }) => {
+                                    // A resumable journal is already in
+                                    // flight; surface its progress instead of
+                                    // failing the begin.
+                                    emit_current_ceremony(
+                                        &weak,
+                                        manager_ref,
+                                        &discovered,
+                                        &mut ceremony_kind,
+                                        &mut ceremony_target,
+                                        &mut ceremony_hint,
+                                    );
+                                }
+                                Err(error) => {
+                                    ceremony_kind = None;
+                                    ceremony_target = None;
+                                    ceremony_hint = None;
+                                    emit(&weak, UiEvent::CeremonyError(format_error_string("could not start setup", error)));
+                                }
+                            }
+                        }
+                        Command::CeremonyAction { action, endpoint, target } => {
+                            let Some(manager_ref) = manager.as_ref() else {
+                                emit(&weak, UiEvent::Error("the app isn't ready; press Refresh to try again".into()));
+                                continue;
+                            };
+                            let action_target = target.or_else(|| ceremony_target.clone());
+                            let result = match action {
+                                IdentityCeremonyAction::Reconnected
+                                | IdentityCeremonyAction::Capture
+                                | IdentityCeremonyAction::Associate => {
+                                    let kind = match action {
+                                        IdentityCeremonyAction::Associate => {
+                                            IdentityCeremonyKind::BleAssociation
+                                        }
+                                        _ => ceremony_kind
+                                            .unwrap_or(IdentityCeremonyKind::AddMouse),
+                                    };
+                                    emit(&weak, UiEvent::Busy("checking the mouse…".into()));
+                                    match select_presented_endpoint(
+                                        manager_ref,
+                                        kind,
+                                        ceremony_hint.as_ref(),
+                                        &mut discovered,
+                                        &mut unassociated,
+                                        &mut mode,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(presented)) => {
+                                            manager_ref
+                                                .identity_ceremony_action(
+                                                    action,
+                                                    Some(presented),
+                                                    action_target,
+                                                )
+                                                .await
+                                        }
+                                        Ok(None) => {
+                                            let message = if kind
+                                                == IdentityCeremonyKind::BleAssociation
+                                            {
+                                                "the bluetooth mouse isn't showing up; turn it on and try again"
+                                            } else {
+                                                "the mouse isn't showing up; reconnect it and try again"
+                                            };
+                                            emit(&weak, UiEvent::CeremonyError(message.into()));
+                                            continue;
+                                        }
+                                        Err(error) => {
+                                            emit(&weak, UiEvent::CeremonyError(format_error_string("could not find the mouse", error)));
+                                            continue;
+                                        }
+                                    }
+                                }
+                                _ => manager_ref
+                                    .identity_ceremony_action(action, endpoint, action_target)
+                                    .await,
+                            };
+                            match result {
+                                Ok(progress) => {
+                                    ceremony_hint = None;
+                                    handle_ceremony_progress(
+                                        manager_ref,
+                                        &mut discovered,
+                                        &mut unassociated,
+                                        &mut mode,
+                                        &mut selected,
+                                        &mut loaded,
+                                        &mut events,
+                                        &mut subscriptions,
+                                        &mut ceremony_kind,
+                                        &mut ceremony_target,
+                                        &mut ceremony_hint,
+                                        &weak,
+                                        &progress,
+                                    )
+                                    .await;
+                                }
+                                Err(error) => {
+                                    emit(&weak, UiEvent::CeremonyError(format_error_string("the setup step failed", error)));
+                                }
+                            }
+                        }
                         Command::Shutdown => {
                             clear_loaded_context(&mut loaded, &mut events, &mut subscriptions);
                             break;
@@ -818,7 +1109,9 @@ pub fn worker_main(
                                 subscriptions: &mut subscriptions,
                                 weak: &weak,
                             };
-                            handle_device_event(&mut ctx, event).await;
+                            if handle_device_event(&mut ctx, event).await {
+                                pending = Some(Command::AutoRefresh);
+                            }
                         }
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
                             let mut ctx = DeviceEventContext {
@@ -830,10 +1123,59 @@ pub fn worker_main(
                                 subscriptions: &mut subscriptions,
                                 weak: &weak,
                             };
-                            handle_device_event(&mut ctx, DeviceEvent::Lagged { skipped }).await;
+                            let _ =
+                                handle_device_event(&mut ctx, DeviceEvent::Lagged { skipped }).await;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
+                            handle_disconnect(
+                                &mut loaded,
+                                &mut discovered,
+                                &mut selected,
+                                &weak,
+                                &mut events,
+                                &mut subscriptions,
+                                true,
+                            );
                             clear_loaded_context(&mut loaded, &mut events, &mut subscriptions);
+                        }
+                    }
+                }
+                topology = async {
+                    if let Some(receiver) = topology_events.as_mut() {
+                        receiver.recv().await
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    match topology {
+                        Some(event) => {
+                            topology_refresh_at =
+                                Some(topology_refresh_deadline(event, Instant::now()));
+                        }
+                        None => {
+                            topology_events = None;
+                        }
+                    }
+                }
+                _ = async {
+                    if let Some(deadline) = topology_refresh_at {
+                        tokio::time::sleep_until(deadline).await;
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    topology_refresh_at = None;
+                    pending = Some(Command::AutoRefresh);
+                }
+                _ = topology_poll.tick(), if topology_events.is_none() => {
+                    if let Some(manager_ref) = manager.as_ref()
+                        && let Ok(endpoints) =
+                            manager_ref.scan_endpoints(TransportSelection::Auto).await
+                    {
+                        let topology = endpoint_topology(&endpoints);
+                        if topology != visible_topology {
+                            visible_topology = topology;
+                            pending = Some(Command::AutoRefresh);
                         }
                     }
                 }
@@ -842,6 +1184,21 @@ pub fn worker_main(
         clear_loaded_context(&mut loaded, &mut events, &mut subscriptions);
         Ok(())
     })
+}
+
+/// Starts the operating-system USB hotplug subscription when supported.
+#[cfg(feature = "usb")]
+async fn subscribe_topology_events(
+    manager: &DeviceManager,
+) -> Option<mpsc::Receiver<DeviceTopologyEvent>> {
+    manager.subscribe_topology_events().await.ok()
+}
+
+#[cfg(not(feature = "usb"))]
+async fn subscribe_topology_events(
+    _manager: &DeviceManager,
+) -> Option<mpsc::Receiver<DeviceTopologyEvent>> {
+    None
 }
 
 /// Subscribes the freshly loaded device to event delivery and keeps the
@@ -875,27 +1232,29 @@ struct DeviceEventContext<'a> {
     weak: &'a slint::Weak<AppWindow>,
 }
 
-async fn handle_device_event(ctx: &mut DeviceEventContext<'_>, event: DeviceEvent) {
+async fn handle_device_event(ctx: &mut DeviceEventContext<'_>, event: DeviceEvent) -> bool {
     match event {
-        DeviceEvent::BatteryChanged(e) => {
-            if let Some(dev) = ctx.loaded.as_mut() {
-                dev.battery = Some(e.level);
-                emit_event_snapshot(ctx.weak, dev, "device battery level changed");
+        DeviceEvent::BatteryChanged(event) => {
+            if let Some(device) = ctx.loaded.as_mut() {
+                device.battery = Some(event.level);
+                emit(ctx.weak, UiEvent::BatteryChanged(event.level));
             }
+            false
         }
-        DeviceEvent::ActiveDpiStageChanged(e) => {
-            if let Some(dev) = ctx.loaded.as_mut() {
-                dev.profile.dpi.active_stage = e.active_stage;
-                emit_event_snapshot(ctx.weak, dev, "active DPI stage changed on device");
+        DeviceEvent::ActiveDpiStageChanged(event) => {
+            if let Some(device) = ctx.loaded.as_mut() {
+                device.profile.dpi.active_stage = event.active_stage;
+                emit_event_snapshot(ctx.weak, device, "active DPI stage changed on device");
             }
+            false
         }
         DeviceEvent::ProfileChanged(_)
         | DeviceEvent::ProfileSync(_)
         | DeviceEvent::SecondaryProfileChanged(_) => {
-            if let (Some(dev), Some(mgr)) = (ctx.loaded.as_mut(), ctx.manager.as_ref())
-                && let Some(profile) = reported_profile_switch(event, dev.metadata.current())
+            if let (Some(device), Some(manager)) = (ctx.loaded.as_mut(), ctx.manager.as_ref())
+                && let Some(profile) = reported_profile_switch(event, device.metadata.current())
             {
-                match select_profile(mgr, dev, profile.get()).await {
+                match select_profile(manager, device, profile.get()).await {
                     Ok(new_loaded) => {
                         *ctx.loaded = Some(new_loaded);
                         if let Some(ready) = ctx.loaded.as_ref() {
@@ -909,6 +1268,7 @@ async fn handle_device_event(ctx: &mut DeviceEventContext<'_>, event: DeviceEven
                     Err(error) => emit(ctx.weak, UiEvent::Error(error)),
                 }
             }
+            false
         }
         DeviceEvent::Disconnected => {
             handle_disconnect(
@@ -918,9 +1278,11 @@ async fn handle_device_event(ctx: &mut DeviceEventContext<'_>, event: DeviceEven
                 ctx.weak,
                 ctx.events,
                 ctx.subscriptions,
+                true,
             );
+            false
         }
-        DeviceEvent::ConnectionChanged(e) if !e.connected => {
+        DeviceEvent::ConnectionChanged(event) if !event.connected => {
             handle_disconnect(
                 ctx.loaded,
                 ctx.discovered,
@@ -928,15 +1290,19 @@ async fn handle_device_event(ctx: &mut DeviceEventContext<'_>, event: DeviceEven
                 ctx.weak,
                 ctx.events,
                 ctx.subscriptions,
+                false,
             );
+            false
         }
+        DeviceEvent::ConnectionChanged(_) => true,
         DeviceEvent::Lagged { skipped } => {
             emit(
                 ctx.weak,
                 UiEvent::OperationError(lagged_event_message(skipped)),
             );
+            false
         }
-        _ => {}
+        _ => false,
     }
 }
 
@@ -949,6 +1315,7 @@ fn handle_disconnect(
     weak: &slint::Weak<AppWindow>,
     events: &mut Option<broadcast::Receiver<DeviceEvent>>,
     subscriptions: &mut Option<EventSubscriptions>,
+    drop_subscription: bool,
 ) {
     if loaded.is_none() {
         return;
@@ -960,12 +1327,16 @@ fn handle_disconnect(
     {
         entry.connected = false;
     }
-    clear_loaded_context(loaded, events, subscriptions);
+    *loaded = None;
+    if drop_subscription {
+        *events = None;
+        *subscriptions = None;
+    }
     *selected = None;
     emit_devices(weak, discovered, selected.as_ref());
     emit(
         weak,
-        UiEvent::Error("device disconnected; select another device or press Refresh".into()),
+        UiEvent::Error("mouse disconnected; reconnect it to continue".into()),
     );
 }
 
@@ -1029,6 +1400,348 @@ fn emit_devices(
         })
         .collect();
     emit(weak, UiEvent::Devices(entries));
+}
+
+/// Builds an order-independent signature for connections seen by full discovery.
+fn connection_topology(connections: &[ResolvedConnection]) -> EndpointTopology {
+    connections
+        .iter()
+        .map(|connection| {
+            (
+                connection.endpoint.transport,
+                connection.endpoint.locator.clone(),
+                connection.connected,
+            )
+        })
+        .collect()
+}
+
+fn endpoint_topology(endpoints: &[DiscoveredEndpoint]) -> EndpointTopology {
+    endpoints
+        .iter()
+        .map(|endpoint| {
+            (
+                endpoint.endpoint.transport,
+                endpoint.endpoint.locator.clone(),
+                endpoint.connected,
+            )
+        })
+        .collect()
+}
+fn topology_refresh_deadline(event: DeviceTopologyEvent, now: Instant) -> Instant {
+    match event {
+        DeviceTopologyEvent::Connected => now + HOTPLUG_SETTLE_DELAY,
+        DeviceTopologyEvent::Disconnected => now,
+    }
+}
+
+/// Extracts the unassociated connections from a discovery view, in scan
+/// order, discarding connections that resolved to a logical mouse.
+fn entries_from_connections(connections: &[ResolvedConnection]) -> Vec<UnassociatedEntry> {
+    connections
+        .iter()
+        .filter_map(|connection| match &connection.resolution {
+            IdentityResolution::Resolved { .. } => None,
+            resolution => Some(UnassociatedEntry {
+                endpoint: connection.endpoint.clone(),
+                resolution: resolution.clone(),
+            }),
+        })
+        .collect()
+}
+
+/// Emits the unassociated connections as distinct UI rows. Capability flags
+/// decide which ceremony actions each row offers; a connection never
+/// receives a temporary `mouse-N`.
+fn emit_unassociated(weak: &slint::Weak<AppWindow>, entries: &[UnassociatedEntry]) {
+    let rows: Vec<UnassociatedRow> = entries
+        .iter()
+        .map(|entry| {
+            let (can_add, can_restore, can_adopt, can_associate) =
+                unassociated_capabilities(&entry.endpoint, &entry.resolution);
+            UnassociatedRow {
+                name: unassociated_name(&entry.endpoint),
+                detail: unassociated_detail(&entry.endpoint, &entry.resolution),
+                can_add,
+                can_restore,
+                can_adopt,
+                can_associate,
+            }
+        })
+        .collect();
+    emit(weak, UiEvent::Unassociated(rows));
+}
+
+/// Which ceremony actions an unassociated connection can offer, from its
+/// resolution. Unknown beats incorrect identity: unsupported, duplicate,
+/// reserved, and journal-reserved connections offer nothing.
+fn unassociated_capabilities(
+    endpoint: &DeviceEndpoint,
+    resolution: &IdentityResolution,
+) -> (bool, bool, bool, bool) {
+    let IdentityResolution::Unassociated { reason, .. } = resolution else {
+        return (false, false, false, false);
+    };
+    match (endpoint.transport, reason) {
+        (TransportKind::Ble, UnassociatedReason::Absent) => (false, false, false, true),
+        (
+            TransportKind::Wired | TransportKind::Receiver,
+            UnassociatedReason::Absent | UnassociatedReason::Malformed,
+        ) => (true, true, false, false),
+        (TransportKind::Wired | TransportKind::Receiver, UnassociatedReason::Unknown) => {
+            (false, false, true, false)
+        }
+        _ => (false, false, false, false),
+    }
+}
+
+/// Builds the typed, UI-ready projection of one ceremony progress report,
+/// resolving all user-facing copy and the popup's action surface.
+pub fn ceremony_view(
+    progress: &IdentityCeremonyProgress,
+    discovered: &[DiscoveredDevice],
+) -> CeremonyView {
+    let target_name = progress.identity.as_ref().and_then(|id| {
+        discovered
+            .iter()
+            .find(|device| &device.identity.id == id)
+            .map(|device| {
+                device
+                    .identity
+                    .display_name
+                    .as_deref()
+                    .unwrap_or_else(|| id.as_str())
+            })
+    });
+    let failed = match &progress.stage {
+        IdentityCeremonyStage::Failed { error } => Some(error.clone()),
+        _ => None,
+    };
+    let prompt = match progress.stage {
+        IdentityCeremonyStage::Ready => CeremonyPrompt::None,
+        IdentityCeremonyStage::AwaitingReconnect
+            if progress.kind == IdentityCeremonyKind::BleAssociation =>
+        {
+            CeremonyPrompt::Associate
+        }
+        IdentityCeremonyStage::AwaitingReconnect => CeremonyPrompt::Reconnect,
+        IdentityCeremonyStage::Capturing | IdentityCeremonyStage::Stamping
+            if progress.kind == IdentityCeremonyKind::ForeignAdoption =>
+        {
+            CeremonyPrompt::Adopt
+        }
+        IdentityCeremonyStage::Capturing | IdentityCeremonyStage::Stamping => CeremonyPrompt::Stamp,
+        IdentityCeremonyStage::Verified
+        | IdentityCeremonyStage::Complete
+        | IdentityCeremonyStage::Cancelled
+        | IdentityCeremonyStage::Failed { .. } => CeremonyPrompt::Done,
+    };
+    let can_cancel = matches!(
+        progress.stage,
+        IdentityCeremonyStage::Ready
+            | IdentityCeremonyStage::AwaitingReconnect
+            | IdentityCeremonyStage::Stamping
+    );
+    let migration_offered = progress.kind == IdentityCeremonyKind::InitialEnrollment
+        && !matches!(
+            progress.stage,
+            IdentityCeremonyStage::Complete
+                | IdentityCeremonyStage::Cancelled
+                | IdentityCeremonyStage::Failed { .. }
+        );
+    CeremonyView {
+        title: ceremony_title(progress.kind).to_owned(),
+        instruction: ceremony_instruction(progress),
+        detail: ceremony_detail(progress, target_name),
+        prompt,
+        prompt_label: ceremony_prompt_label(prompt, progress.kind).to_owned(),
+        can_cancel,
+        migration_offered,
+        failed,
+    }
+}
+
+/// Re-reads the durable ceremony journal and emits its projection, used to
+/// resume an in-flight ceremony at startup or to surface the progress of an
+/// already-running ceremony when a begin is refused. Also restores the
+/// worker's ceremony kind and restore/associate target from the journal so a
+/// resumed ceremony can be advanced without a fresh begin.
+fn emit_current_ceremony(
+    weak: &slint::Weak<AppWindow>,
+    manager: &DeviceManager,
+    discovered: &[DiscoveredDevice],
+    ceremony_kind: &mut Option<IdentityCeremonyKind>,
+    ceremony_target: &mut Option<DeviceId>,
+    ceremony_hint: &mut Option<DeviceEndpoint>,
+) {
+    match manager.identity_ceremony_progress() {
+        Ok(Some(progress)) => {
+            *ceremony_kind = Some(progress.kind);
+            *ceremony_target = progress.identity.clone();
+            // The presented-endpoint hint cannot be reconstructed from the
+            // journal; the next reconnect selects the endpoint by kind.
+            *ceremony_hint = None;
+            emit(
+                weak,
+                UiEvent::CeremonyProgress(Box::new(ceremony_view(&progress, discovered))),
+            );
+        }
+        Ok(None) => {}
+        Err(error) => {
+            emit(
+                weak,
+                UiEvent::CeremonyError(format_error_string("could not read setup progress", error)),
+            );
+        }
+    }
+}
+
+/// Re-discovers and selects the endpoint the ceremony should act on,
+/// preferring the connection hinted by the row the user clicked. Initial
+/// enrollment may present the connected Legacy mouse, which discovery
+/// intentionally resolves to the installation's one fuzzy logical mouse.
+/// Every later ceremony requires an explicitly unassociated connection.
+/// The same scan also refreshes the projected discovery state.
+async fn select_presented_endpoint(
+    manager: &DeviceManager,
+    kind: IdentityCeremonyKind,
+    hint: Option<&DeviceEndpoint>,
+    discovered: &mut Vec<DiscoveredDevice>,
+    unassociated: &mut Vec<UnassociatedEntry>,
+    mode: &mut IdentityMode,
+) -> Result<Option<DeviceEndpoint>, ManagerError> {
+    let view = manager.discover(TransportSelection::Auto).await?;
+    let presented = presented_endpoint(kind, hint, &view.connections);
+    *mode = view.mode;
+    *discovered = view.devices;
+    *unassociated = entries_from_connections(&view.connections);
+    Ok(presented)
+}
+
+fn presented_endpoint(
+    kind: IdentityCeremonyKind,
+    hint: Option<&DeviceEndpoint>,
+    connections: &[ResolvedConnection],
+) -> Option<DeviceEndpoint> {
+    let eligible = |connection: &&ResolvedConnection| {
+        connection.connected
+            && if kind == IdentityCeremonyKind::InitialEnrollment {
+                is_usb_transport(connection.endpoint.transport)
+            } else {
+                matches_kind(kind, &connection.endpoint, &connection.resolution)
+            }
+    };
+    hint.and_then(|hint| {
+        connections
+            .iter()
+            .filter(eligible)
+            .find(|connection| &connection.endpoint == hint)
+    })
+    .or_else(|| connections.iter().find(eligible))
+    .map(|connection| connection.endpoint.clone())
+}
+
+/// True when an unassociated connection is eligible to drive a ceremony of
+/// the given kind. Physical enrollment always requires wired or receiver
+/// USB; BLE association only ever presents a BLE endpoint.
+fn matches_kind(
+    kind: IdentityCeremonyKind,
+    endpoint: &DeviceEndpoint,
+    resolution: &IdentityResolution,
+) -> bool {
+    let IdentityResolution::Unassociated { reason, .. } = resolution else {
+        return false;
+    };
+    match kind {
+        IdentityCeremonyKind::BleAssociation => {
+            endpoint.transport == TransportKind::Ble && matches!(reason, UnassociatedReason::Absent)
+        }
+        IdentityCeremonyKind::ForeignAdoption => {
+            is_usb_transport(endpoint.transport) && matches!(reason, UnassociatedReason::Unknown)
+        }
+        _ => {
+            is_usb_transport(endpoint.transport)
+                && matches!(
+                    reason,
+                    UnassociatedReason::Absent | UnassociatedReason::Malformed
+                )
+        }
+    }
+}
+
+fn is_usb_transport(transport: TransportKind) -> bool {
+    matches!(transport, TransportKind::Wired | TransportKind::Receiver)
+}
+
+/// Applies one ceremony progress report: refreshes discovery and reloads the
+/// current mouse when the ceremony changed durable state (completed,
+/// cancelled, or failed), then emits the typed projection for the UI.
+// The worker loop passes its whole live context; each parameter is a distinct
+// slot the handler must touch, so the long signature is intentional.
+#[allow(clippy::too_many_arguments)]
+async fn handle_ceremony_progress(
+    manager: &DeviceManager,
+    discovered: &mut Vec<DiscoveredDevice>,
+    unassociated: &mut Vec<UnassociatedEntry>,
+    mode: &mut IdentityMode,
+    selected: &mut Option<DeviceId>,
+    loaded: &mut Option<LoadedDevice>,
+    events: &mut Option<broadcast::Receiver<DeviceEvent>>,
+    subscriptions: &mut Option<EventSubscriptions>,
+    ceremony_kind: &mut Option<IdentityCeremonyKind>,
+    ceremony_target: &mut Option<DeviceId>,
+    ceremony_hint: &mut Option<DeviceEndpoint>,
+    weak: &slint::Weak<AppWindow>,
+    progress: &IdentityCeremonyProgress,
+) {
+    if matches!(
+        progress.stage,
+        IdentityCeremonyStage::Complete
+            | IdentityCeremonyStage::Cancelled
+            | IdentityCeremonyStage::Failed { .. }
+    ) {
+        *ceremony_kind = None;
+        *ceremony_target = None;
+        *ceremony_hint = None;
+        // Finalization creates, rotates, or renames logical mice, so the
+        // discovery state is stale; refresh it and reload the current mouse.
+        if let Ok(view) = manager.discover(TransportSelection::Auto).await {
+            *mode = view.mode;
+            *discovered = view.devices;
+            *unassociated = entries_from_connections(&view.connections);
+            emit_devices(weak, discovered, selected.as_ref());
+            emit_unassociated(weak, unassociated);
+            if let Some(current) = loaded.as_ref() {
+                match read_loaded(manager, &current.device, None).await {
+                    Ok(new_loaded) => {
+                        let new_loaded =
+                            subscribe_and_hold(manager, new_loaded, events, subscriptions).await;
+                        *loaded = Some(new_loaded);
+                        if let Some(ready) = loaded.as_ref() {
+                            emit_snapshot(
+                                weak,
+                                ready,
+                                "setup finished; the device list was updated",
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        emit(
+                            weak,
+                            UiEvent::OperationError(format_error_string(
+                                "setup finished, but the app couldn't reload the mouse",
+                                error,
+                            )),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    emit(
+        weak,
+        UiEvent::CeremonyProgress(Box::new(ceremony_view(progress, discovered))),
+    );
 }
 
 fn open_manager() -> Result<DeviceManager, StartupError> {
@@ -1111,30 +1824,16 @@ async fn read_loaded(
     device: &DeviceId,
     requested: Option<ProfileId>,
 ) -> Result<LoadedDevice, ManagerError> {
-    let status = manager.read_status(device).await?;
-    if is_ble_identity(&status.identity) {
+    let identity = manager.device_identity(device)?;
+    if is_ble_identity(&identity) {
+        let status = manager.read_status(device).await?;
         return read_ble_loaded(manager, status, requested);
     }
-    let metadata = status
-        .profile_metadata
-        .as_ref()
-        .and_then(|snapshot| snapshot.resource.observed.as_ref())
-        .map(|observed| observed.value)
-        .ok_or_else(|| {
-            ManagerError::InvalidUpdate("USB did not return the current profile details".into())
-        })?;
-    let target = requested
-        .filter(|profile| *profile <= metadata.maximum())
-        .unwrap_or(metadata.current());
-    let profile = manager.read_profile(device, target).await?;
-    let polling_rate = status
-        .polling_rate
-        .as_ref()
-        .and_then(|snapshot| snapshot.resource.observed.as_ref())
-        .map(|observed| observed.value)
-        .ok_or_else(|| {
-            ManagerError::InvalidUpdate("USB did not return the current polling rate".into())
-        })?;
+    let live = manager.read_live_profile(device, requested).await?;
+    let metadata = live.profile_metadata;
+    let target = live.profile.target_profile;
+    let profile = live.profile;
+    let polling_rate = live.polling_rate;
     let state = manager.store().load()?;
     let polling_rate_ready = state
         .devices
@@ -1150,7 +1849,7 @@ async fn read_loaded(
     let verification_summary = stored_evidence_summary(&state, device, target, false, false);
     Ok(LoadedDevice {
         device: device.clone(),
-        identity: status.identity,
+        identity: live.identity,
         metadata,
         profile: ProfileData {
             dpi: profile.dpi,
@@ -1158,7 +1857,7 @@ async fn read_loaded(
             buttons: profile.buttons,
         },
         polling_rate,
-        battery: status.battery,
+        battery: live.battery,
         polling_rate_ready,
         all_profiles_observed,
         has_stored_preferences: true,
@@ -1550,8 +2249,19 @@ async fn apply_draft(
             buttons: button_deltas,
             polling_rate: None,
         };
+        let baseline = ProfileUpdateBaseline {
+            dpi: current.profile.dpi.clone(),
+            preferences: current.profile.preferences,
+            buttons: current.profile.buttons,
+        };
         outcome = manager
-            .apply_profile_update(&current.device, profile, non_rate, policy)
+            .apply_profile_update_from_snapshot(
+                &current.device,
+                profile,
+                non_rate,
+                policy,
+                baseline,
+            )
             .await
             .map_err(|error| format_error_string("apply failed", error))?;
     }
@@ -1854,6 +2564,109 @@ mod tests {
         assert!(events2.is_none());
     }
 
+    #[test]
+    fn endpoint_topology_is_order_independent_and_tracks_connection_state() {
+        let wired = DiscoveredEndpoint {
+            endpoint: DeviceEndpoint::usb(
+                TransportKind::Wired,
+                0x1d57,
+                0xfa61,
+                None,
+                r"\\?\hid#wired-topology",
+                None,
+            )
+            .unwrap(),
+            connected: true,
+        };
+        let receiver = DiscoveredEndpoint {
+            endpoint: DeviceEndpoint::usb(
+                TransportKind::Receiver,
+                0x1d57,
+                0xfa60,
+                None,
+                r"\\?\hid#receiver-topology",
+                None,
+            )
+            .unwrap(),
+            connected: true,
+        };
+
+        assert_eq!(
+            endpoint_topology(&[wired.clone(), receiver.clone()]),
+            endpoint_topology(&[receiver.clone(), wired.clone()])
+        );
+        let mut disconnected = receiver;
+        disconnected.connected = false;
+        assert_ne!(
+            endpoint_topology(&[wired.clone(), disconnected]),
+            endpoint_topology(&[wired])
+        );
+        let now = Instant::now();
+        assert_eq!(
+            topology_refresh_deadline(DeviceTopologyEvent::Disconnected, now),
+            now
+        );
+        assert_eq!(
+            topology_refresh_deadline(DeviceTopologyEvent::Connected, now),
+            now + HOTPLUG_SETTLE_DELAY
+        );
+    }
+
+    #[tokio::test]
+    async fn battery_event_is_telemetry_and_receiver_reconnect_requests_refresh() {
+        let mut loaded = Some(dummy_loaded());
+        let (sender, receiver) = broadcast::channel::<DeviceEvent>(16);
+        let mut events = Some(receiver);
+        let mut subscriptions = None;
+        let mut manager = None;
+        let mut discovered = vec![sample_device("mouse-1", Some("Desk"))];
+        let mut selected = Some(DeviceId::new("mouse-1").unwrap());
+        let weak = slint::Weak::<AppWindow>::default();
+        let mut ctx = DeviceEventContext {
+            loaded: &mut loaded,
+            manager: &mut manager,
+            discovered: &mut discovered,
+            selected: &mut selected,
+            events: &mut events,
+            subscriptions: &mut subscriptions,
+            weak: &weak,
+        };
+
+        let refresh = handle_device_event(
+            &mut ctx,
+            DeviceEvent::BatteryChanged(attack_shark_x3::BatteryEvent {
+                raw_report: [0; 5],
+                level: 70,
+            }),
+        )
+        .await;
+        assert!(!refresh);
+        assert_eq!(ctx.loaded.as_ref().unwrap().battery, Some(70));
+
+        let refresh = handle_device_event(
+            &mut ctx,
+            DeviceEvent::ConnectionChanged(attack_shark_x3::ConnectionChangedEvent {
+                raw_report: [0; 5],
+                connected: false,
+            }),
+        )
+        .await;
+        assert!(!refresh);
+        assert!(ctx.loaded.is_none());
+        assert!(ctx.events.is_some(), "receiver event stream must stay open");
+
+        let refresh = handle_device_event(
+            &mut ctx,
+            DeviceEvent::ConnectionChanged(attack_shark_x3::ConnectionChangedEvent {
+                raw_report: [0; 5],
+                connected: true,
+            }),
+        )
+        .await;
+        assert!(refresh);
+        drop(sender);
+    }
+
     #[tokio::test]
     async fn lagged_event_is_visible_and_handled() {
         let message = lagged_event_message(7);
@@ -1964,15 +2777,215 @@ mod tests {
         let _ = timeout(Duration::from_millis(100), async {}).await;
     }
 
-    #[tokio::test]
-    async fn profile_switch_restoration_not_cancelled() {
-        let restore = async {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            "restored"
+    fn sample_device(id: &str, name: Option<&str>) -> DiscoveredDevice {
+        DiscoveredDevice {
+            identity: DeviceIdentity::new(DeviceId::new(id).unwrap(), name.map(str::to_owned)),
+            connected: true,
+            transports: vec![TransportKind::Wired],
+        }
+    }
+
+    fn progress(
+        kind: IdentityCeremonyKind,
+        stage: IdentityCeremonyStage,
+        step: Option<u8>,
+        identity: Option<DeviceId>,
+    ) -> IdentityCeremonyProgress {
+        IdentityCeremonyProgress {
+            kind,
+            stage,
+            step,
+            total_steps: Some(if kind == IdentityCeremonyKind::InitialEnrollment {
+                2
+            } else {
+                1
+            }),
+            identity,
+            physical_id: None,
+            endpoint: None,
+        }
+    }
+
+    #[test]
+    fn ceremony_view_projects_typed_stage_and_user_copy() {
+        let discovered = vec![sample_device("mouse-1", Some("Desk"))];
+
+        let adding = ceremony_view(
+            &progress(
+                IdentityCeremonyKind::AddMouse,
+                IdentityCeremonyStage::AwaitingReconnect,
+                Some(1),
+                None,
+            ),
+            &discovered,
+        );
+        assert_eq!(adding.title, "add another mouse");
+        assert_eq!(adding.instruction, "Reconnect the mouse you want to add.");
+        assert_eq!(adding.prompt, CeremonyPrompt::Reconnect);
+        assert_eq!(adding.prompt_label, "I've reconnected the mouse");
+        assert!(adding.can_cancel);
+        assert!(!adding.migration_offered);
+
+        let initial = ceremony_view(
+            &progress(
+                IdentityCeremonyKind::InitialEnrollment,
+                IdentityCeremonyStage::AwaitingReconnect,
+                Some(1),
+                None,
+            ),
+            &[],
+        );
+        assert_eq!(initial.detail, "step 1 of 2");
+        assert_eq!(initial.instruction, "Reconnect the mouse you're adding.");
+        assert!(initial.migration_offered);
+
+        let restored = ceremony_view(
+            &progress(
+                IdentityCeremonyKind::Restore,
+                IdentityCeremonyStage::AwaitingReconnect,
+                Some(1),
+                Some(DeviceId::new("mouse-1").unwrap()),
+            ),
+            &discovered,
+        );
+        assert_eq!(restored.detail, "Desk");
+        assert_eq!(restored.prompt, CeremonyPrompt::Reconnect);
+
+        let adoption = ceremony_view(
+            &progress(
+                IdentityCeremonyKind::ForeignAdoption,
+                IdentityCeremonyStage::Stamping,
+                Some(1),
+                None,
+            ),
+            &discovered,
+        );
+        assert_eq!(adoption.prompt, CeremonyPrompt::Adopt);
+        assert_eq!(adoption.prompt_label, "adopt this mouse");
+        assert!(adoption.can_cancel);
+
+        let done = ceremony_view(
+            &progress(
+                IdentityCeremonyKind::AddMouse,
+                IdentityCeremonyStage::Complete,
+                Some(1),
+                None,
+            ),
+            &discovered,
+        );
+        assert_eq!(done.prompt, CeremonyPrompt::Done);
+        assert_eq!(done.prompt_label, "done");
+        assert!(!done.can_cancel);
+        assert_eq!(done.instruction, "The mouse was added.");
+
+        let ble = ceremony_view(
+            &progress(
+                IdentityCeremonyKind::BleAssociation,
+                IdentityCeremonyStage::AwaitingReconnect,
+                Some(1),
+                None,
+            ),
+            &discovered,
+        );
+        assert_eq!(ble.prompt, CeremonyPrompt::Associate);
+        assert_eq!(ble.prompt_label, "pair this bluetooth mouse");
+    }
+
+    #[test]
+    fn initial_enrollment_accepts_the_connected_legacy_mouse() {
+        let endpoint = DeviceEndpoint::usb(
+            TransportKind::Receiver,
+            0x1d57,
+            0xfa60,
+            None,
+            r"\\?\hid#receiver#1",
+            None,
+        )
+        .unwrap();
+        let resolved = ResolvedConnection {
+            endpoint: endpoint.clone(),
+            connected: true,
+            resolution: IdentityResolution::Resolved {
+                identity: DeviceId::new("mouse-1").unwrap(),
+            },
         };
-        let (shutdown_tx, _rx) = watch::channel(false);
-        let _ = shutdown_tx.send(true);
-        let result = restore.await;
-        assert_eq!(result, "restored");
+
+        assert_eq!(
+            presented_endpoint(
+                IdentityCeremonyKind::InitialEnrollment,
+                None,
+                std::slice::from_ref(&resolved),
+            ),
+            Some(endpoint)
+        );
+        assert_eq!(
+            presented_endpoint(IdentityCeremonyKind::AddMouse, None, &[resolved]),
+            None,
+            "later additions must still present an unassociated mouse"
+        );
+    }
+
+    #[test]
+    fn unassociated_capabilities_follow_resolution_reasons() {
+        use crate::presentation::transport_label;
+        let usb = |reason| UnassociatedEntry {
+            endpoint: DeviceEndpoint::usb(
+                TransportKind::Wired,
+                0x1d57,
+                0xfa61,
+                None,
+                r"\\?\hid#usb#1",
+                None,
+            )
+            .unwrap(),
+            resolution: IdentityResolution::Unassociated {
+                reason,
+                physical_id: None,
+            },
+        };
+        let ble = UnassociatedEntry {
+            endpoint: DeviceEndpoint::ble("ble-platform-1", None).unwrap(),
+            resolution: IdentityResolution::Unassociated {
+                reason: UnassociatedReason::Absent,
+                physical_id: None,
+            },
+        };
+
+        let absent = usb(UnassociatedReason::Absent);
+        assert_eq!(
+            unassociated_capabilities(&absent.endpoint, &absent.resolution),
+            (true, true, false, false)
+        );
+        let malformed = usb(UnassociatedReason::Malformed);
+        assert_eq!(
+            unassociated_capabilities(&malformed.endpoint, &malformed.resolution),
+            (true, true, false, false)
+        );
+        let unknown = usb(UnassociatedReason::Unknown);
+        assert_eq!(
+            unassociated_capabilities(&unknown.endpoint, &unknown.resolution),
+            (false, false, true, false)
+        );
+        let unsupported = usb(UnassociatedReason::Unsupported { version: 2 });
+        assert_eq!(
+            unassociated_capabilities(&unsupported.endpoint, &unsupported.resolution),
+            (false, false, false, false)
+        );
+        assert_eq!(
+            unassociated_capabilities(&ble.endpoint, &ble.resolution),
+            (false, false, false, true)
+        );
+        assert_eq!(
+            unassociated_name(&ble.endpoint),
+            "Bluetooth mouse",
+            "BLE rows are presented distinctly from logical mice"
+        );
+        assert_eq!(
+            unassociated_detail(&ble.endpoint, &ble.resolution),
+            format!(
+                "{} · bluetooth, not paired yet",
+                transport_label(TransportKind::Ble)
+            )
+        );
     }
 }

@@ -1,8 +1,10 @@
 use slint::{Model, ModelRc, VecModel};
 
-use crate::presentation::{DPI_LABELS, clamp_dpi_value, dpi_bounds, parse_raw_byte};
-use crate::worker::{LiveProfile, LiveSnapshot};
-use crate::{AppWindow, BindingRow, DeviceRow, DpiStage, ProfileRow};
+use crate::presentation::{
+    CeremonyPrompt, DPI_LABELS, clamp_dpi_value, dpi_bounds, parse_raw_byte,
+};
+use crate::worker::{LiveProfile, LiveSnapshot, UnassociatedRow as WorkerUnassociatedRow};
+use crate::{AppWindow, BindingRow, DeviceRow, DpiStage, ProfileRow, UnassociatedRow};
 
 pub fn polling_rate_text(snapshot: &LiveSnapshot) -> String {
     if snapshot.is_ble {
@@ -37,9 +39,9 @@ pub fn clear_live_state(ui: &AppWindow) {
     ui.set_preference_deep_sleep_raw("00".into());
     ui.set_preference_sleep_timer_raw("00".into());
     ui.set_preference_debounce_raw("00".into());
-    ui.set_baseline_choice(0);
+    ui.set_baseline_choice_wired(0);
+    ui.set_baseline_choice_receiver(1);
     ui.set_allow_explicit_defaults(false);
-    ui.set_ble_device(false);
     ui.set_all_profiles_observed(false);
     ui.set_verification_running(false);
     ui.set_verification_instruction("".into());
@@ -203,6 +205,56 @@ pub fn apply_event(ui: &AppWindow, event: crate::worker::UiEvent) {
                 ui.set_verification_instruction("".into());
             }
         }
+        UiEvent::Unassociated(rows) => {
+            let unassociated = ui.get_unassociated();
+            let Some(model) = unassociated
+                .as_any()
+                .downcast_ref::<VecModel<UnassociatedRow>>()
+            else {
+                return;
+            };
+            let built: Vec<UnassociatedRow> = rows
+                .into_iter()
+                .map(|entry: WorkerUnassociatedRow| UnassociatedRow {
+                    name: entry.name.into(),
+                    detail: entry.detail.into(),
+                    can_add: entry.can_add,
+                    can_restore: entry.can_restore,
+                    can_adopt: entry.can_adopt,
+                    can_associate: entry.can_associate,
+                })
+                .collect();
+            model.set_vec(built);
+        }
+        UiEvent::CeremonyProgress(view) => {
+            ui.set_ceremony_active(true);
+            ui.set_ceremony_title(view.title.clone().into());
+            ui.set_ceremony_instruction(view.instruction.clone().into());
+            ui.set_ceremony_detail(view.detail.clone().into());
+            ui.set_ceremony_prompt(match view.prompt {
+                CeremonyPrompt::None => 0,
+                CeremonyPrompt::Reconnect => 1,
+                CeremonyPrompt::Stamp => 2,
+                CeremonyPrompt::Adopt => 3,
+                CeremonyPrompt::Associate => 4,
+                CeremonyPrompt::Done => 5,
+            });
+            ui.set_ceremony_prompt_label(view.prompt_label.clone().into());
+            ui.set_ceremony_can_cancel(view.can_cancel);
+            ui.set_ceremony_migration(view.migration_offered);
+            ui.set_ceremony_error(view.failed.clone().unwrap_or_default().into());
+            ui.invoke_show_ceremony();
+            ui.set_busy(false);
+            ui.set_status_text(view.instruction.clone().into());
+        }
+        UiEvent::CeremonyError(error) => {
+            ui.set_busy(false);
+            if ui.get_ceremony_active() {
+                ui.set_ceremony_error(error.into());
+            } else {
+                ui.set_status_text(error.into());
+            }
+        }
         UiEvent::Devices(entries) => {
             let devices = ui.get_devices();
             let Some(model) = devices.as_any().downcast_ref::<VecModel<DeviceRow>>() else {
@@ -222,6 +274,9 @@ pub fn apply_event(ui: &AppWindow, event: crate::worker::UiEvent) {
         }
         UiEvent::Snapshot(snapshot) => apply_snapshot(ui, &snapshot, false),
         UiEvent::EventSnapshot(snapshot) => apply_snapshot(ui, &snapshot, true),
+        UiEvent::BatteryChanged(level) => {
+            ui.set_battery_text(format!("{level}%").into());
+        }
     }
 }
 
@@ -290,7 +345,8 @@ pub fn apply_snapshot_replacing(ui: &AppWindow, snapshot: &LiveSnapshot) {
     ui.set_ble_device(snapshot.is_ble);
     ui.set_all_profiles_observed(snapshot.all_profiles_observed);
     if snapshot.is_ble {
-        ui.set_baseline_choice(1);
+        ui.set_baseline_choice_wired(1);
+        ui.set_baseline_choice_receiver(1);
     }
     ui.set_verification_running(false);
     ui.set_last_enabled_profile(snapshot.last_enabled_profile);
