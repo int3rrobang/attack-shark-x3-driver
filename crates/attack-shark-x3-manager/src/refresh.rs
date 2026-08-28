@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use attack_shark_x3::{ProfileId, ProfileMetadata, TransportKind};
 
 use crate::backend::DeviceSession;
@@ -7,14 +9,55 @@ use crate::device::DeviceId;
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
 use crate::operation::{FullProfileRefreshOutcome, ProfileResourceKind, RefreshedProfile};
+use crate::state::{
+    CapturedProfileImage, ObservationSource, ObservedState, ProfileState, ResourceState, Timestamp,
+};
+
+/// Fresh complete profile configuration captured from a USB session.
+///
+/// Metadata plus all five complete profile images, with the original profile
+/// metadata always restored exactly. Capturing has no durable side effect;
+/// persistence is layered on by the caller.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProfileCapture {
+    pub original_metadata: ProfileMetadata,
+    pub restored_metadata: ProfileMetadata,
+    pub temporarily_expanded: bool,
+    pub profiles: BTreeMap<ProfileId, RefreshedProfile>,
+}
+
+impl ProfileCapture {
+    /// Materializes the capture as observed-only evidence at `now`.
+    ///
+    /// The metadata and every profile image become fresh `UsbReadback`
+    /// observations with no desired value or verification evidence. This is
+    /// the form embedded in durable ceremony journals.
+    pub(crate) fn into_evidence(self, now: Timestamp) -> CapturedProfileImage {
+        let mut profiles = BTreeMap::new();
+        for (&profile, refreshed) in &self.profiles {
+            let mut state = ProfileState::empty();
+            state.dpi = observed(refreshed.dpi.clone(), now);
+            state.preferences = observed(refreshed.preferences, now);
+            state.buttons = observed(refreshed.buttons, now);
+            state.polling_rate = observed(refreshed.polling_rate, now);
+            profiles.insert(profile, state);
+        }
+        CapturedProfileImage {
+            profile_metadata: observed(self.restored_metadata, now),
+            profiles,
+        }
+    }
+}
 
 impl DeviceManager {
-    /// Temporarily enables every USB profile slot, captures each complete live
-    /// image, restores the original profile metadata, and reconciles durable
-    /// observations without replacing desired values.
+    /// Captures the complete live profile configuration of a USB device and
+    /// reconciles durable observations without replacing desired values.
     ///
-    /// This is not a passive read: profile metadata is written while expanding
-    /// and activating slots. Persistence evidence is invalidated because this
+    /// The capture itself is performed by [`capture_all_profiles`]; this
+    /// operation layers persistence on that pure helper. This is not a
+    /// passive read: profile metadata is written while expanding and
+    /// activating slots. Persistence evidence is invalidated because this
     /// workflow does not include a power cycle.
     pub async fn refresh_all_profiles(
         &self,
@@ -29,61 +72,14 @@ impl DeviceManager {
             });
         }
 
-        let original_metadata = session.read_profile_metadata().await?;
-        let maximum = ProfileId::MAX_ID;
-        let expanded_metadata = ProfileMetadata::new(original_metadata.current(), maximum)
-            .map_err(|source| ManagerError::Protocol {
-                operation: "profile metadata",
-                source,
-            })?;
-        let temporarily_expanded = original_metadata.maximum() != maximum;
-        let capture_result = async {
-            if temporarily_expanded {
-                crate::verification::write_exact_metadata(session.as_ref(), expanded_metadata)
-                    .await?;
-            }
-            capture_all_profiles(session.as_ref(), original_metadata.current(), maximum).await
-        }
-        .await;
-
-        // Always verify an exact restoration. The backend activates the original
-        // current profile before lowering the maximum, preserving its invariant.
-        let restore_result =
-            crate::verification::write_exact_metadata(session.as_ref(), original_metadata).await;
-
-        let (profiles, restored_metadata) = match (capture_result, restore_result) {
-            (Ok(profiles), Ok(restored)) => (profiles, restored),
-            (Err(refresh), Ok(_)) => return Err(refresh),
-            (Ok(_), Err(restore)) => {
-                return Err(ManagerError::RefreshRestorationFailed {
-                    restore: restore.to_string(),
-                });
-            }
-            (Err(refresh), Err(restore)) => {
-                return Err(ManagerError::RefreshRestoreFailed {
-                    refresh: refresh.to_string(),
-                    restore: restore.to_string(),
-                });
-            }
-        };
-
-        self.persist_profile_refresh(
-            device,
-            original_metadata,
-            restored_metadata,
-            temporarily_expanded,
-            profiles,
-        )
-        .await
+        let capture = capture_all_profiles(session.as_ref()).await?;
+        self.persist_profile_refresh(device, capture).await
     }
 
     async fn persist_profile_refresh(
         &self,
         device: &DeviceId,
-        original_metadata: ProfileMetadata,
-        restored_metadata: ProfileMetadata,
-        temporarily_expanded: bool,
-        profiles: BTreeMap<ProfileId, RefreshedProfile>,
+        capture: ProfileCapture,
     ) -> Result<FullProfileRefreshOutcome, ManagerError> {
         let now = self.now();
         let device = device.clone();
@@ -95,9 +91,9 @@ impl DeviceManager {
                     .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
                 let profile_metadata_drift = device_state
                     .profile_metadata
-                    .reconcile_observation(restored_metadata, now);
+                    .reconcile_observation(capture.restored_metadata, now);
                 let mut drift = BTreeMap::new();
-                for (&profile, refreshed) in &profiles {
+                for (&profile, refreshed) in &capture.profiles {
                     let st = device_state.profiles.entry(profile).or_default();
                     let mut mismatches = Vec::new();
                     if st.dpi.reconcile_observation(refreshed.dpi.clone(), now) {
@@ -123,10 +119,10 @@ impl DeviceManager {
                     }
                 }
                 Ok(FullProfileRefreshOutcome {
-                    original_metadata,
-                    restored_metadata,
-                    temporarily_expanded,
-                    profiles,
+                    original_metadata: capture.original_metadata,
+                    restored_metadata: capture.restored_metadata,
+                    temporarily_expanded: capture.temporarily_expanded,
+                    profiles: capture.profiles,
                     drift,
                     profile_metadata_drift,
                 })
@@ -136,7 +132,75 @@ impl DeviceManager {
     }
 }
 
-async fn capture_all_profiles(
+/// Captures the complete live profile configuration of a USB session without
+/// any durable side effect.
+///
+/// Every profile slot is temporarily enabled and activated in turn and each
+/// complete live image is read. The original profile metadata is always
+/// restored exactly, even when capture fails. This is not a passive read:
+/// profile metadata is written while expanding and activating slots, so
+/// persistence evidence predating the capture is invalidated.
+pub(crate) async fn capture_all_profiles(
+    session: &dyn DeviceSession,
+) -> Result<ProfileCapture, ManagerError> {
+    let transport = session.transport();
+    if transport == TransportKind::Ble {
+        return Err(ManagerError::UnsupportedOperation {
+            operation: "capture-all-profiles",
+            transport,
+        });
+    }
+
+    let original_metadata = session.read_profile_metadata().await?;
+    let maximum = ProfileId::MAX_ID;
+    let expanded_metadata =
+        ProfileMetadata::new(original_metadata.current(), maximum).map_err(|source| {
+            ManagerError::Protocol {
+                operation: "profile metadata",
+                source,
+            }
+        })?;
+    let temporarily_expanded = original_metadata.maximum() != maximum;
+    let capture_result = async {
+        if temporarily_expanded {
+            crate::verification::write_exact_metadata(session, expanded_metadata).await?;
+        }
+        capture_all_profile_images(session, original_metadata.current(), maximum).await
+    }
+    .await;
+
+    // Always verify an exact restoration. The backend activates the original
+    // current profile before lowering the maximum, preserving its invariant.
+    let restore_result =
+        crate::verification::write_exact_metadata(session, original_metadata).await;
+
+    let (profiles, restored_metadata) = match (capture_result, restore_result) {
+        (Ok(profiles), Ok(restored)) => (profiles, restored),
+        (Err(refresh), Ok(_)) => return Err(refresh),
+        (Ok(_), Err(restore)) => {
+            return Err(ManagerError::RefreshRestorationFailed {
+                restore: restore.to_string(),
+            });
+        }
+        (Err(refresh), Err(restore)) => {
+            return Err(ManagerError::RefreshRestoreFailed {
+                refresh: refresh.to_string(),
+                restore: restore.to_string(),
+            });
+        }
+    };
+
+    Ok(ProfileCapture {
+        original_metadata,
+        restored_metadata,
+        temporarily_expanded,
+        profiles,
+    })
+}
+
+/// Walks every profile slot, activating it as needed and reading the complete
+/// live image.
+async fn capture_all_profile_images(
     session: &dyn DeviceSession,
     original_current: ProfileId,
     maximum: ProfileId,
@@ -189,6 +253,18 @@ async fn capture_all_profiles(
     Ok(profiles)
 }
 
+/// Builds a resource carrying only a fresh observation, with no desired value
+/// or verification evidence.
+fn observed<T>(value: T, now: Timestamp) -> ResourceState<T> {
+    let mut resource = ResourceState::empty();
+    resource.observed = Some(ObservedState {
+        value,
+        source: ObservationSource::UsbReadback,
+        observed_at: now,
+    });
+    resource
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -199,7 +275,7 @@ mod tests {
         TransportKind,
     };
 
-    use super::DeviceManager;
+    use super::{DeviceManager, capture_all_profiles};
     use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession, ScriptedWrite};
     use crate::device::DeviceIdentity;
     use crate::error::ManagerError;
@@ -510,5 +586,44 @@ mod tests {
             assert_eq!(operation, "profile metadata");
             assert_eq!(source, ProtocolError::InvalidProfile { value: 0 });
         }
+    }
+
+    #[tokio::test]
+    async fn capture_all_profiles_is_pure_and_restores_metadata() {
+        let original = metadata(2, 3);
+        let mut session = ScriptedFakeSession::usb()
+            .with_metadata(original)
+            .with_polling_rate(PollingRate::Hz1000);
+        for target in ProfileId::MIN..=ProfileId::MAX {
+            session = session.with_profile(snapshot(target));
+        }
+        let writes = session.clone();
+        let (manager, identity) = manager_with(session.clone());
+
+        let capture = capture_all_profiles(&session)
+            .await
+            .expect("capture must succeed");
+
+        assert_eq!(capture.original_metadata, original);
+        assert_eq!(capture.restored_metadata, original);
+        assert!(capture.temporarily_expanded);
+        assert_eq!(capture.profiles.len(), usize::from(ProfileId::MAX));
+
+        // A capture mutates no durable resource state.
+        let state = manager.store().load().expect("state load");
+        let device = &state.devices[&identity.id];
+        assert!(device.profile_metadata.observed.is_none());
+        assert!(device.profiles.is_empty());
+
+        let metadata_writes: Vec<_> = writes
+            .writes()
+            .into_iter()
+            .filter_map(|write| match write {
+                ScriptedWrite::ProfileMetadata(metadata) => Some(metadata),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(metadata_writes.first(), Some(&metadata(2, 5)));
+        assert_eq!(metadata_writes.last(), Some(&original));
     }
 }

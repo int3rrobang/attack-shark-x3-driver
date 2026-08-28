@@ -1,4 +1,6 @@
-use attack_shark_x3::{DpiState, DpiValue, LiftOffDistance, ProfileId, StageIndex, TransportKind};
+use attack_shark_x3::{
+    DpiState, DpiValue, LiftOffDistance, PhysicalId, ProfileId, StageIndex, TransportKind,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::backend::DeviceSession;
@@ -109,7 +111,7 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, session, _guard) = self.open_locked(device, "update_dpi").await?;
+        let (identity, session, _guard) = self.open_locked(device, "update_dpi").await?;
         let transport = session.transport();
 
         if transport == TransportKind::Ble && !policy.allow_explicit_defaults {
@@ -126,6 +128,7 @@ impl DeviceManager {
             device,
             profile,
             desired,
+            identity.physical_id,
             policy.verification,
             session.as_ref(),
         )
@@ -152,7 +155,7 @@ impl DeviceManager {
             ));
         }
 
-        let (_identity, session, _guard) = self.open_locked(device, "update_dpi_delta").await?;
+        let (identity, session, _guard) = self.open_locked(device, "update_dpi_delta").await?;
         let baseline = match session.transport() {
             TransportKind::Ble => {
                 self.load_stored_dpi_baseline(device, profile, policy.allow_explicit_defaults)
@@ -172,6 +175,7 @@ impl DeviceManager {
             device,
             profile,
             desired,
+            identity.physical_id,
             policy.verification,
             session.as_ref(),
         )
@@ -183,13 +187,18 @@ impl DeviceManager {
         device: &DeviceId,
         profile: ProfileId,
         desired: DpiState,
+        physical_id: Option<PhysicalId>,
         verification: crate::operation::VerificationMethod,
         session: &dyn DeviceSession,
     ) -> Result<WriteOutcome<DpiState>, ManagerError> {
-        let write = session.write_dpi(desired.clone(), verification).await?;
+        // The device's own physical watermark is overlaid before the write, so
+        // the ACK/readback and the durable evidence all refer to the stamped
+        // image, and no foreign or missing watermark can reach the wire.
+        let stamped = with_physical_watermark(desired, physical_id);
+        let write = session.write_dpi(stamped.clone(), verification).await?;
         let now = self.now();
         let device_id = device.clone();
-        let desired_owned = desired.clone();
+        let desired_owned = stamped.clone();
         let outcome = self
             .store()
             .mutate_async(move |state| {
@@ -286,6 +295,24 @@ fn unsupported(operation: &'static str, transport: TransportKind) -> ManagerErro
     }
 }
 
+/// Overlays the physical mouse's watermark onto a complete DPI state.
+///
+/// In persistent identity mode (`Some`), the state's opaque tail is replaced
+/// with the exact driver-stamped image for that physical mouse
+/// (`PhysicalId::to_watermark_bytes`), so a resource DPI write can never omit
+/// its own watermark or carry a foreign one. In legacy mode (`None`) the
+/// state is returned untouched and the entire original tail is preserved.
+/// Pure: takes the complete state and returns the stamped state.
+pub(crate) fn with_physical_watermark(
+    mut state: DpiState,
+    physical_id: Option<PhysicalId>,
+) -> DpiState {
+    if let Some(physical_id) = physical_id {
+        state.preserved_tail = physical_id.to_watermark_bytes();
+    }
+    state
+}
+
 pub(crate) fn merge_dpi_delta(
     baseline: DpiState,
     delta: &DpiDelta,
@@ -341,17 +368,17 @@ pub(crate) fn has_dpi_baseline(state: &StateFile, device: &DeviceId, profile: Pr
 #[cfg(test)]
 mod tests {
     use super::{DeviceManager, DpiDelta, SensorOptionsDelta};
-    use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession};
+    use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession, ScriptedWrite};
     use crate::device::DeviceIdentity;
     use crate::error::ManagerError;
     use crate::state::{
-        DesiredSource, DesiredState, ObservationSource, ObservedState, StatePaths, StateStore,
-        Timestamp, Verification,
+        DesiredSource, DesiredState, IdentityMode, ObservationSource, ObservedState, StatePaths,
+        StateStore, Timestamp, Verification,
     };
     use crate::{BaselineSource, UpdatePolicy, VerificationMethod};
     use attack_shark_x3::{
-        ButtonAssignment, ButtonsState, DpiState, DpiValue, PreferencesState, ProfileId,
-        ProfileMetadata, StageIndex, TransportKind,
+        ButtonAssignment, ButtonsState, DpiState, DpiValue, PhysicalId, PreferencesState,
+        ProfileId, ProfileMetadata, StageIndex, TransportKind,
     };
     use std::sync::Arc;
 
@@ -1171,5 +1198,192 @@ mod tests {
                 .downcast_ref::<ProtocolError>()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn watermark_helper_preserves_full_state_without_identity_and_stamps_with_one() {
+        let profile = ProfileId::new(1).unwrap();
+        let mut original = dpi(profile, 800);
+        original.preserved_tail = [0xa5; 25];
+
+        // Legacy: no physical id - the whole state, tail included, survives intact.
+        assert_eq!(
+            super::with_physical_watermark(original.clone(), None),
+            original
+        );
+
+        // Persistent: the exact watermark image overlays the tail; nothing else moves.
+        let token = PhysicalId::from_token_bytes([0xab; 16]);
+        let stamped = super::with_physical_watermark(original.clone(), Some(token));
+        assert_eq!(stamped.preserved_tail, token.to_watermark_bytes());
+        assert_eq!(stamped.profile, original.profile);
+        assert_eq!(stamped.stages, original.stages);
+        assert_eq!(stamped.active_stage, original.active_stage);
+        assert_eq!(stamped.sensor, original.sensor);
+    }
+
+    #[tokio::test]
+    async fn legacy_none_dpi_write_preserves_entire_original_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let identity = usb_identity();
+        assert_eq!(identity.physical_id, None);
+        let device = identity.id.clone();
+        let profile = ProfileId::new(1).unwrap();
+        let session = ScriptedFakeSession::usb();
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            session.clone(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        manager.register_device(identity).unwrap();
+
+        let mut desired = dpi(profile, 800);
+        desired.preserved_tail = [0xa5; 25];
+        let outcome = manager
+            .update_dpi(
+                &device,
+                profile,
+                desired.clone(),
+                UpdatePolicy {
+                    verification: VerificationMethod::Readback,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // send: the exact original tail reached the session write untouched.
+        let written = session.writes();
+        let ScriptedWrite::Dpi(written) = written.last().expect("one DPI write") else {
+            panic!("expected DPI write, got {written:?}");
+        };
+        assert_eq!(written, &desired);
+        // compare: USB readback equals the write that went out.
+        assert_eq!(outcome.observed.as_ref(), Some(&desired));
+        // persist: the durable desired image kept the original tail.
+        let resource = &store.load().unwrap().devices[&device].profiles[&profile].dpi;
+        assert_eq!(resource.desired.as_ref().unwrap().value, desired);
+    }
+
+    #[tokio::test]
+    async fn persistent_token_dpi_write_sends_compares_persists_stamped_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let token = PhysicalId::from_token_bytes([0xab; 16]);
+        let mut identity = usb_identity();
+        identity.physical_id = Some(token);
+        let device = identity.id.clone();
+        let profile = ProfileId::new(1).unwrap();
+        let session = {
+            let mut auth = dpi(profile, 800);
+            auth.preserved_tail = token.to_watermark_bytes();
+            ScriptedFakeSession::usb()
+                .with_metadata(ProfileMetadata::new(profile, profile).expect("metadata"))
+                .with_profile(snapshot(profile, auth))
+        };
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            session.clone(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        {
+            let mut txn = store.transaction().unwrap();
+            txn.state_mut().identity_mode = IdentityMode::Persistent;
+            txn.commit().unwrap();
+        }
+        manager.register_device(identity).unwrap();
+
+        // The requested image carries a foreign watermark; it must never reach the wire.
+        let mut requested = dpi(profile, 800);
+        requested.preserved_tail = PhysicalId::from_token_bytes([0xef; 16]).to_watermark_bytes();
+        let stamped = DpiState {
+            preserved_tail: token.to_watermark_bytes(),
+            ..requested.clone()
+        };
+        let outcome = manager
+            .update_dpi(
+                &device,
+                profile,
+                requested,
+                UpdatePolicy {
+                    verification: VerificationMethod::Readback,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // send: the exact stamped image left through the session.
+        let written = session.writes();
+        let ScriptedWrite::Dpi(written) = written.last().expect("one DPI write") else {
+            panic!("expected DPI write, got {written:?}");
+        };
+        assert_eq!(written, &stamped);
+        // compare: USB readback observed exactly the stamped image.
+        assert_eq!(outcome.observed.as_ref(), Some(&stamped));
+        assert_eq!(outcome.desired, stamped);
+        // persist: the durable desired image records the stamped image.
+        let resource = &store.load().unwrap().devices[&device].profiles[&profile].dpi;
+        assert_eq!(resource.desired.as_ref().unwrap().value, stamped);
+    }
+
+    #[tokio::test]
+    async fn persistent_token_ble_ack_acknowledges_stamped_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let token = PhysicalId::from_token_bytes([0xcd; 16]);
+        let mut identity = ble_identity();
+        identity.physical_id = Some(token);
+        let device = identity.id.clone();
+        let profile = ProfileId::new(1).unwrap();
+        let session = ScriptedFakeSession::ble();
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            session.clone(),
+        ));
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+        {
+            let mut txn = store.transaction().unwrap();
+            txn.state_mut().identity_mode = IdentityMode::Persistent;
+            txn.commit().unwrap();
+        }
+        manager.register_device(identity).unwrap();
+
+        let mut requested = dpi(profile, 800);
+        requested.preserved_tail = [0xa5; 25];
+        let stamped = DpiState {
+            preserved_tail: token.to_watermark_bytes(),
+            ..requested.clone()
+        };
+        let outcome = manager
+            .update_dpi(
+                &device,
+                profile,
+                requested,
+                UpdatePolicy {
+                    allow_explicit_defaults: true,
+                    ..UpdatePolicy::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // BLE has no readback; the ACK covers the stamped image, which is what persisted.
+        assert_eq!(
+            outcome.verification.application,
+            crate::ApplicationVerification::Acknowledged
+        );
+        let written = session.writes();
+        let ScriptedWrite::Dpi(written) = written.last().expect("one DPI write") else {
+            panic!("expected DPI write, got {written:?}");
+        };
+        assert_eq!(written, &stamped);
+        assert_eq!(outcome.desired, stamped);
+        let resource = &store.load().unwrap().devices[&device].profiles[&profile].dpi;
+        assert_eq!(resource.desired.as_ref().unwrap().value, stamped);
     }
 }

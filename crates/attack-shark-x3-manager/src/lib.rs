@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
 //! Attack Shark X3 manager: logical `mouse-N` device identities, multi-transport
-//! endpoints, schema 4 durable state with `nextDeviceNumber`, strengthened
-//! evidence invariants, and per-device operation locks separate from `state.lock`.
+//! endpoints, schema 5 durable state with `nextDeviceNumber`, installation-level
+//! physical-identity mode, optional per-device watermark ids, a resumable
+//! identity-setup journal, strengthened evidence invariants, and per-device
+//! operation locks separate from `state.lock`.
 
 #[cfg(any(feature = "usb", feature = "ble"))]
 mod backend;
@@ -26,9 +28,9 @@ pub use attack_shark_x3::{
     BatteryEvent, ButtonActionError, ButtonAssignment, ButtonsState, ConnectionChangedEvent,
     DpiButtonEvent, DpiFraming, DpiIndex, DpiIndexChangedEvent, DpiState, DpiValue,
     HidKeyboardUsage, InputEvent, KeyboardModifiers, LedModeChangedEvent, LiftOffDistance,
-    PollingRate, PreferencesFraming, PreferencesState, ProfileChangedEvent, ProfileControlFraming,
-    ProfileId, ProfileMetadata, ReadbackRequest, SensorOptions, StageIndex, TransportKind,
-    X3ButtonAction,
+    PhysicalId, PollingRate, PreferencesFraming, PreferencesState, ProfileChangedEvent,
+    ProfileControlFraming, ProfileId, ProfileMetadata, ReadbackRequest, SensorOptions, StageIndex,
+    TransportKind, X3ButtonAction,
 };
 pub use device::{DeviceEndpoint, DeviceId, DeviceIdentity, DeviceLocator, TransportSelection};
 pub use error::{ManagerError, StateError};
@@ -43,10 +45,13 @@ pub use offline_debug::{
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use operation::ProfileUpdate;
 pub use operation::{
-    BaselineSource, DeviceEvent, DeviceStatus, DiscoveredDevice, DiscoveredEndpoint,
-    FullProfileRefreshOutcome, LinkOutcome, LinkPrecedence, PowerCycleVerificationOutcome,
-    ProfileResourceKind, ProfileUpdateOutcome, ProfileVerificationOutcome, RefreshedProfile,
-    ResourceSnapshot, UpdatePolicy, VerificationMethod, WriteOutcome,
+    BaselineSource, DeviceEvent, DeviceStatus, DeviceTopologyEvent, DiscoveredConnection,
+    DiscoveredDevice, DiscoveredEndpoint, DiscoveryView, FullProfileRefreshOutcome,
+    IdentityCeremonyAction, IdentityCeremonyKind, IdentityCeremonyProgress, IdentityCeremonyStage,
+    IdentityResolution, LiveProfileSnapshot, PowerCycleVerificationOutcome, ProfileResourceKind,
+    ProfileUpdateBaseline, ProfileUpdateOutcome, ProfileVerificationOutcome, RefreshedProfile,
+    ResolvedConnection, ResourceSnapshot, UnassociatedReason, UpdatePolicy, VerificationMethod,
+    WriteOutcome,
 };
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use resources::buttons::{ButtonSlotDelta, SafeButtonAction, SafeButtonSlot};
@@ -55,10 +60,12 @@ pub use resources::dpi::{DpiDelta, SensorOptionsDelta};
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use resources::settings::PreferencesDelta;
 #[cfg(any(feature = "usb", feature = "ble"))]
-pub use resources::state::{ConfigurationExport, ProfileConfiguration};
+pub use resources::state::{ConfigurationExport, PortableDpi, ProfileConfiguration};
 pub use state::{
-    ApplicationVerification, DesiredSource, DesiredState, DeviceOperationGuard, DeviceState,
-    MAX_PROFILE_NAME_CHARS, ObservationSource, ObservedState, PersistenceVerification,
-    ProfileState, ResourceState, SCHEMA_VERSION, StateFile, StatePaths, StateReset, StateStore,
-    StateTransaction, Timestamp, Verification,
+    ApplicationVerification, CapturedProfileImage, DesiredSource, DesiredState,
+    DeviceOperationGuard, DeviceState, IdentityMode, IdentitySetupJournal, IdentitySetupPhase,
+    IdentitySetupStage, IdentitySetupSubject, IdentityStampProgress, MAX_PROFILE_NAME_CHARS,
+    ObservationSource, ObservedState, PersistenceVerification, ProfileState, ResourceState,
+    SCHEMA_VERSION, StateFile, StatePaths, StateReset, StateStore, StateTransaction, Timestamp,
+    Verification,
 };
