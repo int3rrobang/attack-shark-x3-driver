@@ -14,6 +14,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install Linux system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - name: Install Rust toolchain (1.97.1, rustfmt, clippy, rust-analyzer)
         run: |
           rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy --component rust-analyzer --component rust-src
