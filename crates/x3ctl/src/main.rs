@@ -6,12 +6,14 @@ mod args;
 mod output;
 
 use attack_shark_x3_manager::{
-    BaselineSource, ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport, DeviceId,
-    DeviceManager, DeviceStatus, DpiDelta, DpiState, DpiValue, FullProfileRefreshOutcome,
-    LiftOffDistance, LinkPrecedence, PollingRate, PreferencesDelta, PreferencesFraming,
-    PreferencesState, ProfileId, ProfileResourceKind, ResourceSnapshot, SafeButtonAction,
-    SafeButtonSlot, SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind,
-    TransportSelection, UpdatePolicy, VerificationMethod, X3ButtonAction, encode_debug_buttons,
+    BaselineSource, ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport,
+    DeviceEndpoint, DeviceId, DeviceLocator, DeviceManager, DeviceStatus, DiscoveryView, DpiDelta,
+    DpiState, DpiValue, FullProfileRefreshOutcome, IdentityCeremonyAction, IdentityCeremonyKind,
+    IdentityCeremonyProgress, IdentityCeremonyStage, IdentityResolution, LiftOffDistance,
+    PollingRate, PreferencesDelta, PreferencesFraming, PreferencesState, ProfileId,
+    ProfileResourceKind, ResolvedConnection, ResourceSnapshot, SafeButtonAction, SafeButtonSlot,
+    SensorOptions, SensorOptionsDelta, StageIndex, StateStore, TransportKind, TransportSelection,
+    UnassociatedReason, UpdatePolicy, VerificationMethod, X3ButtonAction, encode_debug_buttons,
     encode_debug_dpi, encode_debug_prefs,
 };
 use clap::Parser;
@@ -22,9 +24,9 @@ use std::process::ExitCode;
 
 use args::{
     ActionArg, BaselineArg, BindCommand, BindSetArgs, Cli, Command, DebugCommand, DebugDpiArgs,
-    DebugPrefsArgs, DpiCommand, DpiSetArgs, KeepArg, LodArg, PrefsCommand, PrefsSetArgs,
-    ProfileCommand, ProfileSetArgs, RateCommand, RateSetArgs, SlotArg, StateCommand, TransportArg,
-    ValidationArg, VerifyMethodArg,
+    DebugPrefsArgs, DpiCommand, DpiSetArgs, IdentityCommand, IdentityKindArg, LodArg, PrefsCommand,
+    PrefsSetArgs, ProfileCommand, ProfileSetArgs, RateCommand, RateSetArgs, SlotArg, StateCommand,
+    TransportArg, ValidationArg, VerifyMethodArg,
 };
 use output::Output;
 
@@ -40,15 +42,6 @@ enum Action {
     Use {
         device: String,
     },
-    Link {
-        source: String,
-        target: String,
-        keep: Option<LinkPrecedence>,
-    },
-    Rebind {
-        device: String,
-        transport: TransportKind,
-    },
     Forget {
         device: String,
         force: bool,
@@ -57,6 +50,23 @@ enum Action {
         device: String,
         name: String,
     },
+    IdentityStatus,
+    IdentityBegin {
+        kind: IdentityCeremonyKind,
+    },
+    IdentityRestore {
+        device: String,
+    },
+    IdentityAdopt,
+    IdentityAssociate {
+        device: String,
+    },
+    IdentityReconnect,
+    IdentityStamp,
+    IdentityContinue,
+    IdentityAcceptMigration,
+    IdentitySkipMigration,
+    IdentityCancel,
     Status,
     ProfileGet {
         profile: ProfileId,
@@ -173,31 +183,28 @@ fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
         Command::Use { device } => Ok(Action::Use {
             device: device.clone(),
         }),
-        Command::Link {
-            source,
-            target,
-            keep,
-        } => Ok(Action::Link {
-            source: source.clone(),
-            target: target.clone(),
-            keep: keep.map(|keep| match keep {
-                KeepArg::Target => LinkPrecedence::KeepTarget,
-                KeepArg::Source => LinkPrecedence::KeepSource,
-                KeepArg::Merge => LinkPrecedence::Merge,
+        Command::Identity(command) => match command {
+            IdentityCommand::Status => Ok(Action::IdentityStatus),
+            IdentityCommand::Begin { kind } => Ok(Action::IdentityBegin {
+                kind: match kind {
+                    IdentityKindArg::InitialEnrollment => IdentityCeremonyKind::InitialEnrollment,
+                    IdentityKindArg::AddMouse => IdentityCeremonyKind::AddMouse,
+                },
             }),
-        }),
-        Command::Rebind { device } => Ok(Action::Rebind {
-            device: device.clone(),
-            transport: match cli.transport {
-                TransportArg::Auto => {
-                    return Err("rebind needs an explicit --transport wired|receiver".to_owned());
-                }
-                TransportArg::Wired => TransportKind::Wired,
-                TransportArg::Receiver => TransportKind::Receiver,
-                #[cfg(feature = "ble")]
-                TransportArg::Ble => TransportKind::Ble,
-            },
-        }),
+            IdentityCommand::Restore { device } => Ok(Action::IdentityRestore {
+                device: device.clone(),
+            }),
+            IdentityCommand::Adopt => Ok(Action::IdentityAdopt),
+            IdentityCommand::Associate { device } => Ok(Action::IdentityAssociate {
+                device: device.clone(),
+            }),
+            IdentityCommand::Reconnect => Ok(Action::IdentityReconnect),
+            IdentityCommand::Stamp => Ok(Action::IdentityStamp),
+            IdentityCommand::Continue => Ok(Action::IdentityContinue),
+            IdentityCommand::AcceptMigration => Ok(Action::IdentityAcceptMigration),
+            IdentityCommand::SkipMigration => Ok(Action::IdentitySkipMigration),
+            IdentityCommand::Cancel => Ok(Action::IdentityCancel),
+        },
         Command::Forget { device, force } => Ok(Action::Forget {
             device: device.clone(),
             force: *force,
@@ -453,44 +460,233 @@ async fn dispatch(
                 .map_err(|error| error.to_string())?;
             output.print(format!("Selected device {resolved}"), &resolved)
         }
-        Action::Rebind { device, transport } => {
-            let device = resolve_device_arg(manager, &device)?;
-            manager
-                .rebind_missing_endpoint(&device, transport)
+        Action::IdentityStatus => {
+            let progress = manager
+                .identity_ceremony_progress()
+                .map_err(|error| error.to_string())?;
+            match progress {
+                Some(progress) => output.print(format_progress_human(&progress), &progress),
+                None => output.print(
+                    "No identity ceremony in progress.".to_owned(),
+                    &Option::<IdentityCeremonyProgress>::None,
+                ),
+            }
+        }
+        Action::IdentityBegin { kind } => {
+            let progress = manager
+                .begin_identity_ceremony(kind, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            output.print(format_progress_human(&progress), &progress)
+        }
+        Action::IdentityRestore { device } => {
+            let target = resolve_device_arg(manager, &device)?;
+            let progress = manager
+                .begin_identity_ceremony(IdentityCeremonyKind::Restore, Some(target))
+                .await
+                .map_err(|error| error.to_string())?;
+            output.print(format_progress_human(&progress), &progress)
+        }
+        Action::IdentityAdopt => {
+            let current = manager
+                .identity_ceremony_progress()
+                .map_err(|error| error.to_string())?;
+            let progress = match current {
+                None => manager
+                    .begin_identity_ceremony(IdentityCeremonyKind::ForeignAdoption, None)
+                    .await
+                    .map_err(|error| error.to_string())?,
+                Some(progress)
+                    if progress.kind == IdentityCeremonyKind::ForeignAdoption
+                        && matches!(&progress.stage, IdentityCeremonyStage::Stamping) =>
+                {
+                    manager
+                        .identity_ceremony_action(IdentityCeremonyAction::Adopt, None, None)
+                        .await
+                        .map_err(|error| error.to_string())?
+                }
+                Some(progress) => {
+                    return Err(format!(
+                        "another identity ceremony is in progress ({}); finish or cancel it first",
+                        identity_kind_human(progress.kind)
+                    ));
+                }
+            };
+            output.print(format_progress_human(&progress), &progress)
+        }
+        Action::IdentityAssociate { device } => {
+            let target = resolve_device_arg(manager, &device)?;
+            let current = manager
+                .identity_ceremony_progress()
+                .map_err(|error| error.to_string())?;
+            match current {
+                Some(progress) if progress.kind != IdentityCeremonyKind::BleAssociation => {
+                    return Err(format!(
+                        "another identity ceremony is in progress ({}); finish or cancel it first",
+                        identity_kind_human(progress.kind)
+                    ));
+                }
+                None => {
+                    manager
+                        .begin_identity_ceremony(
+                            IdentityCeremonyKind::BleAssociation,
+                            Some(target.clone()),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(_) => {}
+            }
+            let view = manager
+                .discover(TransportSelection::Exact(TransportKind::Ble))
+                .await
+                .map_err(|error| error.to_string())?;
+            let endpoint = pick_ble_endpoint(&view)?;
+            let progress = manager
+                .identity_ceremony_action(
+                    IdentityCeremonyAction::Associate,
+                    Some(endpoint),
+                    Some(target),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            output.print(format_progress_human(&progress), &progress)
+        }
+        Action::IdentityReconnect => {
+            let progress = manager
+                .identity_ceremony_progress()
+                .map_err(|error| error.to_string())?;
+            let Some(progress) = progress else {
+                return Err("no identity ceremony in progress; begin one first".to_owned());
+            };
+            if progress.kind == IdentityCeremonyKind::BleAssociation {
+                return Err(
+                    "Bluetooth association uses `x3ctl identity associate <mouse>`".to_owned(),
+                );
+            }
+            let target = resolve_ceremony_target(manager, cli)?;
+            let view = manager
+                .discover(selection)
+                .await
+                .map_err(|error| error.to_string())?;
+            let endpoint = pick_ceremony_endpoint(&view, progress.kind)?;
+            let progress = manager
+                .identity_ceremony_action(
+                    IdentityCeremonyAction::Reconnected,
+                    Some(endpoint),
+                    target,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            output.print(format_progress_human(&progress), &progress)
+        }
+        Action::IdentityStamp => {
+            let progress = manager
+                .identity_ceremony_action(IdentityCeremonyAction::Stamp, None, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            output.print(format_progress_human(&progress), &progress)
+        }
+        Action::IdentityContinue => {
+            let progress = manager
+                .identity_ceremony_progress()
+                .map_err(|error| error.to_string())?;
+            let Some(progress) = progress else {
+                return Err("no identity ceremony in progress; begin one first".to_owned());
+            };
+            match &progress.stage {
+                IdentityCeremonyStage::AwaitingReconnect => {
+                    if progress.kind == IdentityCeremonyKind::BleAssociation {
+                        let target = match cli.device.as_deref() {
+                            Some(raw) => resolve_device_arg(manager, raw)?,
+                            None => {
+                                return Err(
+                                    "Bluetooth association needs the saved mouse: `x3ctl identity continue --device <mouse>`".to_owned(),
+                                );
+                            }
+                        };
+                        let view = manager
+                            .discover(TransportSelection::Exact(TransportKind::Ble))
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        let endpoint = pick_ble_endpoint(&view)?;
+                        let progress = manager
+                            .identity_ceremony_action(
+                                IdentityCeremonyAction::Associate,
+                                Some(endpoint),
+                                Some(target),
+                            )
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        output.print(format_progress_human(&progress), &progress)
+                    } else {
+                        let target = resolve_ceremony_target(manager, cli)?;
+                        let view = manager
+                            .discover(selection)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        let endpoint = pick_ceremony_endpoint(&view, progress.kind)?;
+                        let progress = manager
+                            .identity_ceremony_action(
+                                IdentityCeremonyAction::Reconnected,
+                                Some(endpoint),
+                                target,
+                            )
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        output.print(format_progress_human(&progress), &progress)
+                    }
+                }
+                IdentityCeremonyStage::Stamping => {
+                    let action = if progress.kind == IdentityCeremonyKind::ForeignAdoption {
+                        IdentityCeremonyAction::Adopt
+                    } else {
+                        IdentityCeremonyAction::Stamp
+                    };
+                    let progress = manager
+                        .identity_ceremony_action(action, None, None)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    output.print(format_progress_human(&progress), &progress)
+                }
+                _ => Err(
+                    "cannot continue from this stage; run `x3ctl identity status` to inspect"
+                        .to_owned(),
+                ),
+            }
+        }
+        Action::IdentityAcceptMigration => {
+            let progress = manager
+                .identity_ceremony_action(IdentityCeremonyAction::AcceptMigration, None, None)
                 .await
                 .map_err(|error| error.to_string())?;
             output.print(
                 format!(
-                    "Rebound {device} to the connected {} device",
-                    format_transport(transport)
+                    "Will keep the old single-mouse name and settings when they match.\n{}",
+                    format_progress_human(&progress)
                 ),
-                &device,
+                &progress,
             )
         }
-        Action::Link {
-            source,
-            target,
-            keep,
-        } => {
-            let source = resolve_device_arg(manager, &source)?;
-            let target = resolve_device_arg(manager, &target)?;
-            let outcome = manager
-                .link_devices(&source, &target, keep.unwrap_or(LinkPrecedence::Refuse))
+        Action::IdentitySkipMigration => {
+            let progress = manager
+                .identity_ceremony_action(IdentityCeremonyAction::SkipMigration, None, None)
+                .await
                 .map_err(|error| error.to_string())?;
-            let moved = outcome
-                .moved_transports
-                .iter()
-                .map(|transport| format_transport(*transport))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let mut human = format!(
-                "Linked {source} into {}; moved {moved}; {source} removed",
-                outcome.target
-            );
-            if outcome.discarded_evidence {
-                human.push_str("; the discarded side's saved configuration was removed");
-            }
-            output.print(human, &outcome)
+            output.print(
+                format!(
+                    "Will use fresh names and default settings.\n{}",
+                    format_progress_human(&progress)
+                ),
+                &progress,
+            )
+        }
+        Action::IdentityCancel => {
+            let progress = manager
+                .identity_ceremony_action(IdentityCeremonyAction::Cancel, None, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            output.print("Identity ceremony cancelled.".to_owned(), &progress)
         }
         Action::Forget { device, force } => {
             let device = resolve_device_arg(manager, &device)?;
@@ -815,6 +1011,14 @@ fn resolve_state_device(manager: &DeviceManager, cli: &Cli) -> Result<DeviceId, 
         .selected_device()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "no device selected; use `use <device>` first".to_owned())
+}
+
+/// The ceremony target from the global `--device` flag, when given.
+fn resolve_ceremony_target(manager: &DeviceManager, cli: &Cli) -> Result<Option<DeviceId>, String> {
+    match cli.device.as_deref() {
+        Some(raw) => Ok(Some(resolve_device_arg(manager, raw)?)),
+        None => Ok(None),
+    }
 }
 
 fn run_debug(cli: &Cli, command: &DebugCommand, output: &Output) -> Result<(), String> {
@@ -1377,6 +1581,240 @@ fn format_status_human(status: &DeviceStatus) -> String {
     text
 }
 
+fn format_endpoint_human(endpoint: &DeviceEndpoint) -> String {
+    match &endpoint.locator {
+        DeviceLocator::UsbPath(path) => {
+            let mut text = format!("{} {}", format_transport(endpoint.transport), path);
+            if let (Some(vendor), Some(product)) = (endpoint.vendor_id, endpoint.product_id) {
+                let _ = write!(text, " ({vendor:04x}:{product:04x})");
+            }
+            text
+        }
+        DeviceLocator::BlePlatformId(id) => {
+            let mut text = format!("ble {id}");
+            if let Some(name) = &endpoint.display_name {
+                let _ = write!(text, " ({name})");
+            }
+            text
+        }
+    }
+}
+
+fn identity_kind_human(kind: IdentityCeremonyKind) -> &'static str {
+    match kind {
+        IdentityCeremonyKind::InitialEnrollment => "first-time setup (add another mouse)",
+        IdentityCeremonyKind::AddMouse => "add another mouse",
+        IdentityCeremonyKind::Restore => "restore a saved mouse",
+        IdentityCeremonyKind::ForeignAdoption => "adopt a mouse from another installation",
+        IdentityCeremonyKind::BleAssociation => "associate a Bluetooth mouse",
+    }
+}
+
+fn identity_stage_human(
+    kind: IdentityCeremonyKind,
+    stage: &IdentityCeremonyStage,
+    step: Option<u8>,
+) -> String {
+    match stage {
+        IdentityCeremonyStage::Ready => "Ready.".to_owned(),
+        IdentityCeremonyStage::AwaitingReconnect => match kind {
+            IdentityCeremonyKind::Restore => {
+                "Reconnect the physical mouse you're assigning to this saved mouse.".to_owned()
+            }
+            IdentityCeremonyKind::InitialEnrollment if step == Some(2) => {
+                "Now reconnect your other mouse.".to_owned()
+            }
+            IdentityCeremonyKind::BleAssociation => "Bluetooth association is ready.".to_owned(),
+            _ => "Reconnect the mouse you're adding.".to_owned(),
+        },
+        IdentityCeremonyStage::Capturing => "Reading the mouse and capturing its state.".to_owned(),
+        IdentityCeremonyStage::Stamping => "State captured.".to_owned(),
+        IdentityCeremonyStage::Verified => {
+            "The physical identity is confirmed on the mouse.".to_owned()
+        }
+        IdentityCeremonyStage::Complete => "Setup complete.".to_owned(),
+        IdentityCeremonyStage::Cancelled => "Cancelled.".to_owned(),
+        IdentityCeremonyStage::Failed { error } => format!("Failed: {error}"),
+    }
+}
+
+fn identity_next_human(
+    kind: IdentityCeremonyKind,
+    stage: &IdentityCeremonyStage,
+    step: Option<u8>,
+) -> String {
+    match stage {
+        IdentityCeremonyStage::Ready => "nothing; the ceremony is ready".to_owned(),
+        IdentityCeremonyStage::AwaitingReconnect
+            if kind == IdentityCeremonyKind::BleAssociation =>
+        {
+            "run `x3ctl identity associate <mouse>` to associate the Bluetooth mouse".to_owned()
+        }
+        IdentityCeremonyStage::AwaitingReconnect => {
+            "run `x3ctl identity reconnect` once it's connected".to_owned()
+        }
+        IdentityCeremonyStage::Capturing => "wait for the capture to finish".to_owned(),
+        IdentityCeremonyStage::Stamping
+            if kind == IdentityCeremonyKind::InitialEnrollment && step == Some(2) =>
+        {
+            "decide migration (`x3ctl identity accept-migration` or `x3ctl identity skip-migration`), then run `x3ctl identity stamp`".to_owned()
+        }
+        IdentityCeremonyStage::Stamping if kind == IdentityCeremonyKind::ForeignAdoption => {
+            "run `x3ctl identity adopt` to confirm".to_owned()
+        }
+        IdentityCeremonyStage::Stamping => {
+            "run `x3ctl identity stamp` to write the physical identity".to_owned()
+        }
+        IdentityCeremonyStage::Verified => "nothing; the identity is confirmed".to_owned(),
+        IdentityCeremonyStage::Complete => "nothing; the setup is complete".to_owned(),
+        IdentityCeremonyStage::Cancelled => "nothing; the ceremony was cancelled".to_owned(),
+        IdentityCeremonyStage::Failed { .. } => {
+            "fix the reported problem and retry, or cancel".to_owned()
+        }
+    }
+}
+
+fn format_progress_human(progress: &IdentityCeremonyProgress) -> String {
+    let mut text = format!("identity: {}", identity_kind_human(progress.kind));
+    if let (Some(step), Some(total)) = (progress.step, progress.total_steps) {
+        let _ = write!(text, "\nstep: {step} of {total}");
+    }
+    if let Some(identity) = &progress.identity {
+        let _ = write!(text, "\nidentity: {identity}");
+    }
+    if let Some(physical_id) = progress.physical_id {
+        let _ = write!(
+            text,
+            "\nphysical id: {}",
+            Output::hex(&physical_id.token_bytes())
+        );
+    }
+    if let Some(endpoint) = &progress.endpoint {
+        let _ = write!(text, "\nendpoint: {}", format_endpoint_human(endpoint));
+    }
+    let _ = write!(
+        text,
+        "\nstatus: {}",
+        identity_stage_human(progress.kind, &progress.stage, progress.step)
+    );
+    let _ = write!(
+        text,
+        "\nnext: {}",
+        identity_next_human(progress.kind, &progress.stage, progress.step)
+    );
+    text
+}
+
+/// Picks the endpoint of the mouse the user just reconnected for a physical
+/// ceremony.
+///
+/// Discovery resolves every connection; the presented mouse is the
+/// unassociated/eligible one. Foreign adoption needs the connection carrying
+/// an unknown valid token; every other ceremony wants an unrecognized USB
+/// mouse. Legacy-mode enrollment falls back to a single connection, because
+/// legacy discovery resolves everything to the fuzzy mouse.
+fn pick_ceremony_endpoint(
+    view: &DiscoveryView,
+    kind: IdentityCeremonyKind,
+) -> Result<DeviceEndpoint, String> {
+    let connected_usb: Vec<&ResolvedConnection> = view
+        .connections
+        .iter()
+        .filter(|connection| {
+            connection.connected
+                && matches!(
+                    connection.endpoint.transport,
+                    TransportKind::Wired | TransportKind::Receiver
+                )
+        })
+        .collect();
+    if connected_usb.is_empty() {
+        return Err("no connected USB mouse found; reconnect the mouse you're adding".to_owned());
+    }
+
+    if kind == IdentityCeremonyKind::ForeignAdoption {
+        let unknown: Vec<&ResolvedConnection> = connected_usb
+            .iter()
+            .copied()
+            .filter(|connection| {
+                matches!(
+                    connection.resolution,
+                    IdentityResolution::Unassociated {
+                        reason: UnassociatedReason::Unknown,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        return match unknown.len() {
+            1 => Ok(unknown[0].endpoint.clone()),
+            0 => Err(
+                "no mouse carrying a valid identity from another installation is connected"
+                    .to_owned(),
+            ),
+            _ => Err(ambiguous_endpoint_error(&unknown)),
+        };
+    }
+
+    let unassociated: Vec<&ResolvedConnection> = connected_usb
+        .iter()
+        .copied()
+        .filter(|connection| {
+            matches!(
+                connection.resolution,
+                IdentityResolution::Unassociated { .. }
+            )
+        })
+        .collect();
+    match unassociated.len() {
+        1 => Ok(unassociated[0].endpoint.clone()),
+        0 => {
+            if connected_usb.len() == 1 {
+                Ok(connected_usb[0].endpoint.clone())
+            } else {
+                Err(ambiguous_endpoint_error(&connected_usb))
+            }
+        }
+        _ => Err(ambiguous_endpoint_error(&unassociated)),
+    }
+}
+
+/// Picks the connected Bluetooth endpoint for a BLE association.
+fn pick_ble_endpoint(view: &DiscoveryView) -> Result<DeviceEndpoint, String> {
+    let connected_ble: Vec<&ResolvedConnection> = view
+        .connections
+        .iter()
+        .filter(|connection| {
+            connection.connected && connection.endpoint.transport == TransportKind::Ble
+        })
+        .collect();
+    match connected_ble.len() {
+        0 => Err("no connected Bluetooth mouse found; connect it and retry".to_owned()),
+        1 => Ok(connected_ble[0].endpoint.clone()),
+        _ => {
+            let list = connected_ble
+                .iter()
+                .map(|connection| format_endpoint_human(&connection.endpoint))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "more than one Bluetooth mouse is connected ({list}); disconnect the others and retry"
+            ))
+        }
+    }
+}
+
+fn ambiguous_endpoint_error(candidates: &[&ResolvedConnection]) -> String {
+    let list = candidates
+        .iter()
+        .map(|connection| format_endpoint_human(&connection.endpoint))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "more than one eligible mouse is connected ({list}); disconnect the others so only the mouse being added stays connected"
+    )
+}
+
 fn action_name(action: &Action) -> &'static str {
     match action {
         Action::Devices => "list devices",
@@ -1399,8 +1837,17 @@ fn action_name(action: &Action) -> &'static str {
             VerificationAction::ProfileReload => "verify profile reload",
             VerificationAction::PowerCycle => "verify power cycle",
         },
-        Action::Link { .. } => "link devices",
-        Action::Rebind { .. } => "rebind device endpoint",
+        Action::IdentityStatus => "read identity ceremony progress",
+        Action::IdentityBegin { .. } => "begin identity ceremony",
+        Action::IdentityRestore { .. } => "begin identity restore ceremony",
+        Action::IdentityAdopt => "adopt a mouse from another installation",
+        Action::IdentityAssociate { .. } => "associate a Bluetooth mouse",
+        Action::IdentityReconnect => "continue identity ceremony with the reconnected mouse",
+        Action::IdentityStamp => "write the physical identity",
+        Action::IdentityContinue => "continue identity ceremony",
+        Action::IdentityAcceptMigration => "keep the old single-mouse name and settings",
+        Action::IdentitySkipMigration => "use fresh names and default settings",
+        Action::IdentityCancel => "cancel identity ceremony",
         Action::Forget { .. } => "forget device",
         Action::Rename { .. } => "rename device",
         Action::Export => "export configuration",
@@ -1415,94 +1862,272 @@ fn action_name(action: &Action) -> &'static str {
 mod tests {
     use super::*;
     use args::BindCommand;
-    use attack_shark_x3_manager::{ObservationSource, ObservedState, ResourceState, Timestamp};
+    use attack_shark_x3_manager::{
+        IdentityMode, ObservationSource, ObservedState, ResourceState, Timestamp,
+    };
     #[test]
-    fn build_rebind_action_maps_device_and_rejects_auto_transport() {
-        let cli =
-            args::Cli::try_parse_from(["x3ctl", "--transport", "receiver", "rebind", "mouse-2"])
-                .expect("parse");
-        let command = cli.command.as_ref().unwrap();
-        assert!(matches!(command, Command::Rebind { .. }));
-        let action = build_action(&cli, command).expect("build");
-        match action {
-            Action::Rebind { device, transport } => {
-                assert_eq!(device.as_str(), "mouse-2");
-                assert_eq!(transport, TransportKind::Receiver);
+    fn build_identity_begin_action_maps_kinds() {
+        for (flag, expected) in [
+            (
+                "initial-enrollment",
+                IdentityCeremonyKind::InitialEnrollment,
+            ),
+            ("add-mouse", IdentityCeremonyKind::AddMouse),
+        ] {
+            let cli = args::Cli::try_parse_from(["x3ctl", "identity", "begin", "--kind", flag])
+                .unwrap_or_else(|error| panic!("{flag}: {error}"));
+            let command = cli.command.as_ref().unwrap();
+            assert!(matches!(
+                command,
+                Command::Identity(IdentityCommand::Begin { .. })
+            ));
+            let action = build_action(&cli, command).expect("build");
+            match action {
+                Action::IdentityBegin { kind } => assert_eq!(kind, expected, "{flag}"),
+                other => panic!("expected IdentityBegin, got {other:?}"),
             }
-            other => panic!("expected Rebind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_identity_restore_associate_adopt_carry_targets() {
+        let cli =
+            args::Cli::try_parse_from(["x3ctl", "identity", "restore", "mouse-2"]).expect("parse");
+        match build_action(&cli, cli.command.as_ref().unwrap()).expect("build") {
+            Action::IdentityRestore { device } => assert_eq!(device, "mouse-2"),
+            other => panic!("expected IdentityRestore, got {other:?}"),
         }
 
-        let auto = args::Cli::try_parse_from(["x3ctl", "rebind", "mouse-2"]).expect("parse");
-        let error = build_action(&auto, auto.command.as_ref().unwrap()).unwrap_err();
-        assert!(error.contains("--transport"), "got: {error}");
+        let cli = args::Cli::try_parse_from(["x3ctl", "identity", "associate", "mouse-2"])
+            .expect("parse");
+        match build_action(&cli, cli.command.as_ref().unwrap()).expect("build") {
+            Action::IdentityAssociate { device } => assert_eq!(device, "mouse-2"),
+            other => panic!("expected IdentityAssociate, got {other:?}"),
+        }
+
+        let cli = args::Cli::try_parse_from(["x3ctl", "identity", "adopt"]).expect("parse");
+        assert!(matches!(
+            build_action(&cli, cli.command.as_ref().unwrap()).expect("build"),
+            Action::IdentityAdopt
+        ));
     }
+
     #[test]
-    fn build_link_action_maps_ids_and_keep_flag() {
-        let cli =
+    fn build_identity_step_actions_parse_and_map() {
+        for argv in [
+            &["x3ctl", "identity", "status"][..],
+            &["x3ctl", "identity", "reconnect"],
+            &["x3ctl", "identity", "stamp"],
+            &["x3ctl", "identity", "continue"],
+            &["x3ctl", "identity", "accept-migration"],
+            &["x3ctl", "identity", "skip-migration"],
+            &["x3ctl", "identity", "cancel"],
+        ] {
+            let cli =
+                args::Cli::try_parse_from(argv).unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+            assert!(
+                matches!(cli.command, Some(Command::Identity(_))),
+                "{argv:?}"
+            );
+            assert!(
+                build_action(&cli, cli.command.as_ref().unwrap()).is_ok(),
+                "{argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn link_and_rebind_commands_are_removed() {
+        assert!(args::Cli::try_parse_from(["x3ctl", "link", "mouse-1", "mouse-2"]).is_err());
+        assert!(
             args::Cli::try_parse_from(["x3ctl", "link", "mouse-1", "mouse-2", "--keep", "source"])
-                .expect("parse");
-        let command = cli.command.as_ref().unwrap();
-        assert!(matches!(command, Command::Link { .. }));
-        let action = build_action(&cli, command).expect("build");
-        match action {
-            Action::Link {
-                source,
-                target,
-                keep,
-            } => {
-                assert_eq!(source.as_str(), "mouse-1");
-                assert_eq!(target.as_str(), "mouse-2");
-                assert_eq!(keep, Some(LinkPrecedence::KeepSource));
-            }
-            other => panic!("expected Link, got {other:?}"),
-        }
+                .is_err()
+        );
+        assert!(args::Cli::try_parse_from(["x3ctl", "rebind", "mouse-2"]).is_err());
     }
 
     #[test]
-    fn build_link_action_maps_merge_precedence() {
-        let cli =
-            args::Cli::try_parse_from(["x3ctl", "link", "mouse-1", "mouse-2", "--keep", "merge"])
-                .expect("parse");
-        let action = build_action(&cli, cli.command.as_ref().unwrap()).expect("build");
-        match action {
-            Action::Link { keep, .. } => assert_eq!(keep, Some(LinkPrecedence::Merge)),
-            other => panic!("expected Link, got {other:?}"),
+    fn pick_ceremony_endpoint_selects_the_unassociated_mouse() {
+        fn endpoint(transport: TransportKind) -> DeviceEndpoint {
+            DeviceEndpoint::usb(transport, 0x1d57, 0xfa61, None, "HID#x", None).unwrap()
         }
+        fn resolved(
+            endpoint: DeviceEndpoint,
+            resolution: IdentityResolution,
+        ) -> ResolvedConnection {
+            ResolvedConnection {
+                endpoint,
+                connected: true,
+                resolution,
+            }
+        }
+        fn view(connections: Vec<ResolvedConnection>) -> DiscoveryView {
+            DiscoveryView {
+                mode: IdentityMode::Legacy,
+                devices: Vec::new(),
+                connections,
+            }
+        }
+        let unmarked = |transport| {
+            resolved(
+                endpoint(transport),
+                IdentityResolution::Unassociated {
+                    reason: UnassociatedReason::Absent,
+                    physical_id: None,
+                },
+            )
+        };
+        let known = |transport| {
+            resolved(
+                endpoint(transport),
+                IdentityResolution::Resolved {
+                    identity: DeviceId::new("mouse-1").unwrap(),
+                },
+            )
+        };
+        let unknown_token = |transport| {
+            resolved(
+                endpoint(transport),
+                IdentityResolution::Unassociated {
+                    reason: UnassociatedReason::Unknown,
+                    physical_id: None,
+                },
+            )
+        };
+
+        // A single unassociated USB mouse is the presented one.
+        let picked = pick_ceremony_endpoint(
+            &view(vec![unmarked(TransportKind::Wired)]),
+            IdentityCeremonyKind::AddMouse,
+        )
+        .expect("pick");
+        assert_eq!(picked.transport, TransportKind::Wired);
+
+        // Legacy-mode enrollment: everything resolves to the fuzzy mouse, so a
+        // single connection still counts as the presented mouse.
+        let picked = pick_ceremony_endpoint(
+            &view(vec![known(TransportKind::Receiver)]),
+            IdentityCeremonyKind::InitialEnrollment,
+        )
+        .expect("pick");
+        assert_eq!(picked.transport, TransportKind::Receiver);
+
+        // Foreign adoption only accepts the connection with an unknown token.
+        let picked = pick_ceremony_endpoint(
+            &view(vec![
+                unmarked(TransportKind::Wired),
+                unknown_token(TransportKind::Receiver),
+            ]),
+            IdentityCeremonyKind::ForeignAdoption,
+        )
+        .expect("pick");
+        assert_eq!(picked.transport, TransportKind::Receiver);
+
+        // Disconnected mice never qualify.
+        let mut disconnected = unmarked(TransportKind::Wired);
+        disconnected.connected = false;
+        let error =
+            pick_ceremony_endpoint(&view(vec![disconnected]), IdentityCeremonyKind::AddMouse)
+                .expect_err("no connected mouse");
+        assert!(error.contains("no connected USB mouse"), "{error}");
+
+        // BLE endpoints never qualify for a physical ceremony.
+        let ble = ResolvedConnection {
+            endpoint: DeviceEndpoint::ble("platform-1", None).unwrap(),
+            connected: true,
+            resolution: IdentityResolution::Unassociated {
+                reason: UnassociatedReason::Unknown,
+                physical_id: None,
+            },
+        };
+        let error = pick_ceremony_endpoint(&view(vec![ble]), IdentityCeremonyKind::ForeignAdoption)
+            .expect_err("no USB");
+        assert!(error.contains("no connected USB mouse"), "{error}");
+
+        // Ambiguity is refused rather than guessed.
+        let error = pick_ceremony_endpoint(
+            &view(vec![
+                unmarked(TransportKind::Wired),
+                unmarked(TransportKind::Receiver),
+            ]),
+            IdentityCeremonyKind::AddMouse,
+        )
+        .expect_err("ambiguous");
+        assert!(error.contains("more than one eligible mouse"), "{error}");
+
+        // Foreign adoption refuses when no unknown-token mouse is present.
+        let error = pick_ceremony_endpoint(
+            &view(vec![unmarked(TransportKind::Wired)]),
+            IdentityCeremonyKind::ForeignAdoption,
+        )
+        .expect_err("no adoptable mouse");
+        assert!(error.contains("another installation"), "{error}");
     }
 
     #[test]
-    fn build_forget_and_rename_actions_carry_raw_args() {
-        let cli =
-            args::Cli::try_parse_from(["x3ctl", "forget", "mouse-3", "--force"]).expect("parse");
-        match build_action(&cli, cli.command.as_ref().unwrap()).expect("build") {
-            Action::Forget { device, force } => {
-                assert_eq!(device, "mouse-3");
-                assert!(force);
-            }
-            other => panic!("expected Forget, got {other:?}"),
-        }
+    fn pick_ble_endpoint_selects_the_connected_bluetooth_mouse() {
+        let ble = |connected| ResolvedConnection {
+            endpoint: DeviceEndpoint::ble("platform-1", Some("White mouse")).unwrap(),
+            connected,
+            resolution: IdentityResolution::Unassociated {
+                reason: UnassociatedReason::Absent,
+                physical_id: None,
+            },
+        };
+        let view = DiscoveryView {
+            mode: IdentityMode::Persistent,
+            devices: Vec::new(),
+            connections: vec![ble(true)],
+        };
+        let picked = pick_ble_endpoint(&view).expect("pick");
+        assert_eq!(picked.transport, TransportKind::Ble);
 
-        let cli =
-            args::Cli::try_parse_from(["x3ctl", "rename", "mouse-2", "desk mouse"]).expect("parse");
-        match build_action(&cli, cli.command.as_ref().unwrap()).expect("build") {
-            Action::Rename { device, name } => {
-                assert_eq!(device, "mouse-2");
-                assert_eq!(name, "desk mouse");
-            }
-            other => panic!("expected Rename, got {other:?}"),
-        }
+        let error = pick_ble_endpoint(&DiscoveryView {
+            mode: IdentityMode::Persistent,
+            devices: Vec::new(),
+            connections: vec![ble(false)],
+        })
+        .expect_err("no connected BLE");
+        assert!(error.contains("no connected Bluetooth mouse"), "{error}");
     }
 
     #[test]
-    fn build_link_action_defaults_to_refuse_precedence() {
-        let cli =
-            args::Cli::try_parse_from(["x3ctl", "link", "mouse-1", "mouse-2"]).expect("parse");
-        let command = cli.command.as_ref().unwrap();
-        let action = build_action(&cli, command).expect("build");
-        match action {
-            Action::Link { keep, .. } => assert_eq!(keep, None),
-            other => panic!("expected Link, got {other:?}"),
-        }
+    fn endpoint_human_reads_cleanly() {
+        let wired = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            None,
+            r"\\.\HID#VID_1D57&PID_FA61#8&1e2f3c4d",
+            None,
+        )
+        .unwrap();
+        let text = format_endpoint_human(&wired);
+        assert!(text.contains("wired"), "{text}");
+        assert!(text.contains("1d57:fa61"), "{text}");
+
+        let ble = DeviceEndpoint::ble("7C:2A:31:0B:11:55", Some("White mouse")).unwrap();
+        let text = format_endpoint_human(&ble);
+        assert!(text.contains("ble"), "{text}");
+        assert!(text.contains("White mouse"), "{text}");
+    }
+
+    #[test]
+    fn progress_human_lists_steps_and_next_action() {
+        let progress = IdentityCeremonyProgress {
+            kind: IdentityCeremonyKind::InitialEnrollment,
+            stage: IdentityCeremonyStage::AwaitingReconnect,
+            step: Some(2),
+            total_steps: Some(2),
+            identity: None,
+            physical_id: None,
+            endpoint: None,
+        };
+        let text = format_progress_human(&progress);
+        assert!(text.contains("first-time setup"), "{text}");
+        assert!(text.contains("step: 2 of 2"), "{text}");
+        assert!(text.contains("Now reconnect your other mouse."), "{text}");
+        assert!(text.contains("identity reconnect"), "{text}");
     }
 
     #[test]

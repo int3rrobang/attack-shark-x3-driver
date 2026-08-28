@@ -126,17 +126,6 @@ pub enum TransportArg {
     Ble,
 }
 
-/// Which side keeps its saved configuration when both linked identities carry evidence.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
-pub enum KeepArg {
-    /// Keep the target's saved configuration; discard the source's.
-    Target,
-    /// Move the source's saved configuration onto the target.
-    Source,
-    /// Fill the target's missing values from the source; the target wins conflicts.
-    Merge,
-}
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub enum LodArg {
     One,
@@ -214,18 +203,6 @@ pub enum Command {
     Devices,
     /// Select a discoverable exact device ID.
     Use { device: String },
-    /// Merge one saved identity into another, moving its endpoints.
-    Link {
-        /// Identity to merge away.
-        source: String,
-        /// Identity that survives and receives the source's endpoints.
-        target: String,
-        /// Which side keeps its saved configuration when both carry evidence.
-        #[arg(long, value_enum)]
-        keep: Option<KeepArg>,
-    },
-    /// Re-point a stored endpoint at the connected device after its locator changed.
-    Rebind { device: String },
     /// Remove a saved identity from state.
     Forget {
         /// Identity (mouse-N or unique display name) to remove.
@@ -241,6 +218,9 @@ pub enum Command {
         /// New name; blank clears it.
         name: String,
     },
+    /// Run a physical-identity ceremony: enroll, restore, adopt, or associate.
+    #[command(subcommand)]
+    Identity(IdentityCommand),
     /// Read device status.
     Status,
     /// Read or activate a profile.
@@ -277,6 +257,64 @@ pub enum Command {
     /// Build protocol packets offline through manager encoders.
     #[command(subcommand)]
     Debug(DebugCommand),
+}
+
+/// Physical-identity ceremonies exposed by `identity`.
+///
+/// Each command is one step of a resumable ceremony; the manager persists the
+/// journal between steps, so run `x3ctl identity status` at any time to see
+/// where the ceremony stands.
+#[derive(Debug, Subcommand)]
+pub enum IdentityCommand {
+    /// Show the current identity ceremony progress, if any.
+    Status,
+    /// Begin a ceremony: first-time setup or add another mouse.
+    Begin {
+        #[arg(long, value_enum)]
+        kind: IdentityKindArg,
+    },
+    /// Restore a saved mouse whose physical identity was lost.
+    ///
+    /// Disconnect the saved mouse first; the next step reconnects the physical
+    /// mouse being assigned.
+    Restore {
+        /// Saved mouse (mouse-N or unique display name) to restore.
+        device: String,
+    },
+    /// Adopt a mouse carrying a valid identity from another installation.
+    ///
+    /// Starts the adoption ceremony, or confirms it when the mouse has already
+    /// been reconnected and awaits the stamp.
+    Adopt,
+    /// Associate a Bluetooth endpoint with a saved logical mouse.
+    Associate {
+        /// Saved mouse (mouse-N or unique display name) to associate.
+        device: String,
+    },
+    /// Re-discover the reconnected mouse and continue the ceremony.
+    ///
+    /// The reconnect gesture is the physical authentication: the mouse being
+    /// added must be the only unrecognized mouse connected.
+    Reconnect,
+    /// Write the assigned physical identity to the presented mouse.
+    Stamp,
+    /// Resume the ceremony: perform the action its current stage requires.
+    Continue,
+    /// Keep the old single-mouse name and settings when they match one mouse.
+    AcceptMigration,
+    /// Use fresh names and default settings instead of migrating.
+    SkipMigration,
+    /// Cancel the in-flight ceremony (before any identity has been written).
+    Cancel,
+}
+
+/// Clap-safe identity ceremony kind for `identity begin`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum IdentityKindArg {
+    /// First-time setup: capture and stamp two mice, leaving single-mouse mode.
+    InitialEnrollment,
+    /// Add a further mouse to an installation with physical identity.
+    AddMouse,
 }
 
 #[derive(Debug, Subcommand)]
