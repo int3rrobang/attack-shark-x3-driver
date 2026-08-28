@@ -16,6 +16,23 @@ const CAPTURED_EMPTY_PROFILE_TAIL: [u8; FIXED_TAIL_LENGTH] = [
     0x00, 0xff, 0xff, 0x40, 0x00, 0xff, 0xff, 0xff, 0x01,
 ];
 const CAPTURED_STOCK_RESET_STAGES: [u16; 6] = [800, 1600, 2400, 3200, 5000, 26000];
+/// Length of the driver-owned physical identity watermark, which occupies the
+/// whole opaque DPI tail (report bytes 25..=49).
+pub const WATERMARK_LENGTH: usize = FIXED_TAIL_LENGTH;
+/// Magic prefix of the watermark: `X3ID` at bytes 0..=3.
+const WATERMARK_MAGIC: [u8; 4] = *b"X3ID";
+/// Current watermark format version, stored at byte 4.
+const WATERMARK_VERSION: u8 = 1;
+const WATERMARK_VERSION_OFFSET: usize = 4;
+/// Random 128-bit device token stored at bytes 5..=20.
+const WATERMARK_TOKEN_LENGTH: usize = 16;
+const WATERMARK_TOKEN_START: usize = WATERMARK_VERSION_OFFSET + 1;
+const WATERMARK_TOKEN_END: usize = WATERMARK_TOKEN_START + WATERMARK_TOKEN_LENGTH;
+/// CRC-32 (IEEE, as computed by `crc32fast`) of bytes 0..=20, stored
+/// big-endian at bytes 21..=24. A corruption check, not authentication.
+const WATERMARK_CRC_START: usize = WATERMARK_TOKEN_END;
+const WATERMARK_CRC_LENGTH: usize = 4;
+const _: () = assert!(WATERMARK_CRC_START + WATERMARK_CRC_LENGTH == WATERMARK_LENGTH);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -34,6 +51,135 @@ pub struct SensorOptions {
     pub ripple_control: bool,
     pub angle_snap: bool,
     pub motion_sync: bool,
+}
+/// Opaque physical-mouse identity carried by the DPI watermark.
+///
+/// The type is opaque: callers construct it from the raw 128-bit token bytes
+/// ([`PhysicalId::from_token_bytes`]) and read them back
+/// ([`PhysicalId::as_bytes`] / [`PhysicalId::token_bytes`]), but never reach
+/// into the wire encoding. The 25-byte watermark image is produced by
+/// [`PhysicalId::to_watermark_bytes`]. Under the `serde` feature the type
+/// serializes as a lowercase hexadecimal string of the token bytes.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PhysicalId {
+    token: [u8; WATERMARK_TOKEN_LENGTH],
+}
+
+impl PhysicalId {
+    /// Wraps a caller-supplied 128-bit random token.
+    #[must_use]
+    pub const fn from_token_bytes(token: [u8; WATERMARK_TOKEN_LENGTH]) -> Self {
+        Self { token }
+    }
+
+    /// Returns the raw 128-bit token bytes.
+    #[must_use]
+    pub const fn token_bytes(self) -> [u8; WATERMARK_TOKEN_LENGTH] {
+        self.token
+    }
+
+    /// Borrows the raw 128-bit token bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; WATERMARK_TOKEN_LENGTH] {
+        &self.token
+    }
+
+    /// Encodes the full 25-byte watermark image: magic `X3ID`, format
+    /// version `1`, the 128-bit token, and the CRC-32 of the preceding
+    /// 21 bytes (big-endian).
+    #[must_use]
+    pub fn to_watermark_bytes(self) -> [u8; WATERMARK_LENGTH] {
+        let mut bytes = [0_u8; WATERMARK_LENGTH];
+        bytes[..WATERMARK_MAGIC.len()].copy_from_slice(&WATERMARK_MAGIC);
+        bytes[WATERMARK_VERSION_OFFSET] = WATERMARK_VERSION;
+        bytes[WATERMARK_TOKEN_START..WATERMARK_TOKEN_END].copy_from_slice(&self.token);
+        let crc = crc32fast::hash(&bytes[..WATERMARK_CRC_START]);
+        bytes[WATERMARK_CRC_START..].copy_from_slice(&crc.to_be_bytes());
+        bytes
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for PhysicalId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        physical_id_hex::serialize(&self.token, serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for PhysicalId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let token = physical_id_hex::deserialize(deserializer)?;
+        Ok(Self { token })
+    }
+}
+
+/// Result of strictly decoding a 25-byte DPI-tail watermark.
+///
+/// Every possible 25-byte tail maps to exactly one variant: a tail that does
+/// not begin with the `X3ID` magic is [`Absent`](Self::Absent); a recognized
+/// magic with an unsupported format version is
+/// [`UnsupportedVersion`](Self::UnsupportedVersion); a version-1 tail with a
+/// failed integrity check is [`Malformed`](Self::Malformed); a fully
+/// validated tail is [`Valid`](Self::Valid). A token is only ever produced
+/// by [`Valid`](Self::Valid) — malformed or unknown input never yields
+/// identity bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WatermarkDecode {
+    /// The tail does not begin with the `X3ID` magic: no watermark present.
+    Absent,
+    /// The tail begins with the magic but fails validation (bad integrity
+    /// check or truncated token).
+    Malformed,
+    /// The tail carries a recognized magic with a format version this driver
+    /// does not support.
+    UnsupportedVersion { version: u8 },
+    /// A valid physical identity.
+    Valid(PhysicalId),
+}
+
+impl WatermarkDecode {
+    /// Returns the decoded identity when the status is [`Valid`](Self::Valid).
+    #[must_use]
+    pub const fn physical_id(self) -> Option<PhysicalId> {
+        match self {
+            Self::Valid(id) => Some(id),
+            Self::Absent | Self::Malformed | Self::UnsupportedVersion { .. } => None,
+        }
+    }
+}
+
+/// Strictly decodes a 25-byte DPI-tail watermark.
+///
+/// `tail` is the opaque tail of a DPI `0x04` report (report bytes 25..=49).
+/// Wrong-length input is treated as absent. See [`WatermarkDecode`] for the
+/// status semantics.
+#[must_use]
+pub fn decode_watermark(tail: &[u8]) -> WatermarkDecode {
+    if tail.len() != WATERMARK_LENGTH {
+        return WatermarkDecode::Absent;
+    }
+    if tail[..WATERMARK_MAGIC.len()] != WATERMARK_MAGIC {
+        return WatermarkDecode::Absent;
+    }
+    if tail[WATERMARK_VERSION_OFFSET] != WATERMARK_VERSION {
+        return WatermarkDecode::UnsupportedVersion {
+            version: tail[WATERMARK_VERSION_OFFSET],
+        };
+    }
+    let expected = crc32fast::hash(&tail[..WATERMARK_CRC_START]);
+    let actual = u32::from_be_bytes([
+        tail[WATERMARK_CRC_START],
+        tail[WATERMARK_CRC_START + 1],
+        tail[WATERMARK_CRC_START + 2],
+        tail[WATERMARK_CRC_START + 3],
+    ]);
+    if actual != expected {
+        return WatermarkDecode::Malformed;
+    }
+    let mut token = [0_u8; WATERMARK_TOKEN_LENGTH];
+    token.copy_from_slice(&tail[WATERMARK_TOKEN_START..WATERMARK_TOKEN_END]);
+    WatermarkDecode::Valid(PhysicalId { token })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -116,6 +262,35 @@ impl DpiState {
             .collect::<Result<Vec<_>, _>>()?;
         let active_stage = StageIndex::try_from(2)?;
         Self::new(profile, stages, active_stage, CAPTURED_EMPTY_PROFILE_TAIL)
+    }
+
+    /// Strictly decodes the physical identity watermark carried by the opaque
+    /// tail.
+    ///
+    /// Legacy single-mouse tails (for example the captured stock bytes) decode
+    /// as [`WatermarkDecode::Absent`]; see [`WatermarkDecode`] for the full
+    /// status semantics.
+    #[must_use]
+    pub fn physical_id(&self) -> WatermarkDecode {
+        decode_watermark(&self.preserved_tail)
+    }
+
+    /// Overlays `id`'s watermark onto the opaque tail, replacing any previous
+    /// tail bytes with the strict DPI-tail watermark encoding.
+    ///
+    /// Identity metadata is not transferable DPI configuration: only overlay a
+    /// watermark that belongs to the physical mouse this state will be written
+    /// to. The outer report checksum is recomputed by [`DpiReport::encode`] on
+    /// the next encode.
+    pub fn overlay_physical_id(&mut self, id: PhysicalId) {
+        self.preserved_tail = id.to_watermark_bytes();
+    }
+
+    /// Builder-style variant of [`DpiState::overlay_physical_id`].
+    #[must_use]
+    pub fn with_physical_id(mut self, id: PhysicalId) -> Self {
+        self.overlay_physical_id(id);
+        self
     }
 }
 
@@ -571,7 +746,18 @@ mod dpi_state_serde_tests {
 }
 
 #[cfg(feature = "serde")]
+fn hex_nibble(c: u8) -> Result<u8, String> {
+    match c {
+        b'0'..=b'9' => Ok(c - b'0'),
+        b'a'..=b'f' => Ok(c - b'a' + 10),
+        b'A'..=b'F' => Ok(c - b'A' + 10),
+        _ => Err(format!("invalid hex character: {}", c as char)),
+    }
+}
+
+#[cfg(feature = "serde")]
 mod preserved_tail_hex {
+    use super::hex_nibble;
     use serde::{Deserializer, Serializer};
 
     const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
@@ -611,15 +797,6 @@ mod preserved_tail_hex {
         }
 
         deserializer.deserialize_str(Visitor)
-    }
-
-    fn hex_nibble(c: u8) -> Result<u8, String> {
-        match c {
-            b'0'..=b'9' => Ok(c - b'0'),
-            b'a'..=b'f' => Ok(c - b'a' + 10),
-            b'A'..=b'F' => Ok(c - b'A' + 10),
-            _ => Err(format!("invalid hex character: {}", c as char)),
-        }
     }
 }
 
@@ -670,6 +847,130 @@ mod preserved_tail_hex_tests {
     #[derive(serde::Serialize, serde::Deserialize)]
     #[serde(transparent)]
     struct Tail(#[serde(with = "preserved_tail_hex")] [u8; 25]);
+}
+#[cfg(feature = "serde")]
+mod physical_id_hex {
+    use super::{WATERMARK_TOKEN_LENGTH, hex_nibble};
+    use serde::{Deserializer, Serializer};
+
+    const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
+    pub fn serialize<S: Serializer>(
+        bytes: &[u8; WATERMARK_TOKEN_LENGTH],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut buf = [0_u8; WATERMARK_TOKEN_LENGTH * 2];
+        for (i, &byte) in bytes.iter().enumerate() {
+            buf[i * 2] = HEX_CHARS[(byte >> 4) as usize];
+            buf[i * 2 + 1] = HEX_CHARS[(byte & 0x0f) as usize];
+        }
+        let s = std::str::from_utf8(&buf).expect("hex output is always valid UTF-8");
+        serializer.serialize_str(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[u8; WATERMARK_TOKEN_LENGTH], D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = [u8; WATERMARK_TOKEN_LENGTH];
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "a string of exactly {} hexadecimal characters",
+                    WATERMARK_TOKEN_LENGTH * 2
+                )
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                if v.len() != WATERMARK_TOKEN_LENGTH * 2 {
+                    return Err(E::invalid_length(v.len(), &"32 hexadecimal characters"));
+                }
+                let mut out = [0_u8; WATERMARK_TOKEN_LENGTH];
+                for (i, byte) in out.iter_mut().enumerate() {
+                    let hi = hex_nibble(v.as_bytes()[i * 2]).map_err(E::custom)?;
+                    let lo = hex_nibble(v.as_bytes()[i * 2 + 1]).map_err(E::custom)?;
+                    *byte = (hi << 4) | lo;
+                }
+                Ok(out)
+            }
+        }
+
+        deserializer.deserialize_str(Visitor)
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod physical_id_hex_tests {
+    use super::PhysicalId;
+
+    const TOKEN: [u8; 16] = [
+        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69,
+        0x78,
+    ];
+
+    #[test]
+    fn serializes_as_32_lowercase_hex_chars() {
+        let json = serde_json::to_string(&PhysicalId::from_token_bytes(TOKEN)).unwrap();
+        let inner: String = serde_json::from_str(&json).unwrap();
+        assert_eq!(inner.len(), 32);
+        assert_eq!(inner, "123456789abcdef00f1e2d3c4b5a6978");
+        assert_eq!(inner, inner.to_lowercase());
+    }
+
+    #[test]
+    fn deserializes_uppercase_input() {
+        let id: PhysicalId = serde_json::from_str("\"123456789ABCDEF00F1E2D3C4B5A6978\"").unwrap();
+        assert_eq!(id, PhysicalId::from_token_bytes(TOKEN));
+    }
+
+    #[test]
+    fn round_trips_through_json() {
+        let id = PhysicalId::from_token_bytes(TOKEN);
+        let json = serde_json::to_string(&id).unwrap();
+        let restored: PhysicalId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, restored);
+    }
+
+    #[test]
+    fn rejects_wrong_length() {
+        let result = serde_json::from_str::<PhysicalId>("\"ff00\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_hex_character() {
+        let bad = "zz3456789abcdef00f1e2d3c4b5a6978";
+        let result = serde_json::from_str::<PhysicalId>(&format!("\"{bad}\""));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_non_string() {
+        let result = serde_json::from_str::<PhysicalId>("[1,2,3]");
+        assert!(result.is_err());
+    }
+}
+#[cfg(test)]
+mod physical_id_tests {
+    use super::PhysicalId;
+
+    #[test]
+    fn ordering_follows_token_bytes() {
+        let low = PhysicalId::from_token_bytes([0x00; 16]);
+        let high = PhysicalId::from_token_bytes([0x01; 16]);
+        assert!(low < high);
+        assert_eq!(low, low.clone());
+
+        // Lexicographic over the whole 16-byte token, last byte included.
+        let mut a = [0x00; 16];
+        let mut b = [0x00; 16];
+        a[15] = 0x00;
+        b[15] = 0x01;
+        assert!(PhysicalId::from_token_bytes(a) < PhysicalId::from_token_bytes(b));
+    }
 }
 
 #[cfg(test)]

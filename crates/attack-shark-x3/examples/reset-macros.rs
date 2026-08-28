@@ -4,7 +4,7 @@ use attack_shark_x3::{ButtonsState, DeviceSelector, MouseHandle, ProfileId, UsbD
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kind = UsbDeviceKind::Wired;
     let h = MouseHandle::open_for_kind(DeviceSelector::Unique, kind)?;
-    for p in [1u8,2,3,4,5] {
+    for p in [1u8, 2, 3, 4, 5] {
         let pid = ProfileId::try_from(p).unwrap();
         // read live then reset slots 1,2,3,4,7,8 to defaults (Left 02, Right 03, Middle 04, DPI 0d, Forward 06, Backward 05)
         let live = h.read_buttons(pid).await?;
@@ -22,6 +22,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("reset profile {} buttons 01/02/03/04/07/08 to defaults", p);
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
-    println!("done — macros unbound (12 00 XX cleared), DPI/Forward/Backward back to normal. Flash 09 content still there but not firing until re-bound.");
+    println!(
+        "done — macros unbound (12 00 XX cleared), DPI/Forward/Backward back to normal. Flash 09 content still there but not firing until re-bound."
+    );
     Ok(())
 }

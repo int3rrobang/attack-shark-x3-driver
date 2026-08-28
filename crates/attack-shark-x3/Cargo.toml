@@ -17,6 +17,7 @@ bluest = { version = "0.6.9", optional = true }
 hidapi = { version = "2", optional = true }
 futures-lite = { version = "1.13", optional = true }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"], optional = true }
+crc32fast = "1"
 serde = { version = "1", features = ["derive"], optional = true }
 thiserror = "2"
 
@@ -84,4 +85,9 @@ required-features = ["usb"]
 [[example]]
 name = "reset-macros"
 path = "examples/reset-macros.rs"
+required-features = ["usb"]
+
+[[example]]
+name = "watermark_probe"
+path = "examples/watermark_probe.rs"
 required-features = ["usb"]

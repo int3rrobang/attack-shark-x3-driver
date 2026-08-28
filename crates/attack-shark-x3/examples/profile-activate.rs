@@ -25,6 +25,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let p = ProfileId::try_from(profile.ok_or("missing --profile")?)?;
     let h = MouseHandle::open_for_kind(DeviceSelector::Unique, kind)?;
     let m = h.activate_profile(p).await?;
-    println!("activated profile {} (max {})", m.current().get(), m.maximum().get());
+    println!(
+        "activated profile {} (max {})",
+        m.current().get(),
+        m.maximum().get()
+    );
     Ok(())
 }
