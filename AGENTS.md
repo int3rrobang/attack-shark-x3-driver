@@ -67,7 +67,7 @@ The desktop frontend. Depends on `attack-shark-x3-manager` with `default-feature
 - `src/worker.rs` owns the manager worker thread: a current-thread Tokio runtime plus the `DeviceManager`. The UI pushes `Command`s over a channel; the worker applies them through the single composite `DeviceManager::apply_profile_update` path and posts `UiEvent`s back via `slint::invoke_from_event_loop`.
 - `src/presentation.rs` is pure display helpers (labels, status strings, validation shims) with no hardware or lock access.
 - `src/projection.rs` projects `LiveSnapshot`/`DeviceListEntry` into Slint models and handles draft-preserving versus draft-replacing snapshot application.
-- `src/app_settings.rs` persists GUI-only preferences to a sibling `gui-preferences.json` with its own `schemaVersion = 1` (beside `state.json`, no `state.lock` or hardware access, atomic coalescing write).
+- `src/app_settings.rs` persists GUI-only preferences to a sibling `gui-preferences.json` with its own `schemaVersion = 1` (beside `state.json`, no `state.lock` or hardware access, atomic coalescing write) — `validation_choice` (Transport/Readback), per-transport `baseline_choice_wired` (default Live) / `baseline_choice_receiver` (default Stored, BLE always Stored), `allow_explicit_defaults`, plus appearance/DPI/page.
 - `ui/app-window.slint` defines the six-page window (overview, buttons, sensitivity, performance, device, settings) and the shared `Theme`; `assets/` holds artwork. Pages are kept resident (visibility toggles, not recreation) only where user-relevant — draft and scroll state survive navigation, but pages are not duplicated or speculatively preloaded beyond what the UI needs.
 - Holds no protocol codec logic. Drafts are validated through `presentation` helpers and applied as typed deltas via the composite manager operation; polling-rate changes are never coalesced with DPI or button changes so the report `0x06` preflight stays isolated.
 - At runtime the GUI discovers USB (`wired`/`receiver`) and BLE devices. BLE shows saved desired settings (not live readback) and supports profile activation with ACK-only evidence; most configuration writes, `profile refresh-all`, polling-rate changes, and both verification workflows remain USB-only because configuration readback is unsupported over BLE.
@@ -161,7 +161,7 @@ A resource write goes through the single composite `DeviceManager::apply_profile
 5. Persist the updated desired state and verification evidence to the state file under the cross-process lock (one `mutate_async` for all non-rate outcomes).
 6. Return a `ProfileUpdateOutcome { dpi, preferences, buttons, polling_rate }` where only included resources are `Some(WriteOutcome<T>)`.
 
-The cross-process lock guards the state-file read-modify-write, not the transport I/O itself. Per-operation locks (`*.operation.lock` per `mouse-N`) guard transport I/O.
+The cross-process lock guards the state-file read-modify-write, not the transport I/O itself. Per-operation locks (`device-<id>.lock` beside the state file, one per `mouse-N`) guard each operation's transport I/O. Event subscriptions (`DeviceManager::subscribe_events`) keep their input session open but release the operation lock, so reads, writes, and verification workflows run on the same device while device events are delivered.
 
 Report `0x06` **skips the profile loader**; byte 2 is a save alias, not a load
 target. The deferred writer serializes the complete *live* image into the slot

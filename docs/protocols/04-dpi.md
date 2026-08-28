@@ -50,7 +50,7 @@ The internal report is 56 bytes. Writes always send the first 52 bytes (compact 
 | 21     | High Flag 6    | `uint8`     | `0x01` if Stage 6 DPI > 10000, else `0x00`                       | live-confirmed |
 | 22-23  | High Flag 7-8 / X3 High 7-8 | `uint8[2]` | X11 fixed `0x00, 0x00`; X3 high bytes for stages 7 and 8 | static |
 | 24     | Active Stage   | `uint8`     | Index of the currently active DPI stage (X11 1-6, X3 1-8)        | live-confirmed |
-| 25-49  | Stage color data | `uint8[25]` | Host-written per-stage RGB (25–48) + status byte (49); firmware treats the block opaquely, so the color reading is host-side only. X11 last byte = `0x02`, X3 last byte = `0x01`. | static-analysis + inference |
+| 25-49  | Stage color data / watermark | `uint8[25]` | Stock semantics: host-written per-stage RGB (25–48) + status byte (49); firmware treats the block opaquely, so the color reading is host-side only. X11 last byte = `0x02`, X3 last byte = `0x01`. In persistent identity mode this region carries the driver-owned physical watermark instead (see below). | static-analysis + inference |
 | 50     | Checksum High  | `uint8`     | High byte of the 16-bit checksum                                 | static |
 | 51     | Checksum Low   | `uint8`     | Low byte of the 16-bit checksum                                  | static |
 | 52-55  | Padding        | `uint8[4]`  | Readback-only trailing zeros (fixed `0x00`); not sent in writes  | live-confirmed |
@@ -85,7 +85,52 @@ The 25-byte region (offsets 25–49) differs between X11 and X3 in its final byt
 - **X11**: last byte (offset 49) = `0x02`
 - **X3**: last byte (offset 49) = `0x01`
 
-Host software writes bytes 25–48 as per-stage RGB colors and byte 49 as a status byte, but the firmware treats the entire region opaquely — no firmware path reads the bytes individually. The per-stage-color reading is therefore host-side inference, not firmware-confirmed semantics; the bytes are preserved verbatim and their meaning must not be over-stated. \[static-analysis + inference]
+Host software writes bytes 25–48 as per-stage RGB colors and byte 49 as a status byte, but the firmware treats the entire region opaquely — no firmware path reads the bytes individually. The per-stage-color reading is therefore host-side inference, not firmware-confirmed semantics; under **legacy single-mouse mode** the driver never reads or writes the tail, so the bytes are preserved verbatim and their meaning must not be over-stated. \[static-analysis + inference]
+
+The tail is not preserved by the stock application: a stock-app in-app profile
+switch on X3/FA61 wired overwrote bytes 25–27 (and recomputed the checksum)
+during a 2026-08-25 `watermark_probe` run. That is why, once persistent
+identity is enabled, the driver treats the region as its **own** watermark
+surface, and why stock configuration software can erase a stamped identity
+(see [`../logical-mouse-identity-spec.md`](../logical-mouse-identity-spec.md#8-stock-software-compatibility)).
+\[live-confirmed; see
+[`../evidence/x3-fa61/README.md`](../evidence/x3-fa61/README.md#watermark-surface-probe--2026-08-25)]
+
+## Physical-identity watermark (persistent mode)
+
+Once persistent identity has been initialized, the entire 25-byte opaque tail
+(report offsets 25–49) is the **driver-owned watermark surface**. Legacy mode
+leaves it untouched: no watermark is read on attachment and none is written.
+The watermark fills the whole surface with the X3ID layout (offsets below are
+within the 25-byte tail; add 25 for report offsets):
+
+| Tail offset | Length | Field |
+|:------------|:-------|:------|
+| 0–3 | 4 | Magic `X3ID` |
+| 4 | 1 | Format version `1` |
+| 5–20 | 16 | Random 128-bit device token (OS RNG) |
+| 21–24 | 4 | CRC-32 (IEEE, `crc32fast`) of tail bytes 0–20, big-endian |
+
+- Decoding is strict and all-or-nothing: a tail without the `X3ID` magic is
+  `Absent`; a recognized magic with an unknown format version is
+  `UnsupportedVersion` (an older build refuses to overwrite it); a version-1
+  tail with a failed CRC is `Malformed`; anything else is a valid opaque
+  `PhysicalId`. A failed decode is never a best-effort token.
+- The watermark CRC is corruption detection, not authentication. The outer
+  report `0x04` checksum (sum16 over bytes 3–49) is recalculated normally
+  after the watermark is overlaid.
+- Every driver-owned `0x04` write re-stamps the physical mouse's own watermark
+  (`DpiState::overlay_physical_id`), so a DPI write can never transfer or
+  erase identity.
+- The watermark survives a power cycle, `0x0c` profile-slot loads, button
+  `0x08` changes, and unrelated preference `0x05` changes; the stock
+  application's virtual-profile switching can erase it. Once identity is
+  initialized, a missing or malformed watermark means the physical identity is
+  unknown and must be restored — never guessed from model, VID/PID, path, or
+  configuration similarity.
+
+See [`../logical-mouse-identity-spec.md`](../logical-mouse-identity-spec.md)
+for the full identity model, ceremony rules, and stamping invariants.
 
 ## X3 Variable Stages
 

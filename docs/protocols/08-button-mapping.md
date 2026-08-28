@@ -71,6 +71,12 @@ controls, and profile navigation, without adverse firmware behavior.
 \[live-confirmed] The native Rust CLI exposes left, right, middle, DPI,
 forward, and backward slots.
 
+The hidden slots 9–15 are not a stable driver-owned watermark surface: a
+stock-app in-app profile switch and a button rebind both rewrote slot 9 (the
+`watermark_probe` marker `01 a5 5a` was replaced) on X3/FA61 wired during a
+2026-08-25 run. \[live-confirmed; see
+[`../evidence/x3-fa61/README.md`](../evidence/x3-fa61/README.md#watermark-surface-probe--2026-08-25)]
+
 ## Checksums
 
 ### X11 dialect

@@ -94,8 +94,14 @@ but all clones still share the same serialized worker. A UI adapter should expos
 one session object per selected device and should close it when the device is
 removed or the application shuts down.
 
-The driver has no event stream. The UI must refresh state after opening, after a
-write, after profile activation, and after reconnecting a device.
+On USB the driver publishes decoded report-`0x03` input events through
+`MouseHandle::subscribe_input_events()` (see `transports/usb-hid.md`). At the
+manager level, `DeviceManager::subscribe_events` bridges them into typed
+`DeviceEvent`s and keeps the input session open without holding the per-device
+operation lock, so reads, writes, and verification workflows keep running while
+events arrive. BLE has no input-event stream: over BLE the UI shows stored
+settings only and must refresh state after opening, after a write, after profile
+activation, and after reconnecting a device.
 
 ## 3. State model
 
@@ -468,6 +474,7 @@ configuration path:
 - startup discovers one exact wired, receiver, or already-connected BLE device,
   reads status where the transport supports it, and shows errors instead of
   preview values;
+- GUI preferences (`gui-preferences.json` schema 1, `x3-gui/src/app_settings.rs`) persist `validation_choice` (Transport/Readback) and per-transport `baseline_choice_wired` (default Live) / `baseline_choice_receiver` (default Stored, BLE always Stored) with coalescing atomic writes, `allow_explicit_defaults`, appearance and DPI range (no `state.lock`/hardware);
 - BLE DPI, preferences, button, and other non-rate edits are offered only when
   their complete baseline comes from stored/imported state or explicitly
   captured defaults authorized for that operation; the GUI never invents

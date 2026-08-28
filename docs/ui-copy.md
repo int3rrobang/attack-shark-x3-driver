@@ -77,6 +77,12 @@ When a stronger tier is not yet proven, say **"not yet confirmed"** — never
 | schema version / state file | local data |
 | packet / byte / ACK / report `0x06` | (drop; describe the effect) |
 | protocol error / device-operation lock timeout | that change isn't valid / the mouse is busy; try again |
+| watermark / physical token / physical id | this mouse's identity tag |
+| unassociated connection | this mouse isn't recognized |
+| ceremony / enrollment / journal | setup |
+| adopt / adoption | add as a different mouse |
+| restore (rotate to a fresh token) | set this mouse up again (as `<name>`) |
+| BLE association | connect over Bluetooth |
 
 ## Blocklist
 
@@ -107,6 +113,65 @@ When a fact is true but noisy (e.g. "confirmed now, but not yet proven to
 survive a power-off"), show a compact status inline and put the explanation in
 a `Tooltip { text: "..." }` on that element. Users who care get the detail;
 nobody gets lectured in 9px text.
+
+## Physical identity ceremonies
+
+Ceremonies establish *which physical mouse is which* — the one place identity
+is allowed to change. The reconnect gesture is the authentication: copy says
+what to do with the mouse, never asks the user to reason about logical state.
+Never ask "Is this your usual mouse?" or "Is this Mouse 1?" — those require
+internal knowledge or fuzzy judgment.
+
+### Entry copy
+
+| Ceremony | User-facing entry | When it appears |
+|:---------|:------------------|:----------------|
+| First-time enrollment | **Add another mouse** → "You'll need both mice nearby." | No physical identity yet |
+| Add another mouse | **Add another mouse** → "Reconnect the mouse you want to add." | Persistent identity already set up |
+| Restore | **Restore a saved mouse** | "This mouse isn't recognized." and the user picks a saved mouse |
+| Adopt | **Add as a different mouse** | A valid identity tag unknown to this installation |
+| BLE associate | **Connect over Bluetooth** | Attaching a Bluetooth connection to a logical mouse |
+
+### Ceremony flow copy
+
+- **"You'll need both mice nearby."** — only for the first-time transition.
+  Say exactly this; do not ask which mouse is which.
+- **"Reconnect the mouse you're adding."** then **"Now reconnect your other
+  mouse."** — the two reconnect gestures are what identify the mice.
+- **"Reconnect the mouse you want to add."** — for every later mouse; earlier
+  mice do not need to be present.
+- **"This mouse is already added."** — a known identity tag reappeared.
+- **"This mouse isn't recognized."** — an unassociated connection. Present it
+  as a distinct object without a name or number yet, and offer
+  **Restore a saved mouse** / **Add as a different mouse**.
+- **Restore** is a user assertion — no reading can prove which former unit
+  this is. Ask for confirmation and a reconnect: "If this is <name>, reconnect
+  it and we'll set it up again." The name is kept; nothing else is claimed.
+- **Adopt** always requires explicit confirmation, never a one-click default:
+  "This mouse has an identity tag from another computer. Add it here?" It
+  becomes a fresh mouse with a fresh name; the tag is never replaced.
+- **BLE** cannot confirm identity. "Connect over Bluetooth" only associates
+  the connection; to verify which physical unit it is, say plainly: "To
+  confirm which mouse this is, connect it with a cable or receiver."
+
+### Progress and the confidence ladder
+
+Ceremony progress is a step count, not a spinner ("Mouse 1 of 2"). Map stages
+to results and keep the ladder language:
+
+| Stage | User-facing |
+|:------|:------------|
+| AwaitingReconnect | "Reconnect the mouse." |
+| Capturing | "Reading the mouse." |
+| Stamping | "Setting up this mouse." |
+| Verified | "Confirmed by the mouse." |
+| Complete | "Done." |
+| Cancelled | "Cancelled." |
+| Failed | "Something went wrong." (detail in a tooltip or diagnostic surface) |
+
+A stamped identity is confirmed by readback — the "confirmed by the mouse"
+tier, not "survives a full power-off". Until that confirmation has run, say
+"not yet confirmed", never "unverified".
 
 ## Maintaining this guide
 
