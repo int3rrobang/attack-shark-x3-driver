@@ -387,6 +387,34 @@ impl StateStore {
     }
 
     #[cfg(any(feature = "usb", feature = "ble"))]
+    /// Acquire a per-device operation lock without blocking the async executor.
+    ///
+    /// Clones the store and device, then runs the complete synchronous
+    /// acquisition — including its contention polling — inside a single
+    /// `spawn_blocking` call so no busy sleep ever happens on the async
+    /// executor thread. The `JoinError` is mapped consistently with
+    /// `load_async`; a lock-wait timeout still surfaces as
+    /// `ManagerError::DeviceOperationBusy`.
+    pub async fn acquire_operation_lock_async(
+        &self,
+        device: &DeviceId,
+        timeout: Duration,
+        operation: &'static str,
+    ) -> Result<DeviceOperationGuard, ManagerError> {
+        let store = self.clone();
+        let device = device.clone();
+        tokio::task::spawn_blocking(move || {
+            store.acquire_operation_lock(&device, timeout, operation)
+        })
+        .await
+        .map_err(|err| {
+            ManagerError::State(StateError::invalid_state(format!(
+                "spawn_blocking join error: {err}"
+            )))
+        })?
+    }
+
+    #[cfg(any(feature = "usb", feature = "ble"))]
     /// Load the latest state without blocking the async executor.
     ///
     /// Clones the store and runs the complete blocking load/lock/parse/validate
@@ -1393,6 +1421,82 @@ mod tests {
         assert_eq!(err, StateFile::default());
         // Same mapping for load_async via direct spawn_blocking panic simulation.
         // We exercise the mutate path above; load_async uses identical mapping.
+    }
+
+    #[cfg(any(feature = "usb", feature = "ble"))]
+    #[tokio::test]
+    async fn operation_lock_async_keeps_runtime_responsive_under_contention() {
+        let store = StateStore::memory();
+        let device = DeviceIdentity::test_ble("async-lock-responsive", None)
+            .unwrap()
+            .id;
+        let _guard = store
+            .acquire_operation_lock(&device, Duration::from_millis(500), "test-op")
+            .expect("first lock should succeed");
+        // A 40 ms timer must fire while the contended acquire is still waiting
+        // on the blocking pool. If the acquisition slept on the current-thread
+        // executor instead of spawn_blocking, the timer task could not run
+        // until the acquire returned and this probe would still be pending.
+        let (timer_tx, mut timer_rx) = tokio::sync::oneshot::channel();
+        let timer_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let _ = timer_tx.send(());
+        });
+        let err = store
+            .acquire_operation_lock_async(&device, Duration::from_millis(250), "test-op")
+            .await
+            .expect_err("contended acquire must time out");
+        assert!(
+            timer_rx.try_recv().is_ok(),
+            "timer must fire while the lock wait is pending"
+        );
+        timer_task.await.unwrap();
+        assert!(matches!(
+            err,
+            crate::error::ManagerError::DeviceOperationBusy { .. }
+        ));
+    }
+
+    #[cfg(any(feature = "usb", feature = "ble"))]
+    #[tokio::test]
+    async fn operation_lock_async_times_out_under_contention() {
+        let store = StateStore::memory();
+        let device = DeviceIdentity::test_ble("async-lock-timeout", None)
+            .unwrap()
+            .id;
+        let guard = store
+            .acquire_operation_lock(&device, Duration::from_millis(500), "test-op")
+            .expect("first lock should succeed");
+        let start = std::time::Instant::now();
+        let err = store
+            .acquire_operation_lock_async(&device, Duration::from_millis(100), "test-op")
+            .await
+            .expect_err("contended async acquire must time out");
+        assert!(
+            start.elapsed() >= Duration::from_millis(80),
+            "async timeout must not return early, elapsed {:?}",
+            start.elapsed()
+        );
+        match err {
+            crate::error::ManagerError::DeviceOperationBusy {
+                device: d,
+                operation,
+                timeout,
+                path,
+            } => {
+                assert_eq!(d, device);
+                assert_eq!(operation, "test-op");
+                assert_eq!(timeout, Duration::from_millis(100));
+                assert!(path.to_string_lossy().contains("device-"));
+            }
+            other => panic!("expected DeviceOperationBusy, got {other:?}"),
+        }
+        drop(guard);
+        let reacquired = store
+            .acquire_operation_lock_async(&device, Duration::from_millis(100), "test-op")
+            .await
+            .expect("lock must be acquirable after the guard is dropped");
+        drop(reacquired);
     }
 
     #[test]

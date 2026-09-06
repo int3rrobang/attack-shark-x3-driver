@@ -69,7 +69,7 @@ attack-shark-x3-rust/
 ```
 
 - **`attack-shark-x3`** — protocol codecs (DPI/prefs/buttons/profile golden fixtures plus `protocol::input` evidence-labeled golden integration via `fixtures/protocol/input.json` + `tests/input_codec.rs` and `protocol::checksum` boundary/wrapping integration via `tests/checksum_codec.rs`; `0x07`/`0x09` remain explicitly unsupported and tested as ignored/rejected `decoded:null`, not implemented), USB HID and BLE GATT transport drivers, DPI-button event subscription, polling-rate live alias (`read_live_polling_rate(alias)` side-effect only).
-- **`attack-shark-x3-manager`** — stateful operations: per-device logical `mouse-N` identity (schema 4, `nextDeviceNumber`), multi-transport endpoints, cross-process `state.lock` plus per-device `*.operation.lock`, read-modify-write pipeline with single composite `apply_profile_update` (DPI+preferences+buttons coalesced in one session; polling rate isolated with mandatory preflight), provenance tracking, verification workflows, and offline packet generation through `debug` commands.
+- **`attack-shark-x3-manager`** — stateful operations: per-device logical `mouse-N` identity (schema 5, `nextDeviceNumber`), installation `IdentityMode` (`Legacy`/`Persistent`) with driver-owned watermark physical identity and a durable resumable identity-setup journal, multi-transport endpoints, cross-process `state.lock` plus a per-device `device-<id>.lock` operation lock, read-modify-write pipeline with single composite `apply_profile_update` (DPI+preferences+buttons coalesced in one session; polling rate isolated with mandatory preflight), provenance tracking, verification workflows, and offline packet generation through `debug` commands.
 - **`x3ctl`** — the CLI binary. Talks to hardware through the manager crate; `--stateless` keeps state only in memory for the current invocation. Uses `DeviceManager::apply_profile_update` for all typed writes; polling-rate is never coalesced with other resources. Human output is friendly labels; raw protocol detail remains in `--output json` / `debug` / `--dry-run`.
 - **`x3-gui`** — the Slint desktop frontend. Split modules: `main.rs` (bootstrap + callbacks), `worker.rs` (Tokio manager worker owning `DeviceManager`), `presentation.rs` (pure display helpers), `projection.rs` (Slint model projection), `app_settings.rs` (separate `gui-preferences.json` schema 1, coalescing atomic writes, no `state.lock` or hardware). `ui/app-window.slint` renders the six-page window; pages are kept resident only where user-relevant so draft and scroll state survive navigation without speculative preloading. The GUI edits drafts and applies them via the composite manager operation with transport or readback verification. `serde` is retained only for `app_settings`.
 
@@ -142,25 +142,33 @@ Device arguments accept the canonical `mouse-N` id or a unique display name
 (set with `rename`, matched case-insensitively).
 
 ```bash
-# Merge one saved identity into another after linking a second transport;
-# --keep target|source discards one side's saved configuration, --keep merge
-# fills the survivor's missing values from the other side (target wins conflicts)
-cargo run -p x3ctl -- link mouse-1 mouse-2 --keep merge
-
-# Re-point a stored endpoint at the connected device after its HID path
-# changed (e.g. the dongle moved to another USB port)
-cargo run -p x3ctl -- --transport receiver rebind mouse-2
-
 # Set the presentation name used for device lookup (blank clears it)
 cargo run -p x3ctl -- rename mouse-2 'Desk Mouse'
 
 # Remove a saved identity (refuses saved configuration without --force)
 cargo run -p x3ctl -- forget mouse-3
+
+# Physical-identity ceremonies are resumable, journaled steps; run
+# `identity status` at any time to see where the ceremony stands.
+# First-time setup (Legacy -> Persistent):
+cargo run -p x3ctl -- identity begin --kind initial-enrollment
+cargo run -p x3ctl -- identity reconnect
+cargo run -p x3ctl -- identity stamp
+
+# Add another mouse, restore a lost watermark, adopt a foreign-tagged
+# mouse, or attach a BLE endpoint to a saved mouse:
+cargo run -p x3ctl -- identity begin --kind add-mouse
+cargo run -p x3ctl -- identity restore mouse-2
+cargo run -p x3ctl -- identity adopt
+cargo run -p x3ctl -- identity associate mouse-2
 ```
 
 Discovery also self-cleans: an identity with no saved configuration whose
 every endpoint is now claimed by another identity is dropped automatically
-on the next scan (the residue of a port change resolved by `rebind`).
+on the next scan (the residue of a port change resolved by a later
+authenticated locator update). Multiple physical mice require persistent
+identity mode; see [docs/README.md](docs/README.md) and
+[docs/logical-mouse-identity-spec.md](docs/logical-mouse-identity-spec.md).
 
 ### Status
 
@@ -318,22 +326,23 @@ pairing or unpairing.
 
 ## Device identity and endpoints
 
-Schema 4 uses a stable logical key `mouse-N` (`N >= 1`, canonical, allocated via `nextDeviceNumber` in `state.json`). No serial number or HID path is exposed as identity; `serial_number` is endpoint metadata only (trimmed, blank normalized to `None`).
+Manager state is schema 5 (`state.json`; schema 4 has no migration — a schema-4 document is rejected). A stable logical key `mouse-N` (`N >= 1`, canonical, allocated via `nextDeviceNumber`) identifies each saved mouse; no serial number or HID path is exposed as identity, and `serial_number` is endpoint metadata only (trimmed, blank normalized to `None`). Schema 5 adds an installation `IdentityMode` (`Legacy` default, or `Persistent`) and a durable resumable identity-setup journal; see [docs/README.md](docs/README.md) and [docs/logical-mouse-identity-spec.md](docs/logical-mouse-identity-spec.md).
 
-- **Endpoint is a locator, not an identity.** `DeviceEndpoint { transport, vendor_id, product_id, serial_number, locator, display_name }` keeps the current openable HID path verbatim as `DeviceLocator::UsbPath(path)` (or `BlePlatformId` for BLE). The path can change on replug; the logical `mouse-N` does not.
+- **Endpoint is a locator, not an identity.** `DeviceEndpoint { transport, vendor_id, product_id, serial_number, locator, display_name }` keeps the current openable HID path verbatim as `DeviceLocator::UsbPath(path)` (or `BlePlatformId` for BLE). The path can change on replug; the logical `mouse-N` does not. In persistent mode the driver-owned watermark in the DPI report `0x04` tail is the per-unit identifier.
 - **Exact endpoint rediscovery is automatic.** `devices` / `list_devices` matches discovered endpoints by exact `(transport, locator)` equality and upserts the endpoint in place. No new logical device is created for a known locator.
-- **Cross-transport linkage is explicit.** Discovery never auto-merges wired/receiver/BLE by VID/PID or name. Adding a second transport to the same logical mouse requires the explicit `link_devices(source, target)` operation, which only succeeds when transports do not overlap and only one side carries configuration evidence. No stable-serial or automatic-link claim is made.
-- **Controlled unique replug can update the locator.** When a stored locator disappears (USB replug path change), `rebind_missing_endpoint` updates it only if exactly one connected candidate exists for that transport with the same VID/PID. Zero or multiple candidates fail with an ambiguity error — the implementation refuses to guess.
-- **Ambiguity refuses to guess.** Device selection without an explicit `--device <ID>` (and without a valid selected device) returns `AmbiguousDevice` when multiple connected logical identities exist. Rebind with ambiguous candidates is rejected the same way.
+- **Cross-transport linkage comes from physical identity.** Discovery never auto-links wired/receiver/BLE by VID/PID, name, serial, or connection timing. In persistent mode the same watermark observed over wired and receiver resolves to one logical mouse, and a BLE endpoint attaches only through the explicit association ceremony; there is no `link_devices`-style merge API.
+- **A locator moves only with authentication.** In persistent mode a stored locator is replaced only by a reappearing endpoint whose current-profile watermark authenticates as the saved physical token; zero, multiple, malformed, unsupported, and foreign candidates are refused. Legacy mode keeps the fuzzy same-locator or unique same-VID/PID behavior.
+- **Ambiguity refuses to guess.** Device selection without an explicit `--device <ID>` (and without a valid selected device) returns `AmbiguousDevice` when multiple connected logical identities exist.
+- **Identity ceremonies.** `identity begin --kind initial-enrollment` is the `Legacy` → `Persistent` transition; `identity begin --kind add-mouse`, `identity restore <mouse>`, `identity adopt`, and `identity associate <mouse>` drive the other ceremonies through the resumable journal (`identity reconnect`, `identity stamp`, `identity continue`, `identity status`, `identity cancel`). Stamps are the only irreversible hardware writes and are journaled before they happen; cancel is accepted only before any stamp.
 - **Receiver treated as permanently paired absent contrary evidence.** PID `fa60` identifies the shared 2.4 GHz receiver, not the mouse model; a receiver endpoint is not auto-unpaired on disconnect. Removal is explicit state management, not transport disappearance.
 
 The GUI resolves the same model: `DeviceIdentity::selected_endpoint()` prefers `preferred_transport` when present, otherwise deterministically `Wired → Receiver → BLE`. Presentation helpers never unwrap missing endpoints.
 
 ## Durable state
 
-`x3ctl` and `x3-gui` share the same platform-local state directory. The manager stores durable device configuration in `state.json` (schemaVersion 4, sibling `state.lock` via `fs2` plus per-device `*.operation.lock` for transport I/O). Each resource keeps desired and observed values separately. Desired values record whether they came from a user write, portable import, or explicitly authorized captured defaults (`--replace-defaults`). Observations record USB readback independently. Application verification (`Acknowledged`, `ReadbackVerified`, or mismatch) is separate from persistence verification (`Unknown`, profile reload, or power cycle). Checked `serde` rejects unknown schemas and non-canonical `mouse-N` identities.
+`x3ctl` and `x3-gui` share the same platform-local state directory. The manager stores durable device configuration in `state.json` (schemaVersion 5 — no migration from schema 4 — sibling `state.lock` via `fs2` plus a per-device `device-<id>.lock` operation lock for transport I/O). Each resource keeps desired and observed values separately. Desired values record whether they came from a user write, portable import, or explicitly authorized captured defaults (`--replace-defaults`). Observations record USB readback independently. Application verification (`Acknowledged`, `ReadbackVerified`, or mismatch) is separate from persistence verification (`Unknown`, profile reload, or power cycle). Checked `serde` rejects unknown schemas and non-canonical `mouse-N` identities.
 
-GUI-only presentation state is **not** in `state.json`. It lives in a sibling `gui-preferences.json` with its own `schemaVersion = 1` (`x3-gui/src/app_settings.rs`): coalescing atomic writes, backup on unreadable/unsupported version, no `state.lock` and no hardware access. `serde` is retained in `x3-gui` only for this file.
+GUI-only presentation state is **not** in `state.json`. It lives in a sibling `gui-preferences.json` with its own `schemaVersion = 1` (`x3-gui/src/app_settings.rs`): coalescing atomic writes, backup on unreadable/unsupported version, no `state.lock` and no hardware access — stores `validation_choice` (Transport/Readback), per-transport `baseline_choice_wired` (default Live) / `baseline_choice_receiver` (default Stored, BLE forced Stored), `allow_explicit_defaults`, appearance, DPI range, and last page. `serde` is retained in `x3-gui` only for this file.
 
 `state invalidate` preserves desired and observed values but clears their persistence verification. `--stateless` uses an in-memory store for the current invocation and does not read or write the durable state file.
 

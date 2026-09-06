@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use attack_shark_x3::TransportKind;
+use attack_shark_x3::{PhysicalId, TransportKind};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::StateError;
@@ -185,15 +185,17 @@ impl DeviceEndpoint {
     }
 }
 
-/// A durable logical mouse identity that can own multiple transport endpoints.
-///
-/// Legacy serial/path derived keys are gone; the logical `mouse-N` is the
-/// only stable key, and each discovered transport is added as an endpoint.
+/// Once persistent identity is initialized, `physical_id` records the
+/// driver-stamped watermark token of the physical mouse behind this logical
+/// identity; it is `None` for fuzzy legacy mice and for identified mice that
+/// have lost their watermark.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceIdentity {
     pub id: DeviceId,
     pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_id: Option<PhysicalId>,
     pub endpoints: BTreeMap<TransportKind, DeviceEndpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_transport: Option<TransportKind>,
@@ -208,6 +210,7 @@ impl DeviceIdentity {
             display_name: display_name
                 .filter(|name| !name.trim().is_empty())
                 .map(|name| name.trim().to_owned()),
+            physical_id: None,
             endpoints: BTreeMap::new(),
             preferred_transport: None,
         }
@@ -400,12 +403,18 @@ fn parse_logical_number(value: &str) -> Option<u64> {
     suffix.parse::<u64>().ok().filter(|&n| n != 0)
 }
 
-/// Filters connected discoveries down to the rebind candidates for one stored
-/// endpoint: same transport and same VID/PID, sorted by locator and
-/// deduplicated. VID/PID is the only stable model signal on this hardware
-/// (empty serial, locator changes on replug); BLE endpoints always carry
-/// `None` VID/PID, so the filter is a no-op there.
-pub(crate) fn rebind_candidates(
+/// Legacy-mode-only filter for connected discoveries that could be the rebind
+/// target of one stored endpoint: same transport and same VID/PID, sorted by
+/// locator and deduplicated. VID/PID is the only stable model signal on this
+/// hardware (empty serial, locator changes on replug); BLE endpoints always
+/// carry `None` VID/PID, so the filter is a no-op there.
+///
+/// This is deliberately model-level, never per-unit: a legacy logical mouse
+/// claims no physical identity, so a unique same-model device is accepted
+/// after a port change. Persistent-mode verification never uses it — it
+/// authenticates reappearing candidates by their current-profile watermark
+/// token instead.
+pub(crate) fn legacy_rebind_candidates(
     discovered: Vec<DiscoveredEndpoint>,
     transport: TransportKind,
     stored: &DeviceEndpoint,
@@ -430,7 +439,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{DeviceEndpoint, DeviceId, DeviceIdentity, DeviceLocator};
-    use attack_shark_x3::TransportKind;
+    use attack_shark_x3::{PhysicalId, TransportKind};
 
     #[test]
     fn device_id_requires_mouse_n_format() {
@@ -462,6 +471,37 @@ mod tests {
             serde_json::from_str(&json).expect("deserialize device map");
 
         assert_eq!(decoded.get(&id), Some(&identity));
+    }
+    #[test]
+    fn physical_id_round_trips_and_is_omitted_when_absent() {
+        let token = [0xAB; 16];
+        let physical = PhysicalId::from_token_bytes(token);
+        let identity = DeviceIdentity::new(DeviceId::new("mouse-1").unwrap(), None);
+        assert_eq!(identity.physical_id, None);
+
+        let json = serde_json::to_value(&identity).expect("serialize identity");
+        assert!(
+            json.get("physicalId").is_none(),
+            "absent physical id must be omitted from JSON"
+        );
+
+        let mut identified = identity.clone();
+        identified.physical_id = Some(physical);
+        let mut json = serde_json::to_value(&identified).expect("serialize identified identity");
+        assert_eq!(
+            json["physicalId"],
+            serde_json::Value::String("abababababababababababababababab".to_owned())
+        );
+        let decoded: DeviceIdentity =
+            serde_json::from_value(json.clone()).expect("deserialize identified identity");
+        assert_eq!(decoded.physical_id, Some(physical));
+
+        // Uppercase hex is accepted on input and compares by token bytes.
+        json["physicalId"] =
+            serde_json::Value::String("ABABABABABABABABABABABABABABABAB".to_owned());
+        let decoded_upper: DeviceIdentity =
+            serde_json::from_value(json).expect("deserialize uppercase hex");
+        assert_eq!(decoded_upper.physical_id, Some(physical));
     }
 
     #[test]

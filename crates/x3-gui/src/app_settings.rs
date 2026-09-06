@@ -77,6 +77,18 @@ pub struct GuiPreferences {
     /// Last visible page (0..5) when the app closed.
     #[serde(default)]
     pub last_page: i32,
+    /// 0 = device acknowledged (Transport), 1 = confirmed by mouse (Readback)
+    #[serde(default)]
+    pub validation_choice: i32,
+    /// 0 = from mouse (Live), 1 = saved (Stored) for USB wired
+    #[serde(default)]
+    pub baseline_choice_wired: i32,
+    /// 0 = from mouse (Live), 1 = saved (Stored) for 2.4G receiver (dongle)
+    #[serde(default)]
+    pub baseline_choice_receiver: i32,
+    /// Allow explicit defaults (captured stock) when no saved/observed baseline exists.
+    #[serde(default)]
+    pub allow_explicit_defaults: bool,
 }
 
 impl Default for GuiPreferences {
@@ -90,6 +102,10 @@ impl Default for GuiPreferences {
             dpi_max: DEFAULT_DPI_MAX,
             dpi_log_scale: true,
             last_page: 0,
+            validation_choice: 0,
+            baseline_choice_wired: 0,
+            baseline_choice_receiver: 1,
+            allow_explicit_defaults: false,
         }
     }
 }
@@ -138,6 +154,20 @@ impl GuiPreferences {
         } else {
             0
         };
+
+        self.validation_choice = match self.validation_choice {
+            1 => 1,
+            _ => 0,
+        };
+        self.baseline_choice_wired = match self.baseline_choice_wired {
+            1 => 1,
+            _ => 0,
+        };
+        self.baseline_choice_receiver = match self.baseline_choice_receiver {
+            1 => 1,
+            _ => 0,
+        };
+        // allow_explicit_defaults is bool already.
 
         self
     }
@@ -221,7 +251,9 @@ pub fn load_gui_preferences_from_path(path: &Path) -> (GuiPreferences, Option<St
             path,
             &bytes,
             Some(schema),
-            &format!("GUI preferences schema v{schema} is not supported — reset to defaults"),
+            &format!(
+                "GUI preferences use an unsupported local-data format (version {schema}) — reset to defaults"
+            ),
         );
     }
 

@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use attack_shark_x3::{ButtonsState, DpiState, PollingRate, PreferencesState, ProfileId};
+use attack_shark_x3::{
+    ButtonsState, DpiState, DpiValue, PollingRate, PreferencesState, ProfileId, SensorOptions,
+    StageIndex,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::backend::SessionWrite;
@@ -13,16 +16,48 @@ use crate::state::{
     ProfileState, ResourceState, StateFile, StateReset, Timestamp, Verification,
 };
 
+/// Portable DPI configuration values.
+///
+/// Carries only the semantic DPI settings — profile, stages, active stage,
+/// and sensor options. The opaque 25-byte DPI report tail is deliberately
+/// excluded: on a persistently identified device it holds the physical
+/// watermark (`X3ID` magic, format version, device token, CRC), which belongs
+/// to the physical mouse and must never travel in a portable document.
+/// Import re-attaches the tail from the target device's own DPI baseline.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableDpi {
+    pub profile: ProfileId,
+    pub stages: Vec<DpiValue>,
+    pub active_stage: StageIndex,
+    pub sensor: SensorOptions,
+}
+
+impl PortableDpi {
+    /// Extracts the portable semantic values from a complete DPI state,
+    /// dropping the opaque report tail.
+    #[must_use]
+    pub fn from_dpi_state(state: &DpiState) -> Self {
+        Self {
+            profile: state.profile,
+            stages: state.stages.clone(),
+            active_stage: state.active_stage,
+            sensor: state.sensor,
+        }
+    }
+}
+
 /// A profile's portable configuration values.
 ///
 /// The export deliberately contains values only. Resource provenance,
 /// verification, observations, timestamps, device IDs, and transport locators
-/// remain private to the local state file.
+/// remain private to the local state file. DPI travels as semantic settings
+/// ([`PortableDpi`]) without the opaque report tail, which is never portable.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileConfiguration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dpi: Option<DpiState>,
+    pub dpi: Option<PortableDpi>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferences: Option<PreferencesState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,7 +101,9 @@ impl DeviceManager {
         let mut profiles = BTreeMap::new();
         for (&profile, profile_state) in &device_state.profiles {
             let configuration = ProfileConfiguration {
-                dpi: value_for_export(&profile_state.dpi),
+                dpi: value_for_export(&profile_state.dpi)
+                    .as_ref()
+                    .map(PortableDpi::from_dpi_state),
                 preferences: value_for_export(&profile_state.preferences),
                 buttons: value_for_export(&profile_state.buttons),
                 polling_rate: value_for_export(&profile_state.polling_rate),
@@ -91,7 +128,9 @@ impl DeviceManager {
     /// Import never opens a session or writes hardware. Existing observations
     /// are retained as evidence of the local device; imported values become
     /// new desired values with `Imported` provenance and `NotSent`/`Unknown`
-    /// verification.
+    /// verification. Imported DPI is merged onto the target device's own
+    /// baseline tail; without existing DPI evidence the import fails with
+    /// [`ManagerError::MissingBaseline`].
     pub fn import_configuration(
         &self,
         identity: &DeviceIdentity,
@@ -125,8 +164,19 @@ impl DeviceManager {
 
         for (&profile, configuration) in &configuration.profiles {
             let profile_state = device_state.profiles.entry(profile).or_default();
-            if let Some(dpi) = configuration.dpi.clone() {
-                set_imported(&mut profile_state.dpi, dpi, now);
+            if let Some(dpi) = configuration.dpi.as_ref() {
+                // The document carries semantic values only; the opaque tail
+                // must come from the target device's own DPI evidence.
+                let baseline =
+                    value_for_export(&profile_state.dpi).ok_or(ManagerError::MissingBaseline {
+                        resource: "DPI",
+                        profile: Some(profile),
+                    })?;
+                set_imported(
+                    &mut profile_state.dpi,
+                    merge_portable_dpi(dpi, &baseline)?,
+                    now,
+                );
             }
             if let Some(preferences) = configuration.preferences {
                 set_imported(&mut profile_state.preferences, preferences, now);
@@ -254,6 +304,30 @@ fn value_for_export<T: Clone>(resource: &ResourceState<T>) -> Option<T> {
         })
 }
 
+/// Rebuilds a complete DPI state from portable semantic values and the target
+/// device's own opaque report tail.
+///
+/// The portable document never carries the tail: on a persistently identified
+/// device the tail is the physical watermark, which belongs to the target
+/// mouse alone. The tail is taken from the target's own baseline and is never
+/// invented or imported.
+fn merge_portable_dpi(
+    portable: &PortableDpi,
+    baseline: &DpiState,
+) -> Result<DpiState, ManagerError> {
+    DpiState::new(
+        portable.profile,
+        portable.stages.clone(),
+        portable.active_stage,
+        baseline.preserved_tail,
+    )
+    .map(|state| state.with_sensor(portable.sensor))
+    .map_err(|source| ManagerError::Protocol {
+        operation: "dpi state",
+        source,
+    })
+}
+
 /// Normalizes a user-supplied profile display name.
 ///
 /// Surrounding whitespace is trimmed; a blank result means "no name". Names
@@ -376,12 +450,18 @@ pub(crate) fn finish_write<T>(
 
 fn validate_configuration(configuration: &ConfigurationExport) -> Result<(), ManagerError> {
     for (&profile, values) in &configuration.profiles {
-        if values
-            .dpi
-            .as_ref()
-            .is_some_and(|value| value.profile != profile)
-        {
-            return Err(invalid_profile_value("DPI", profile));
+        if let Some(dpi) = values.dpi.as_ref() {
+            if dpi.profile != profile {
+                return Err(invalid_profile_value("DPI", profile));
+            }
+            // Validate stage selection even without a real tail; the opaque
+            // tail bytes are not inspected by DpiState::new.
+            DpiState::new(dpi.profile, dpi.stages.clone(), dpi.active_stage, [0; 25]).map_err(
+                |source| ManagerError::Protocol {
+                    operation: "dpi state",
+                    source,
+                },
+            )?;
         }
         if values
             .preferences
@@ -412,18 +492,19 @@ fn invalid_profile_value(resource: &'static str, profile: ProfileId) -> ManagerE
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigurationExport, ProfileConfiguration};
+    use super::{ConfigurationExport, PortableDpi, ProfileConfiguration};
     use crate::device::{DeviceId, DeviceIdentity};
     use crate::error::ManagerError;
     use crate::manager::DeviceManager;
     use crate::state::{
-        ApplicationVerification, DesiredSource, DesiredState, MAX_PROFILE_NAME_CHARS,
+        ApplicationVerification, DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS,
         ObservationSource, ObservedState, PersistenceVerification, ResourceState, StatePaths,
         StateStore, Timestamp, Verification,
     };
     use attack_shark_x3::{
-        ButtonAssignment, ButtonsState, DpiState, DpiValue, PollingRate, PreferencesState,
-        ProfileId, ProfileMetadata, StageIndex, TransportKind,
+        ButtonAssignment, ButtonsState, DpiState, DpiValue, PhysicalId, PollingRate,
+        PreferencesState, ProfileId, ProfileMetadata, StageIndex, TransportKind, WatermarkDecode,
+        decode_watermark,
     };
     use std::collections::BTreeMap;
 
@@ -443,12 +524,54 @@ mod tests {
         .expect("valid identity")
     }
 
-    fn dpi(_profile: ProfileId) -> DpiState {
-        DpiState::captured_empty_profile_one(
+    fn dpi(_profile: ProfileId) -> PortableDpi {
+        PortableDpi::from_dpi_state(
+            &DpiState::captured_empty_profile_one(
+                vec![DpiValue::new(800).expect("dpi")],
+                StageIndex::new(1).expect("stage"),
+            )
+            .expect("state"),
+        )
+    }
+
+    /// A complete DPI state whose opaque tail carries a stamped watermark.
+    fn stamped_dpi(profile: ProfileId, token: [u8; 16]) -> DpiState {
+        DpiState::new(
+            profile,
             vec![DpiValue::new(800).expect("dpi")],
             StageIndex::new(1).expect("stage"),
+            PhysicalId::from_token_bytes(token).to_watermark_bytes(),
         )
         .expect("state")
+    }
+
+    /// Seeds a device's DPI observation so imports have a local baseline.
+    fn seed_dpi_baseline(
+        store: &StateStore,
+        identity: &DeviceIdentity,
+        profile: ProfileId,
+        value: DpiState,
+    ) {
+        let mut transaction = store.transaction().expect("transaction");
+        let device_number = identity.id.number().expect("device number");
+        if transaction.state().next_device_number <= device_number {
+            transaction.state_mut().next_device_number = device_number + 1;
+        }
+        let device_state = transaction
+            .state_mut()
+            .devices
+            .entry(identity.id.clone())
+            .or_insert_with(|| DeviceState::new(identity.clone()));
+        let profile_state = device_state
+            .profiles
+            .entry(profile)
+            .or_insert_with(crate::state::ProfileState::empty);
+        profile_state.dpi.observed = Some(ObservedState {
+            value,
+            source: ObservationSource::UsbReadback,
+            observed_at: Timestamp { unix_seconds: 1 },
+        });
+        transaction.commit().expect("commit");
     }
 
     fn buttons(profile: ProfileId) -> ButtonsState {
@@ -463,6 +586,15 @@ mod tests {
         let manager = DeviceManager::new(store(&dir)).expect("manager");
         let identity = identity();
         let profile = ProfileId::new(1).expect("profile");
+        // The exporting device carries its own stamped watermark; the portable
+        // document must never expose it.
+        let device_token = [0xAA; 16];
+        seed_dpi_baseline(
+            manager.store(),
+            &identity,
+            profile,
+            stamped_dpi(profile, device_token),
+        );
         let configuration = ConfigurationExport {
             profiles: [(
                 profile,
@@ -485,6 +617,11 @@ mod tests {
         assert_eq!(exported, configuration);
         let json = serde_json::to_value(exported).expect("serialize export");
         let text = json.to_string();
+        // Neither the watermark magic nor the token hex may appear in the
+        // serialized portable document.
+        assert!(!text.contains("X3ID"));
+        assert!(!text.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(!text.contains("preservedTail"));
         assert!(!text.contains(identity.id.as_str()));
         assert!(!text.contains("hid#test"));
         assert!(!text.contains("imported"));
@@ -492,6 +629,17 @@ mod tests {
         assert!(!text.contains("updatedAt"));
 
         let state = manager.store().load().expect("state");
+        // The imported DPI desired value is the document's semantics merged
+        // onto the device's own watermark tail.
+        let imported_dpi = state.devices[&identity.id].profiles[&profile]
+            .dpi
+            .desired
+            .as_ref()
+            .expect("imported dpi desired");
+        assert_eq!(
+            imported_dpi.value.preserved_tail,
+            PhysicalId::from_token_bytes(device_token).to_watermark_bytes()
+        );
         let desired = state.devices[&identity.id].profiles[&profile]
             .buttons
             .desired
@@ -502,6 +650,104 @@ mod tests {
     }
 
     #[test]
+    fn import_into_target_retains_target_watermark_tail() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = DeviceManager::new(store(&dir)).expect("manager");
+        let target = identity();
+        let profile = ProfileId::new(1).expect("profile");
+        let target_token = [0xBB; 16];
+        seed_dpi_baseline(
+            manager.store(),
+            &target,
+            profile,
+            stamped_dpi(profile, target_token),
+        );
+
+        let source = ConfigurationExport {
+            profiles: [(
+                profile,
+                ProfileConfiguration {
+                    dpi: Some(dpi(profile)),
+                    preferences: None,
+                    buttons: None,
+                    polling_rate: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            profile_names: BTreeMap::new(),
+        };
+
+        // The portable document itself never carries the watermark.
+        let document_text = serde_json::to_value(&source)
+            .expect("serialize document")
+            .to_string();
+        assert!(!document_text.contains("X3ID"));
+        assert!(!document_text.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        assert!(!document_text.contains("preservedTail"));
+
+        manager
+            .import_configuration(&target, source)
+            .expect("import");
+
+        let state = manager.store().load().expect("state");
+        let desired = state.devices[&target.id].profiles[&profile]
+            .dpi
+            .desired
+            .as_ref()
+            .expect("imported dpi desired");
+        assert_eq!(desired.value.stages, vec![DpiValue::new(800).expect("dpi")]);
+        assert_eq!(
+            desired.value.active_stage,
+            StageIndex::new(1).expect("stage")
+        );
+        // The target's own watermark survives byte-for-byte.
+        assert_eq!(
+            desired.value.preserved_tail,
+            PhysicalId::from_token_bytes(target_token).to_watermark_bytes()
+        );
+        assert_eq!(
+            decode_watermark(&desired.value.preserved_tail),
+            WatermarkDecode::Valid(PhysicalId::from_token_bytes(target_token))
+        );
+        assert_eq!(desired.source, DesiredSource::Imported);
+        assert_eq!(desired.verification, Verification::not_sent());
+    }
+
+    #[test]
+    fn import_dpi_without_local_baseline_returns_missing_baseline() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = DeviceManager::new(store(&dir)).expect("manager");
+        let identity = identity();
+        let profile = ProfileId::new(1).expect("profile");
+        let configuration = ConfigurationExport {
+            profiles: [(
+                profile,
+                ProfileConfiguration {
+                    dpi: Some(dpi(profile)),
+                    preferences: None,
+                    buttons: None,
+                    polling_rate: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            profile_names: BTreeMap::new(),
+        };
+
+        match manager.import_configuration(&identity, configuration) {
+            Err(ManagerError::MissingBaseline {
+                resource,
+                profile: found,
+            }) => {
+                assert_eq!(resource, "DPI");
+                assert_eq!(found, Some(profile));
+            }
+            other => panic!("expected MissingBaseline, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn invalidation_preserves_values_and_clears_persistence_evidence() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = store(&dir);
@@ -509,7 +755,9 @@ mod tests {
         let identity = identity();
         manager.register_device(identity.clone()).expect("register");
         let profile = ProfileId::new(1).expect("profile");
-        let dpi = dpi(profile);
+        // The durable DPI resource holds a complete DpiState, opaque watermark
+        // tail included; invalidation must never strip or transfer the tail.
+        let dpi = stamped_dpi(profile, [0xCD; 16]);
         let preferences = PreferencesState::new(profile, 1, 2, 3, [4, 5, 6], 7, 8);
         let buttons = buttons(profile);
         let timestamp = Timestamp { unix_seconds: 10 };
@@ -649,6 +897,23 @@ mod tests {
             profile
         );
         assert_eq!(profile_state.dpi.desired.as_ref().expect("dpi").value, dpi);
+        // The seeded watermark tail survives invalidation byte-for-byte:
+        // persistence evidence is cleared, never the tail bytes.
+        let tail = profile_state
+            .dpi
+            .desired
+            .as_ref()
+            .expect("dpi")
+            .value
+            .preserved_tail;
+        assert_eq!(
+            tail,
+            PhysicalId::from_token_bytes([0xCD; 16]).to_watermark_bytes()
+        );
+        assert_eq!(
+            decode_watermark(&tail),
+            WatermarkDecode::Valid(PhysicalId::from_token_bytes([0xCD; 16]))
+        );
         assert!(
             profile_state
                 .dpi
@@ -821,6 +1086,12 @@ mod tests {
         let manager = DeviceManager::new(store(&dir)).expect("manager");
         let identity = identity();
         let profile = ProfileId::new(1).expect("profile");
+        seed_dpi_baseline(
+            manager.store(),
+            &identity,
+            profile,
+            stamped_dpi(profile, [0xAA; 16]),
+        );
         let configuration = ConfigurationExport {
             profiles: [(
                 profile,
@@ -1081,17 +1352,39 @@ mod tests {
         let manager = DeviceManager::new(store(&dir)).expect("manager");
         let identity = identity();
         let profile = ProfileId::new(1).expect("profile");
+        // A legacy document may embed a full DPI state whose opaque tail
+        // carries the exporting device's watermark; the portable DTO ignores
+        // the tail and reads only the semantic values.
+        let legacy_dpi = stamped_dpi(profile, [0xAA; 16]);
         let json = serde_json::json!({
             "profiles": {
                 profile.get().to_string(): {
-                    "dpi": dpi(profile),
+                    "dpi": legacy_dpi,
                 },
             },
         });
         let configuration: ConfigurationExport =
             serde_json::from_value(json).expect("deserialize old import");
         assert!(configuration.profile_names.is_empty());
+        assert_eq!(
+            configuration.profiles[&profile]
+                .dpi
+                .as_ref()
+                .expect("dpi")
+                .profile,
+            profile
+        );
 
+        // Import merges the legacy document's semantic values onto the target
+        // device's own tail; the exported document's watermark is never
+        // copied.
+        let target_token = [0xBB; 16];
+        seed_dpi_baseline(
+            manager.store(),
+            &identity,
+            profile,
+            stamped_dpi(profile, target_token),
+        );
         manager
             .import_configuration(&identity, configuration)
             .expect("import");
@@ -1100,6 +1393,17 @@ mod tests {
                 .profile_names(&identity.id)
                 .expect("names")
                 .is_empty()
+        );
+
+        let state = manager.store().load().expect("state");
+        let desired = state.devices[&identity.id].profiles[&profile]
+            .dpi
+            .desired
+            .as_ref()
+            .expect("imported dpi desired");
+        assert_eq!(
+            desired.value.preserved_tail,
+            PhysicalId::from_token_bytes(target_token).to_watermark_bytes()
         );
     }
 }

@@ -590,6 +590,8 @@ pub(crate) struct ScriptedFakeSession {
     profiles: Arc<Mutex<BTreeMap<ProfileId, ProfileSnapshot>>>,
     profile_sequences: Arc<Mutex<BTreeMap<ProfileId, VecDeque<ProfileSnapshot>>>>,
     last_profiles: Arc<Mutex<BTreeMap<ProfileId, ProfileSnapshot>>>,
+    profile_reads: Arc<Mutex<usize>>,
+    dpi_reads: Arc<Mutex<usize>>,
     /// Per-profile polling rates; the live rate is `polling_rates[live_profile]`.
     polling_rates: Arc<Mutex<BTreeMap<ProfileId, PollingRate>>>,
     /// The currently live/working profile image; report `0x06` skips the loader
@@ -619,6 +621,8 @@ impl ScriptedFakeSession {
             profiles: Arc::new(Mutex::new(BTreeMap::new())),
             profile_sequences: Arc::new(Mutex::new(BTreeMap::new())),
             last_profiles: Arc::new(Mutex::new(BTreeMap::new())),
+            profile_reads: Arc::new(Mutex::new(0)),
+            dpi_reads: Arc::new(Mutex::new(0)),
             polling_rates: Arc::new(Mutex::new(BTreeMap::new())),
             live_profile: Arc::new(Mutex::new(ProfileId::MIN_ID)),
             last_polling_alias: Arc::new(Mutex::new(None)),
@@ -694,6 +698,14 @@ impl ScriptedFakeSession {
         *lock_scripted(&self.last_polling_alias)
     }
 
+    pub(crate) fn profile_read_count(&self) -> usize {
+        *lock_scripted(&self.profile_reads)
+    }
+
+    pub(crate) fn dpi_read_count(&self) -> usize {
+        *lock_scripted(&self.dpi_reads)
+    }
+
     pub(crate) fn with_battery(self, level: u8) -> Self {
         *lock_scripted(&self.battery) = Some(level);
         self
@@ -753,6 +765,7 @@ impl DeviceSession for ScriptedFakeSession {
         if self.is_ble() {
             return self.unsupported("read_profile");
         }
+        *lock_scripted(&self.profile_reads) += 1;
         let queued = lock_scripted(&self.profile_sequences)
             .get_mut(&profile)
             .and_then(VecDeque::pop_front);
@@ -780,6 +793,7 @@ impl DeviceSession for ScriptedFakeSession {
         if self.is_ble() {
             return self.unsupported("read_dpi");
         }
+        *lock_scripted(&self.dpi_reads) += 1;
         let result = lock_scripted(&self.profiles)
             .get(&profile)
             .map(|snapshot| snapshot.dpi.clone())

@@ -1,7 +1,7 @@
 use std::{error::Error, thread};
 
 use attack_shark_x3::{DebounceMs, SleepTimer};
-use attack_shark_x3_manager::ProfileId;
+use attack_shark_x3_manager::{DeviceId, IdentityCeremonyAction, IdentityCeremonyKind, ProfileId};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tokio::sync::{mpsc, watch};
 
@@ -11,7 +11,9 @@ mod presentation;
 mod projection;
 mod worker;
 
-pub use generated_ui::{AppWindow, BindingRow, DeviceRow, DpiStage, ProfileRow, Theme};
+pub use generated_ui::{
+    AppWindow, BindingRow, DeviceRow, DpiStage, ProfileRow, Theme, UnassociatedRow,
+};
 
 use crate::presentation::{
     BINDING_ACTIONS, MAX_DPI_STAGES, RAW_PREFERENCE_CONFIGURATION, RAW_PREFERENCE_DEBOUNCE,
@@ -29,16 +31,26 @@ use crate::projection::{
     refresh_dpi_ratios, remove_dpi_stage, set_active_dpi_stage, update_single_dpi_ratio,
 };
 use crate::worker::{BaselineChoice, Command, Draft, VerificationChoice, worker_main};
+
+/// Action codes the unassociated-connection rows send through
+/// `unassociated-action`; they select which ceremony the row starts.
+const UNASSOCIATED_ADD: i32 = 0;
+const UNASSOCIATED_RESTORE: i32 = 1;
+const UNASSOCIATED_ADOPT: i32 = 2;
+const UNASSOCIATED_ASSOCIATE: i32 = 3;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let ui = AppWindow::new()?;
     let dpi_stages = std::rc::Rc::new(VecModel::from(Vec::<DpiStage>::new()));
     let bindings = std::rc::Rc::new(VecModel::from(Vec::<BindingRow>::new()));
     let profiles = std::rc::Rc::new(VecModel::from(Vec::<ProfileRow>::new()));
     let devices = std::rc::Rc::new(VecModel::from(Vec::<DeviceRow>::new()));
+    let unassociated = std::rc::Rc::new(VecModel::from(Vec::<UnassociatedRow>::new()));
     ui.set_dpi_stages(ModelRc::from(dpi_stages.clone()));
     ui.set_bindings(ModelRc::from(bindings.clone()));
     ui.set_profiles(ModelRc::from(profiles.clone()));
     ui.set_devices(ModelRc::from(devices.clone()));
+    ui.set_unassociated(ModelRc::from(unassociated));
     let binding_actions = std::rc::Rc::new(VecModel::from(
         BINDING_ACTIONS
             .iter()
@@ -93,8 +105,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui.set_preference_deep_sleep_raw("00".into());
     ui.set_preference_sleep_timer_raw("00".into());
     ui.set_preference_debounce_raw("00".into());
-    ui.set_baseline_choice(0);
-    ui.set_allow_explicit_defaults(false);
+    ui.set_validation_choice(gui_prefs.validation_choice);
+    ui.set_baseline_choice_wired(gui_prefs.baseline_choice_wired);
+    ui.set_baseline_choice_receiver(gui_prefs.baseline_choice_receiver);
+    ui.set_allow_explicit_defaults(gui_prefs.allow_explicit_defaults);
     ui.set_ble_device(false);
     ui.set_verification_running(false);
     ui.set_last_enabled_profile(-1);
@@ -576,7 +590,7 @@ fn install_callbacks(
                 parse_raw_byte(ui.get_preference_configuration_raw().as_str())
             else {
                 ui.set_status_text(
-                    "fix the raw configuration byte before changing deep sleep (the last valid value is kept)"
+                    "fix the raw configuration value before changing deep sleep (the last valid value is kept)"
                         .into(),
                 );
                 return;
@@ -612,7 +626,7 @@ fn install_callbacks(
                 parse_raw_byte(ui.get_preference_configuration_raw().as_str())
             else {
                 ui.set_status_text(
-                    "fix the raw configuration byte before changing deep sleep (the last valid value is kept)"
+                    "fix the raw configuration value before changing deep sleep (the last valid value is kept)"
                         .into(),
                 );
                 return;
@@ -635,9 +649,9 @@ fn install_callbacks(
                 ui.set_advanced_preferences(advanced);
                 ui.set_status_text(
                     if advanced {
-                        "raw preference bytes shown; typed fields update from raw bytes"
+                        "raw preference settings shown; typed fields update from raw values"
                     } else {
-                        "raw preference bytes hidden"
+                        "raw preference settings hidden"
                     }
                     .into(),
                 );
@@ -653,7 +667,7 @@ fn install_callbacks(
             }
             let Some(value) = parse_raw_byte(text.as_str()) else {
                 ui.set_status_text(
-                    "raw preference bytes must be one or two hex digits (for example 0a or 0x0a)"
+                    "raw preference values must be one or two hex digits (for example 0a or 0x0a)"
                         .into(),
                 );
                 return;
@@ -687,15 +701,15 @@ fn install_callbacks(
                 }
             }
             ui.set_dirty(true);
-            ui.set_status_text("raw preference byte changed in the draft — save to apply".into());
+            ui.set_status_text("raw preference value changed in the draft — save to apply".into());
         });
     }
     {
         let weak = ui.as_weak();
-        ui.on_set_baseline_choice(move |choice| {
+        ui.on_set_baseline_choice_wired(move |choice| {
             if let Some(ui) = weak.upgrade() {
                 let choice = choice.clamp(0, 1);
-                ui.set_baseline_choice(choice);
+                ui.set_baseline_choice_wired(choice);
                 if ui.get_ble_device() {
                     ui.set_status_text("BLE always starts from your last saved settings".into());
                 } else if choice == 1 {
@@ -707,6 +721,26 @@ fn install_callbacks(
                         "next USB write will start from the mouse's current settings".into(),
                     );
                 }
+                persist_gui_preferences(&ui);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_set_baseline_choice_receiver(move |choice| {
+            if let Some(ui) = weak.upgrade() {
+                let choice = choice.clamp(0, 1);
+                ui.set_baseline_choice_receiver(choice);
+                if choice == 1 {
+                    ui.set_status_text(
+                        "next dongle write will start from your last saved settings".into(),
+                    );
+                } else {
+                    ui.set_status_text(
+                        "next dongle write will start from the mouse's current settings".into(),
+                    );
+                }
+                persist_gui_preferences(&ui);
             }
         });
     }
@@ -723,6 +757,7 @@ fn install_callbacks(
                     }
                     .into(),
                 );
+                persist_gui_preferences(&ui);
             }
         });
     }
@@ -905,6 +940,262 @@ fn install_callbacks(
     }
     {
         let weak = ui.as_weak();
+        let commands = commands.clone();
+        ui.on_request_add_mouse(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_busy() || ui.get_ceremony_active() {
+                if ui.get_ceremony_active() {
+                    ui.set_status_text(
+                        "finish or cancel the current setup before starting another one".into(),
+                    );
+                }
+                return;
+            }
+            if let Some(message) = dirty_draft_message(ui.get_dirty(), "setting up another mouse") {
+                ui.set_status_text(message.into());
+                return;
+            }
+            ui.set_status_text("starting setup…".into());
+            queue_command(
+                &ui,
+                &commands,
+                Command::BeginCeremony {
+                    kind: IdentityCeremonyKind::AddMouse,
+                    target: None,
+                    subject: None,
+                },
+            );
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let commands = commands.clone();
+        ui.on_unassociated_action(move |row, action| {
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_busy() || ui.get_ceremony_active() {
+                ui.set_status_text(
+                    "finish or cancel the current setup before starting another one".into(),
+                );
+                return;
+            }
+            if let Some(message) = dirty_draft_message(ui.get_dirty(), "setting up another mouse") {
+                ui.set_status_text(message.into());
+                return;
+            }
+            if row < 0 {
+                return;
+            }
+            match action {
+                UNASSOCIATED_ADD => {
+                    ui.set_status_text("starting setup…".into());
+                    queue_command(
+                        &ui,
+                        &commands,
+                        Command::BeginCeremony {
+                            kind: IdentityCeremonyKind::AddMouse,
+                            target: None,
+                            subject: Some(row as usize),
+                        },
+                    );
+                }
+                UNASSOCIATED_ADOPT => {
+                    ui.set_status_text("starting adoption…".into());
+                    queue_command(
+                        &ui,
+                        &commands,
+                        Command::BeginCeremony {
+                            kind: IdentityCeremonyKind::ForeignAdoption,
+                            target: None,
+                            subject: Some(row as usize),
+                        },
+                    );
+                }
+                UNASSOCIATED_RESTORE => {
+                    ui.set_pending_unassociated_row(row);
+                    ui.invoke_show_restore_picker();
+                }
+                UNASSOCIATED_ASSOCIATE => {
+                    ui.set_pending_unassociated_row(row);
+                    ui.invoke_show_associate_picker();
+                }
+                _ => {
+                    ui.set_status_text("that action isn't available".into());
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let commands = commands.clone();
+        ui.on_begin_restore(move |target| {
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_busy() || ui.get_ceremony_active() {
+                return;
+            }
+            let row = ui.get_pending_unassociated_row();
+            if row < 0 {
+                ui.set_status_text("choose the unrecognized mouse first".into());
+                return;
+            }
+            let target = match DeviceId::new(target.as_str()) {
+                Ok(id) => id,
+                Err(_) => {
+                    ui.set_status_text("that saved mouse isn't valid".into());
+                    return;
+                }
+            };
+            ui.set_status_text("starting restore…".into());
+            queue_command(
+                &ui,
+                &commands,
+                Command::BeginCeremony {
+                    kind: IdentityCeremonyKind::Restore,
+                    target: Some(target),
+                    subject: Some(row as usize),
+                },
+            );
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let commands = commands.clone();
+        ui.on_begin_associate(move |target| {
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_busy() || ui.get_ceremony_active() {
+                return;
+            }
+            let row = ui.get_pending_unassociated_row();
+            if row < 0 {
+                ui.set_status_text("choose the bluetooth mouse first".into());
+                return;
+            }
+            let target = match DeviceId::new(target.as_str()) {
+                Ok(id) => id,
+                Err(_) => {
+                    ui.set_status_text("that saved mouse isn't valid".into());
+                    return;
+                }
+            };
+            ui.set_status_text("starting pairing…".into());
+            queue_command(
+                &ui,
+                &commands,
+                Command::BeginCeremony {
+                    kind: IdentityCeremonyKind::BleAssociation,
+                    target: Some(target),
+                    subject: Some(row as usize),
+                },
+            );
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let commands = commands.clone();
+        ui.on_ceremony_primary(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_busy() {
+                return;
+            }
+            match ui.get_ceremony_prompt() {
+                // Reconnect
+                1 => {
+                    queue_command(
+                        &ui,
+                        &commands,
+                        Command::CeremonyAction {
+                            action: IdentityCeremonyAction::Reconnected,
+                            endpoint: None,
+                            target: None,
+                        },
+                    );
+                }
+                // Stamp
+                2 => {
+                    queue_command(
+                        &ui,
+                        &commands,
+                        Command::CeremonyAction {
+                            action: IdentityCeremonyAction::Stamp,
+                            endpoint: None,
+                            target: None,
+                        },
+                    );
+                }
+                // Adopt
+                3 => {
+                    queue_command(
+                        &ui,
+                        &commands,
+                        Command::CeremonyAction {
+                            action: IdentityCeremonyAction::Adopt,
+                            endpoint: None,
+                            target: None,
+                        },
+                    );
+                }
+                // Associate
+                4 => {
+                    queue_command(
+                        &ui,
+                        &commands,
+                        Command::CeremonyAction {
+                            action: IdentityCeremonyAction::Associate,
+                            endpoint: None,
+                            target: None,
+                        },
+                    );
+                }
+                // Done / None: close the ceremony surface.
+                _ => {
+                    ui.invoke_close_ceremony();
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let commands = commands.clone();
+        ui.on_ceremony_cancel(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_busy() {
+                return;
+            }
+            queue_command(
+                &ui,
+                &commands,
+                Command::CeremonyAction {
+                    action: IdentityCeremonyAction::Cancel,
+                    endpoint: None,
+                    target: None,
+                },
+            );
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let commands = commands.clone();
+        ui.on_ceremony_migration_changed(move |accept| {
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_busy() {
+                return;
+            }
+            queue_command(
+                &ui,
+                &commands,
+                Command::CeremonyAction {
+                    action: if accept {
+                        IdentityCeremonyAction::AcceptMigration
+                    } else {
+                        IdentityCeremonyAction::SkipMigration
+                    },
+                    endpoint: None,
+                    target: None,
+                },
+            );
+        });
+    }
+    {
+        let weak = ui.as_weak();
         let bindings = bindings.clone();
         ui.on_set_binding_action(move |row, label| {
             let Some(ui) = weak.upgrade() else {
@@ -993,6 +1284,7 @@ fn install_callbacks(
                         "next USB save will confirm delivery only".into()
                     });
                 }
+                persist_gui_preferences(&ui);
             }
         });
     }
@@ -1052,7 +1344,7 @@ fn install_callbacks(
                 Err(field) => {
                     ui.set_status_text(
                         format!(
-                            "raw {} byte is not valid hex (one or two digits); the last valid value is kept — fix it before saving",
+                            "raw {} value is not valid hex (one or two digits); the last valid value is kept — fix it before saving",
                             raw_preference_field_label(field)
                         )
                         .into(),
@@ -1079,10 +1371,20 @@ fn install_callbacks(
                 } else {
                     VerificationChoice::Transport
                 },
-                baseline: if ui.get_baseline_choice() == 1 {
-                    BaselineChoice::Stored
-                } else {
-                    BaselineChoice::Live
+                baseline: {
+                    if ui.get_ble_device() {
+                        BaselineChoice::Stored
+                    } else if ui.get_transport_label().as_str().contains("receiver") {
+                        if ui.get_baseline_choice_receiver() == 1 {
+                            BaselineChoice::Stored
+                        } else {
+                            BaselineChoice::Live
+                        }
+                    } else if ui.get_baseline_choice_wired() == 1 {
+                        BaselineChoice::Stored
+                    } else {
+                        BaselineChoice::Live
+                    }
                 },
                 allow_explicit_defaults: ui.get_allow_explicit_defaults(),
             };
@@ -1191,6 +1493,10 @@ fn current_gui_preferences(ui: &AppWindow) -> app_settings::GuiPreferences {
         dpi_max: ui.get_dpi_max(),
         dpi_log_scale: ui.get_dpi_log_scale(),
         last_page: ui.get_current_page(),
+        validation_choice: ui.get_validation_choice(),
+        baseline_choice_wired: ui.get_baseline_choice_wired(),
+        baseline_choice_receiver: ui.get_baseline_choice_receiver(),
+        allow_explicit_defaults: ui.get_allow_explicit_defaults(),
     }
 }
 

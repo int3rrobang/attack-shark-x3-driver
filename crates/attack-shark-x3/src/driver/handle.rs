@@ -10,13 +10,12 @@ use std::{
     time::Duration,
 };
 
-use thiserror::Error;
-use tokio::sync::{broadcast, oneshot};
-
 use crate::{
     DpiState, InputEvent, PollingRate, PreferencesState, ProfileId, ProfileMetadata, ProtocolError,
-    TransportKind, protocol::buttons::ButtonsState,
+    ReadbackRequest, TransportKind, protocol::buttons::ButtonsState,
 };
+use thiserror::Error;
+use tokio::sync::{broadcast, oneshot};
 
 #[cfg(feature = "usb")]
 use super::usb::{self, DeviceSelector};
@@ -362,6 +361,25 @@ impl MouseHandle {
             .await
     }
 
+    /// Reads the raw feature-report bytes for a bounded [`ReadbackRequest`]
+    /// through the armed A0 read mailbox, without decoding them.
+    ///
+    /// The returned bytes are exactly what the device reported for that
+    /// prepared read — the caller interprets them. Only the known
+    /// [`ReadbackRequest`] reports are supported; there is no arbitrary
+    /// report-ID or length escape hatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, retry-exhaustion, or worker lifecycle errors.
+    pub async fn read_raw_readback(
+        &self,
+        request: ReadbackRequest,
+    ) -> Result<Vec<u8>, DriverError> {
+        self.request(|reply| Command::RawReadback { request, reply })
+            .await
+    }
+
     /// Submits the DPI write packet without readback or verification.
     ///
     /// This is a stock-style send-only path: exactly one report is emitted
@@ -632,6 +650,10 @@ pub(crate) enum Command {
     Profile {
         target_profile: ProfileId,
         reply: Reply<ProfileSnapshot>,
+    },
+    RawReadback {
+        request: ReadbackRequest,
+        reply: Reply<Vec<u8>>,
     },
     SendRawFeatureReport {
         bytes: Vec<u8>,

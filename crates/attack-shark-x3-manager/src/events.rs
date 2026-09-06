@@ -28,10 +28,13 @@ use crate::operation::DeviceEvent;
 /// around `Receiver<InputEvent>` that changes the public type. Keeping the
 /// second bounded channel preserves the simple `broadcast::Receiver` contract
 /// while still surfacing `Lagged` explicitly.
+///
+/// The subscription does **not** hold the per-device operation lock: the lock
+/// is released once the session is open, so reads, writes, and verification
+/// workflows proceed on the same device while events are being delivered.
 pub struct EventSubscriptions {
     pub events: Option<broadcast::Receiver<DeviceEvent>>,
     _session: Box<dyn DeviceSession>,
-    _guard: crate::state::DeviceOperationGuard,
 }
 
 impl DeviceManager {
@@ -45,7 +48,10 @@ impl DeviceManager {
         &self,
         device: &DeviceId,
     ) -> Result<EventSubscriptions, ManagerError> {
-        let (_identity, session, guard) = self.open_locked(device, "subscribe_events").await?;
+        // A passive listener keeps its session open for its whole lifetime;
+        // releasing the per-device operation lock here lets other operations
+        // run against the same device while events are delivered.
+        let (_identity, session, _) = self.open_locked(device, "subscribe_events").await?;
         let events = session.subscribe_events();
         let mapped = events.input.map(|mut input| {
             let (sender, receiver) = broadcast::channel(16);
@@ -71,17 +77,21 @@ impl DeviceManager {
         Ok(EventSubscriptions {
             events: mapped,
             _session: session,
-            _guard: guard,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use tokio::sync::broadcast;
 
+    use crate::backend::{ScriptedFakeFactory, ScriptedFakeSession};
+    use crate::device::DeviceIdentity;
+    use crate::manager::DeviceManager;
     use crate::operation::DeviceEvent;
-    use attack_shark_x3::{BatteryEvent, InputEvent};
+    use crate::state::StateStore;
+    use attack_shark_x3::{BatteryEvent, InputEvent, TransportKind};
 
     #[tokio::test]
     async fn lagged_broadcast_is_surfaced_as_typed_lagged_event() {
@@ -222,5 +232,40 @@ mod tests {
         let ok = fresh.recv().await.expect("fresh should receive");
         assert!(matches!(ok, InputEvent::BatteryChanged(_)));
         let _ = output_rx;
+    }
+
+    #[tokio::test]
+    async fn subscription_does_not_block_later_device_operations() {
+        let identity = DeviceIdentity::test_usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            Some("EVENTS-TEST"),
+            r"\\?\hid#events-test",
+            Some("Events test mouse"),
+        )
+        .expect("valid test identity");
+        let device = identity.id.clone();
+        let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
+            identity.clone(),
+            true,
+            ScriptedFakeSession::usb().with_battery(7),
+        ));
+        let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory);
+        manager.register_device(identity).expect("register");
+
+        let subscriptions = manager.subscribe_events(&device).await.expect("subscribe");
+        // While the subscription holds its input session open, another
+        // operation on the same device must still acquire the per-device
+        // operation lock instead of timing out.
+        let level = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            manager.read_battery(&device),
+        )
+        .await
+        .expect("read while subscribed must not time out")
+        .expect("read while subscribed must succeed");
+        assert_eq!(level, 7);
+        drop(subscriptions);
     }
 }

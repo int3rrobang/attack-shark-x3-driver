@@ -1,14 +1,19 @@
 use std::time::Duration;
 
 use attack_shark_x3::driver::ProfileSnapshot;
-use attack_shark_x3::{PollingRate, ProfileId, ProfileMetadata, TransportKind};
+use attack_shark_x3::{
+    PhysicalId, PollingRate, ProfileId, ProfileMetadata, TransportKind, WatermarkDecode,
+    decode_watermark,
+};
 use tokio::time::{Instant, sleep};
 
 use crate::backend::SessionWrite;
 use crate::device::{DeviceEndpoint, DeviceId, TransportSelection};
 use crate::error::ManagerError;
 use crate::manager::DeviceManager;
-use crate::operation::{PowerCycleVerificationOutcome, ProfileVerificationOutcome, WriteOutcome};
+use crate::operation::{
+    DiscoveredEndpoint, PowerCycleVerificationOutcome, ProfileVerificationOutcome, WriteOutcome,
+};
 use crate::state::{ApplicationVerification, PersistenceVerification, ProfileState, Verification};
 const POWER_CYCLE_POLL_INTERVAL: Duration = if cfg!(test) {
     Duration::from_millis(1)
@@ -163,11 +168,15 @@ impl DeviceManager {
     /// physical power cycle.
     ///
     /// The open session is released before discovery polling begins. A
-    /// persistence claim is made only after the device disappears and a
-    /// same-model USB device (same VID/PID) returns and produces a complete
-    /// matching profile readback. This mouse exposes no serial number and the
-    /// HID path is a locator that can change on replug, so reconnect identity
-    /// is model-level, never per-unit.
+    /// persistence claim is made only after the device disappears and the
+    /// physical mouse returns. In persistent identity mode the reappearing
+    /// candidate is authenticated by its current-profile watermark: exactly
+    /// the candidate matching the saved physical id is rebound, and zero,
+    /// multiple, malformed, unsupported, or foreign candidates are refused —
+    /// the workflow never guesses by VID/PID. In legacy mode (no physical
+    /// id) the fuzzy model-level behavior is retained: a unique same-VID/PID
+    /// USB device is accepted after a port change, because legacy makes no
+    /// per-unit identity claim.
     ///
     /// Capture uses read_profile then read_live_polling_rate in same session
     /// before disconnect and after reconnect.
@@ -197,18 +206,20 @@ impl DeviceManager {
             .load_async()
             .await
             .map_err(ManagerError::State)?;
-        let old_endpoint = state
+        let device_state = state
             .devices
             .get(device)
-            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+        let old_endpoint = device_state
             .identity
             .endpoint(transport)
             .cloned()
             .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+        let physical_id = device_state.identity.physical_id;
 
         self.wait_for_disappearance(device, transport, &old_endpoint)
             .await?;
-        self.wait_for_reappearance_with_rebind(device, transport, &old_endpoint)
+        self.wait_for_reappearance(device, transport, &old_endpoint, physical_id)
             .await?;
 
         let (_identity, reopened_session, _guard) = self
@@ -358,11 +369,23 @@ impl DeviceManager {
         }
     }
 
-    async fn wait_for_reappearance_with_rebind(
+    /// Waits for the verified device to return after a confirmed power cycle.
+    ///
+    /// In persistent identity mode (`Some(token)`) every reappearing candidate
+    /// is authenticated by reading its current-profile watermark: exactly one
+    /// candidate carrying the saved token is accepted and its locator stored.
+    /// Zero, multiple, malformed, unsupported, and foreign candidates are
+    /// refused — the loop never guesses by VID/PID — and polling continues
+    /// until [`POWER_CYCLE_TIMEOUT`]. In legacy mode (`None`, which claims no
+    /// physical identity) the model-level behavior is retained: a candidate on
+    /// the old locator returns immediately, otherwise a unique same-VID/PID
+    /// candidate is accepted after a port change.
+    async fn wait_for_reappearance(
         &self,
         device: &DeviceId,
         transport: TransportKind,
         old_endpoint: &DeviceEndpoint,
+        physical_id: Option<PhysicalId>,
     ) -> Result<DeviceEndpoint, ManagerError> {
         let started = Instant::now();
         loop {
@@ -370,36 +393,32 @@ impl DeviceManager {
                 .factory
                 .list(TransportSelection::Exact(transport))
                 .await?;
-            if let Some(found) = discovered.iter().find(|candidate| {
+            if let Some(token) = physical_id {
+                // Persistent identity: physical-token authentication only.
+                if let Some(found) = self.authenticated_candidate(&discovered, token).await {
+                    self.update_locator(device, found.clone()).await?;
+                    return Ok(found);
+                }
+            } else if let Some(found) = discovered.iter().find(|candidate| {
                 candidate.connected && candidate.endpoint.locator == old_endpoint.locator
             }) {
+                // Legacy: the same locator returning needs no rebind.
                 return Ok(found.endpoint.clone());
-            }
-            let mut candidates =
-                crate::device::rebind_candidates(discovered, transport, old_endpoint);
-            match candidates.len() {
-                0 => {}
-                1 => {
-                    let new_endpoint = candidates.pop().expect("length checked above");
-                    let device = device.clone();
-                    let endpoint = new_endpoint.clone();
-                    self.store()
-                        .mutate_async(move |state| {
-                            state
-                                .devices
-                                .get_mut(&device)
-                                .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
-                                .identity
-                                .upsert_endpoint(endpoint);
-                            Ok::<_, ManagerError>(())
-                        })
-                        .await
-                        .map_err(ManagerError::State)??;
-                    return Ok(new_endpoint);
-                }
-                _ => {
-                    // Ambiguous: more than one same VID/PID candidate — do not guess.
-                    // Keep polling until timeout.
+            } else {
+                // Legacy: fuzzy unique same-VID/PID rebind after a port change.
+                let mut candidates =
+                    crate::device::legacy_rebind_candidates(discovered, transport, old_endpoint);
+                match candidates.len() {
+                    0 => {}
+                    1 => {
+                        let new_endpoint = candidates.pop().expect("length checked above");
+                        self.update_locator(device, new_endpoint.clone()).await?;
+                        return Ok(new_endpoint);
+                    }
+                    _ => {
+                        // Ambiguous: more than one same VID/PID candidate — do not guess.
+                        // Keep polling until timeout.
+                    }
                 }
             }
             if started.elapsed() >= POWER_CYCLE_TIMEOUT {
@@ -410,6 +429,79 @@ impl DeviceManager {
             }
             sleep(POWER_CYCLE_POLL_INTERVAL).await;
         }
+    }
+
+    /// Returns the single reappearing endpoint whose current-profile watermark
+    /// decodes to `token`, or `None` when zero or multiple candidates match.
+    ///
+    /// Every candidate is opened and read individually. A candidate that
+    /// cannot be opened or read is refused for that round (a transient
+    /// enumeration failure must not abort the wait), unsupported transports
+    /// decode as `Absent`, and malformed or foreign watermarks never match —
+    /// so the saved mouse is only ever rebound to a physically authenticated
+    /// unit, never to an identical-model device with a different token.
+    async fn authenticated_candidate(
+        &self,
+        discovered: &[DiscoveredEndpoint],
+        token: PhysicalId,
+    ) -> Option<DeviceEndpoint> {
+        let mut matches: Vec<DeviceEndpoint> = Vec::new();
+        for candidate in discovered {
+            if !candidate.connected {
+                continue;
+            }
+            let Some(decode) = self.candidate_watermark(&candidate.endpoint).await else {
+                continue;
+            };
+            if decode == WatermarkDecode::Valid(token) {
+                matches.push(candidate.endpoint.clone());
+            }
+        }
+        matches.sort_by(|a, b| a.locator.cmp(&b.locator));
+        matches.dedup_by(|a, b| a.locator == b.locator);
+        // Refuse multiple: one unique token must not authenticate two units.
+        if matches.len() != 1 {
+            return None;
+        }
+        matches.pop()
+    }
+
+    /// Decodes the current-profile watermark of one discovered endpoint.
+    ///
+    /// Mirrors the manager's per-attachment authentication read: open the
+    /// endpoint, then read the current profile's DPI watermark. Transports
+    /// that cannot produce one decode as `Absent`; any other open/read
+    /// failure yields `None` so the polling loop refuses the candidate for
+    /// that round instead of aborting on a transient error.
+    async fn candidate_watermark(&self, endpoint: &DeviceEndpoint) -> Option<WatermarkDecode> {
+        let session = self.factory.open(endpoint).await.ok()?;
+        match read_current_watermark(session.as_ref()).await {
+            Ok(decode) => Some(decode),
+            Err(ManagerError::UnsupportedOperation { .. }) => Some(WatermarkDecode::Absent),
+            Err(_) => None,
+        }
+    }
+
+    /// Stores the reappeared endpoint as the device's locator for its transport.
+    async fn update_locator(
+        &self,
+        device: &DeviceId,
+        endpoint: DeviceEndpoint,
+    ) -> Result<(), ManagerError> {
+        let device = device.clone();
+        self.store()
+            .mutate_async(move |state| {
+                state
+                    .devices
+                    .get_mut(&device)
+                    .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+                    .identity
+                    .upsert_endpoint(endpoint);
+                Ok::<_, ManagerError>(())
+            })
+            .await
+            .map_err(ManagerError::State)??;
+        Ok(())
     }
 }
 
@@ -432,6 +524,18 @@ async fn read_complete_profile(
     let snapshot = session.read_profile(target).await?;
     let rate = session.read_live_polling_rate(target).await?;
     Ok((snapshot, rate))
+}
+
+/// Reads the current profile's watermark through an open session: the current
+/// profile from metadata, then that profile's DPI tail decoded. Mirrors the
+/// manager's per-attachment authentication read.
+async fn read_current_watermark(
+    session: &dyn crate::backend::DeviceSession,
+) -> Result<WatermarkDecode, ManagerError> {
+    let metadata = session.read_profile_metadata().await?;
+    let current = metadata.current();
+    let dpi = session.read_dpi(current).await?;
+    Ok(decode_watermark(&dpi.preserved_tail))
 }
 
 pub(crate) async fn write_exact_metadata(
@@ -478,8 +582,8 @@ mod tests {
 
     use attack_shark_x3::driver::ProfileSnapshot;
     use attack_shark_x3::{
-        ButtonAssignment, ButtonsState, DpiState, DpiValue, PollingRate, PreferencesState,
-        ProfileId, ProfileMetadata, StageIndex, TransportKind,
+        ButtonAssignment, ButtonsState, DpiState, DpiValue, PhysicalId, PollingRate,
+        PreferencesState, ProfileId, ProfileMetadata, StageIndex, TransportKind,
     };
 
     use super::DeviceManager;
@@ -488,8 +592,8 @@ mod tests {
     use crate::error::ManagerError;
     use crate::operation::DiscoveredEndpoint;
     use crate::state::{
-        ApplicationVerification, DesiredSource, DesiredState, PersistenceVerification,
-        ProfileState, StateStore, Timestamp, Verification,
+        ApplicationVerification, DesiredSource, DesiredState, IdentityMode,
+        PersistenceVerification, ProfileState, StateStore, Timestamp, Verification,
     };
     use async_trait::async_trait;
 
@@ -716,6 +820,162 @@ mod tests {
                 .desired
                 .as_ref()
                 .map(|d| &d.verification.persistence),
+            Some(PersistenceVerification::PowerCycleVerified { .. })
+        ));
+        assert_eq!(
+            factory.list_calls(),
+            vec![
+                crate::device::TransportSelection::Exact(TransportKind::Wired),
+                crate::device::TransportSelection::Exact(TransportKind::Wired)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_power_cycle_never_rebinds_identical_model_foreign_token() {
+        let token = PhysicalId::from_token_bytes([0x11; 16]);
+        let foreign_token = PhysicalId::from_token_bytes([0x22; 16]);
+        let mut saved = identity(r"\\?\hid#persistent-saved");
+        saved.physical_id = Some(token);
+        let saved_endpoint = saved.endpoints.values().next().cloned().unwrap();
+        let mut foreign = identity(r"\\?\hid#persistent-foreign");
+        foreign.physical_id = Some(foreign_token);
+        let foreign_endpoint = foreign.endpoints.values().next().cloned().unwrap();
+
+        let expected = snapshot(800);
+        let mut saved_snapshot = expected.clone();
+        saved_snapshot.dpi.preserved_tail = token.to_watermark_bytes();
+        let mut foreign_snapshot = expected.clone();
+        foreign_snapshot.dpi.preserved_tail = foreign_token.to_watermark_bytes();
+
+        let saved_session = ScriptedFakeSession::usb()
+            .with_metadata(expected.persistent_metadata)
+            .with_profile(saved_snapshot)
+            .with_polling_rate(PollingRate::Hz1000);
+        let foreign_session = ScriptedFakeSession::usb()
+            .with_metadata(expected.persistent_metadata)
+            .with_profile(foreign_snapshot)
+            .with_polling_rate(PollingRate::Hz1000);
+
+        let foreign_disc = DiscoveredEndpoint {
+            endpoint: foreign_endpoint.clone(),
+            connected: true,
+        };
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_discovery_sequence(vec![vec![], vec![foreign_disc.clone()]]),
+        );
+        factory.add_endpoint(
+            DiscoveredEndpoint {
+                endpoint: saved_endpoint.clone(),
+                connected: true,
+            },
+            saved_session,
+        );
+        factory.add_endpoint(foreign_disc, foreign_session);
+        let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory.clone());
+        {
+            let mut txn = manager.store().transaction().expect("state transaction");
+            txn.state_mut().identity_mode = IdentityMode::Persistent;
+            txn.commit().expect("commit persistent identity mode");
+        }
+        manager
+            .register_device(saved.clone())
+            .expect("register persistent identity");
+
+        let error = manager
+            .verify_power_cycle(&saved.id, expected.target_profile)
+            .await
+            .expect_err("identical-model foreign token must never rebind the saved mouse");
+
+        assert!(matches!(
+            error,
+            ManagerError::PowerCycleReappearanceTimeout { device: id, .. } if id == saved.id
+        ));
+        let refreshed = manager
+            .device_identity(&saved.id)
+            .expect("saved identity still present");
+        assert_eq!(
+            refreshed.endpoint(TransportKind::Wired).unwrap().locator,
+            saved_endpoint.locator,
+            "a foreign identical-model device must never replace the saved locator"
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_power_cycle_selects_matching_token_after_port_change() {
+        let token = PhysicalId::from_token_bytes([0x11; 16]);
+        let mut saved = identity(r"\\?\hid#persistent-old");
+        saved.physical_id = Some(token);
+        let saved_endpoint = saved.endpoints.values().next().cloned().unwrap();
+        let mut returned_identity = identity(r"\\?\hid#persistent-new");
+        returned_identity.physical_id = Some(token);
+        let returned_endpoint = returned_identity
+            .endpoints
+            .values()
+            .next()
+            .cloned()
+            .unwrap();
+
+        let expected = snapshot(800);
+        let mut stamped = expected.clone();
+        stamped.dpi.preserved_tail = token.to_watermark_bytes();
+        let session = ScriptedFakeSession::usb()
+            .with_metadata(expected.persistent_metadata)
+            .with_profile(stamped.clone())
+            .with_polling_rate(PollingRate::Hz1000);
+
+        let returned_disc = DiscoveredEndpoint {
+            endpoint: returned_endpoint.clone(),
+            connected: true,
+        };
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_discovery_sequence(vec![vec![], vec![returned_disc.clone()]]),
+        );
+        factory.add_endpoint(
+            DiscoveredEndpoint {
+                endpoint: saved_endpoint.clone(),
+                connected: true,
+            },
+            session.clone(),
+        );
+        factory.add_endpoint(returned_disc, session);
+        let manager = DeviceManager::with_store_and_factory(StateStore::memory(), factory.clone());
+        {
+            let mut txn = manager.store().transaction().expect("state transaction");
+            txn.state_mut().identity_mode = IdentityMode::Persistent;
+            txn.commit().expect("commit persistent identity mode");
+        }
+        manager
+            .register_device(saved.clone())
+            .expect("register persistent identity");
+        seed_desired(&manager, &saved, &stamped);
+
+        let outcome = manager
+            .verify_power_cycle(&saved.id, expected.target_profile)
+            .await
+            .expect("matching watermark token must rebind after a port change");
+
+        assert!(matches!(
+            outcome.dpi.verification.persistence,
+            PersistenceVerification::PowerCycleVerified { .. }
+        ));
+        let refreshed = manager
+            .device_identity(&saved.id)
+            .expect("refreshed identity");
+        assert_eq!(
+            refreshed.endpoint(TransportKind::Wired).unwrap().locator,
+            returned_endpoint.locator,
+            "locator must move to the token-authenticated candidate"
+        );
+        let state = manager.store().load().expect("load state");
+        assert!(matches!(
+            state.devices[&saved.id].profiles[&expected.target_profile]
+                .dpi
+                .desired
+                .as_ref()
+                .map(|desired| &desired.verification.persistence),
             Some(PersistenceVerification::PowerCycleVerified { .. })
         ));
         assert_eq!(

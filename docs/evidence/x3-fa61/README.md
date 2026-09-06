@@ -54,6 +54,54 @@ and every captured packet is a golden fixture in
 Wheel-slot remaps and macro bindings were excluded.
 
 ## Probing sessions 2026-07-17
+## Watermark-surface probe — 2026-08-25
+
+The `attack-shark-x3` crate's `watermark_probe` example planted conspicuous
+test markers in the two candidate driver-owned watermark regions on X3/FA61
+wired, verified both present by readback, then ran stock-app operations
+(in-app profile switch, button rebind, debounce change) and diffed the
+before/after state. \[live-confirmed]
+
+Intended use: a per-device identity watermark to differentiate multiple
+logically-identical X3/M600 mice (no serial number or other stable
+distinguishing feature), so the driver can recognize a specific physical
+mouse across replugs/port changes. The decisive requirement is therefore
+persistence in the device's flash across a power cycle, not survival of
+stock-app edits; stock-app compatibility is not a first-class concern for
+this use. Both surfaces persist across a power cycle (live-confirmed
+2026-08-25).
+
+| Surface | Marker | Result |
+|:--------|:-------|:-------|
+| DPI opaque tail, report `0x04` bytes 25–27 | `ba be fa` | overwritten — bytes 25–27 changed (checksum 50–51 recomputed); marker absent |
+| Hidden button slot 9, report `0x08` | `01 a5 5a` | overwritten — slot 9 changed; marker absent |
+
+Follow-up operations (mark → baseline → operation → after → diff, same day):
+
+| Operation | DPI tail (bytes 25–27) | Button slot 9 |
+|:--|:--|:--|
+| In-app profile switch | overwritten | overwritten |
+| Button rebind | preserved | overwritten — slot 9 changed with slot 6 (the rebound Forward) |
+| Debounce change (report `0x05`) | preserved | preserved |
+| DPI stage change (report `0x04`) | overwritten — bytes 9, 25–27 changed | preserved |
+| Power cycle | preserved | preserved |
+| Firmware profile-slot load (`0x0c`, driver `activate_profile`) | preserved | preserved |
+
+Both surfaces persist across a power cycle (0x04 and 0x08 readback unchanged),
+so flash persistence — the decisive requirement for a per-device identity — is
+satisfied. Their durability differs only under stock-app edits: hidden button
+slot 9 is overwritten by in-app profile switching and button rebinding (which
+rewrites the whole `0x08` table), and the DPI opaque tail, while it survives
+button rebinds and debounce edits, is reconstructed by an in-app profile
+switch and a DPI stage change. Both survive the driver's own read-modify-write
+paths, so either is usable for multi-mouse identity in a driver-only setup.
+The debounce "preserved" result is partly expected because debounce lives in
+report `0x05` and does not rewrite `0x04`/`0x08`. A firmware `0x0c` profile-slot
+load (activate profile 2, then back to 1) preserved both markers. The probe
+backup (`backup.json`) was kept for `restore`.
+
+
+## Probing sessions 2026-07-17
 
 All sessions used the wired FA61 Col04 path. They were driven by the historical (now-deleted) TypeScript scripts `scripts/fa61-profile-ab.ts` and `scripts/fa61-readback-benchmark.ts` and must not be generalized to BLE or to non-Col04 interfaces. The script references are provenance records — the raw JSON captures below are the authoritative evidence. Equivalent experiments can be reproduced using the Rust `x3ctl` CLI.
 

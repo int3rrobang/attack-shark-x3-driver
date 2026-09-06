@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 
+use attack_shark_x3::driver::ProfileSnapshot;
 use attack_shark_x3::{
     BatteryEvent, ButtonsState, ConnectionChangedEvent, DpiButtonEvent, DpiIndexChangedEvent,
-    DpiState, InputEvent, LedModeChangedEvent, PollingRate, PreferencesState, ProfileChangedEvent,
-    ProfileId, ProfileMetadata, TransportKind,
+    DpiState, InputEvent, LedModeChangedEvent, PhysicalId, PollingRate, PreferencesState,
+    ProfileChangedEvent, ProfileId, ProfileMetadata, TransportKind,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::device::{DeviceEndpoint, DeviceId, DeviceIdentity};
-use crate::state::{ResourceState, Verification};
+use crate::state::{IdentityMode, ResourceState, Verification};
 /// The verification performed after a write operation.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,32 +127,232 @@ pub struct DiscoveredDevice {
     pub transports: Vec<TransportKind>,
 }
 
-/// Which side keeps its saved configuration when both devices being linked
-/// carry configuration evidence.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum LinkPrecedence {
-    /// Refuse to link when both sides carry evidence (the default policy).
-    Refuse,
-    /// Discard the source's evidence; the target's configuration survives.
-    KeepTarget,
-    /// Move the source's evidence onto the target and discard the target's.
-    KeepSource,
-    /// Fill the target's missing profile/resource values from the source;
-    /// where both sides have a value, the target's wins.
-    Merge,
-}
-
-/// Result of an explicit cross-transport link.
+/// A discovered compatible hardware connection, before any durable
+/// association.
+///
+/// Rows are one per transport endpoint and are never aggregated: a single
+/// physical mouse can expose several (wired FA61, receiver FA60, BLE). This
+/// is deliberately separate from [`DiscoveredDevice`], which aggregates
+/// endpoints under a durable logical `mouse-N`. A connection never carries a
+/// logical `DeviceId`; it may carry the opaque physical token when the
+/// transport was able to read one.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LinkOutcome {
-    /// The surviving logical identity.
-    pub target: DeviceId,
-    /// Transports moved from the source into the target, sorted.
-    pub moved_transports: Vec<TransportKind>,
-    /// Whether saved configuration was discarded to complete the link.
-    pub discarded_evidence: bool,
+pub struct DiscoveredConnection {
+    pub endpoint: DeviceEndpoint,
+    pub connected: bool,
+    /// The physical identity token observed on this connection, when the
+    /// transport read one. `None` before any identity read or when no
+    /// watermark is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_id: Option<PhysicalId>,
+}
+
+/// Why a discovered connection has no associated durable logical mouse.
+///
+/// These are manager-level conclusions built from the transport-level
+/// watermark decode ([`attack_shark_x3::WatermarkDecode`]). Unknown beats
+/// incorrect identity: no variant ever guesses an association.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UnassociatedReason {
+    /// No watermark was observed: legacy single-mouse mode or an unmarked
+    /// device. No identity claim is possible.
+    Absent,
+    /// A watermark marker was present but malformed (bad magic, length, or
+    /// integrity check). It decodes as no valid identity, never best-effort.
+    Malformed,
+    /// A valid marker for a format version this installation does not
+    /// support.
+    Unsupported { version: u8 },
+    /// A valid token with no registered logical mouse in this installation;
+    /// the device is adoptable as a new logical mouse.
+    Unknown,
+    /// The observed token is already bound to another logical mouse. This is
+    /// the duplicate-identity case; automatic association is refused.
+    Duplicate,
+    /// The token falls in a reserved range (for example all-zero) and is
+    /// never assignable to a device.
+    Reserved,
+    /// The token is reserved by the active identity-setup journal (a pending
+    /// enrollment, restore rotation, or adoption). It may not be adopted
+    /// independently until the journal completes or is cancelled.
+    ReservedByJournal,
+}
+
+/// Strict result of resolving one discovered connection against the durable
+/// logical mice of this installation.
+///
+/// Resolution never guesses: a valid known token resolves to the exact
+/// logical mouse; anything else is an explicit non-association with a
+/// reason. In persistent identity mode an absent token means the physical
+/// identity is lost and requires explicit reassociation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentityResolution {
+    /// A valid known token resolved to the exact durable logical mouse.
+    Resolved { identity: DeviceId },
+    /// No durable logical mouse is claimed; see [`UnassociatedReason`].
+    Unassociated {
+        reason: UnassociatedReason,
+        /// The valid token observed on the connection, when one exists (for
+        /// example the adoptable `Unknown` or conflicting `Duplicate` cases).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        physical_id: Option<PhysicalId>,
+    },
+}
+
+/// One discovered connection resolved against the durable logical mice of
+/// this installation.
+///
+/// `resolution` is strict: a valid known token resolves to the exact logical
+/// mouse; every other case is an explicit non-association with a reason.
+/// Unassociated connections are never persisted as logical devices and never
+/// receive a temporary `mouse-N`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedConnection {
+    pub endpoint: DeviceEndpoint,
+    pub connected: bool,
+    pub resolution: IdentityResolution,
+}
+
+/// Aggregate result of a mode-aware discovery scan.
+///
+/// In [`IdentityMode::Legacy`] the installation has exactly one fuzzy logical
+/// mouse (created on first discovery if absent); every compatible connection
+/// resolves to it and no watermark is ever read or written. In
+/// [`IdentityMode::Persistent`] connections authenticate by their current DPI
+/// watermark once per continuous attachment and resolve to logical mice by
+/// token; absent, malformed, unsupported, unknown, duplicate, and reserved
+/// markers surface as unassociated connections.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryView {
+    /// The installation identity mode at scan time.
+    pub mode: IdentityMode,
+    /// Logical mice with connections seen this scan, aggregated per device
+    /// (`transports` lists the transports observed this scan).
+    pub devices: Vec<DiscoveredDevice>,
+    /// Every compatible connection observed this scan, resolved individually
+    /// and never aggregated.
+    pub connections: Vec<ResolvedConnection>,
+}
+/// A supported USB device appeared or disappeared from the operating
+/// system's hotplug event stream.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeviceTopologyEvent {
+    Connected,
+    Disconnected,
+}
+
+/// Which physical-identity ceremony a progress report describes.
+///
+/// Frontend-facing counterpart of the durable journal phase
+/// [`crate::state::IdentitySetupPhase`], which the manager persists for
+/// resumability; the variant sets align one-to-one.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentityCeremonyKind {
+    /// First transition from fuzzy single-mouse mode into persistent
+    /// physical identity: two physical mice are captured and stamped.
+    InitialEnrollment,
+    /// Adding a further mouse to an already-identified installation.
+    AddMouse,
+    /// Reassociating a logical mouse whose watermark was lost or erased.
+    Restore,
+    /// Adopting a valid token unknown to this installation as a new logical
+    /// mouse (a foreign mouse already tagged elsewhere).
+    ForeignAdoption,
+    /// Associating a BLE platform endpoint with a physical/logical mouse.
+    BleAssociation,
+}
+
+/// Status of a running physical-identity ceremony.
+///
+/// The stage is the ceremony's current status; the frontend renders its own
+/// copy, so no presentation text lives here. The durable, resumable journal
+/// records only coarse phases ([`crate::state::IdentitySetupStage`]); this
+/// status covers the full transient lifecycle including user gestures,
+/// verification, and failure. `error` in [`IdentityCeremonyStage::Failed`]
+/// is a machine-readable diagnostic, not user-facing copy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentityCeremonyStage {
+    /// Ceremony created; no physical action has started yet.
+    Ready,
+    /// Waiting for the user to reconnect or present the physical mouse.
+    AwaitingReconnect,
+    /// Reading the watermark and capturing the presented device's state.
+    Capturing,
+    /// Assigning the physical token and writing the watermark.
+    Stamping,
+    /// The stamped watermark was read back and verified.
+    Verified,
+    /// The ceremony completed successfully.
+    Complete,
+    /// The ceremony was aborted by the user.
+    Cancelled,
+    /// The ceremony failed; `error` is a machine-readable diagnostic, not
+    /// user-facing text.
+    Failed { error: String },
+}
+
+/// Progress snapshot of a running physical-identity ceremony.
+///
+/// Frontends render this directly; all presentation copy lives in the
+/// frontend, never here.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityCeremonyProgress {
+    pub kind: IdentityCeremonyKind,
+    pub stage: IdentityCeremonyStage,
+    /// 1-based index of the physical device currently being processed, when
+    /// the ceremony spans several devices (for example initial setup).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<u8>,
+    /// Total number of physical devices the ceremony processes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_steps: Option<u8>,
+    /// The logical mouse being processed or produced, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<DeviceId>,
+    /// The physical token assigned or observed, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_id: Option<PhysicalId>,
+    /// The endpoint currently driving the ceremony, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<DeviceEndpoint>,
+}
+
+/// A typed action a frontend can request against a physical-identity
+/// ceremony.
+///
+/// Which actions are valid depends on the ceremony kind and stage; the
+/// manager validates them against the running ceremony.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentityCeremonyAction {
+    /// Start a ceremony of the given kind.
+    Begin(IdentityCeremonyKind),
+    /// The user reconnected or presented the physical mouse; proceed.
+    Reconnected,
+    /// Capture the presented device's current state.
+    Capture,
+    /// Assign the generated token and stamp the watermark.
+    Stamp,
+    /// Adopt the observed valid foreign token as a new logical mouse.
+    Adopt,
+    /// Associate the presented endpoint with the target logical mouse.
+    Associate,
+    /// Apply legacy name/state migration when the match is unique (initial
+    /// setup).
+    AcceptMigration,
+    /// Skip legacy name/state migration; use fresh defaults (initial setup).
+    SkipMigration,
+    /// Abort the running ceremony.
+    Cancel,
 }
 
 /// Resource status read from one logical device identity.
@@ -162,6 +363,19 @@ pub struct DeviceStatus {
     pub battery: Option<u8>,
     pub profile_metadata: Option<ResourceSnapshot<ProfileMetadata>>,
     pub polling_rate: Option<ResourceSnapshot<PollingRate>>,
+}
+/// One complete USB working-profile read performed through a single session.
+///
+/// Unlike separately calling status and profile reads, this loads the target
+/// profile only once before reading its live polling rate.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveProfileSnapshot {
+    pub identity: DeviceIdentity,
+    pub battery: Option<u8>,
+    pub profile_metadata: ProfileMetadata,
+    pub profile: ProfileSnapshot,
+    pub polling_rate: PollingRate,
 }
 
 /// Complete profile verification evidence after a profile-reload workflow.
@@ -185,6 +399,18 @@ pub struct PowerCycleVerificationOutcome {
     pub buttons: WriteOutcome<ButtonsState>,
     pub polling_rate: WriteOutcome<PollingRate>,
 }
+#[cfg(any(feature = "usb", feature = "ble"))]
+/// Complete profile images already read through this manager and held by a
+/// frontend while it edits a draft. Supplying this baseline avoids a second
+/// pre-write hardware read; post-write verification remains unchanged.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileUpdateBaseline {
+    pub dpi: DpiState,
+    pub preferences: PreferencesState,
+    pub buttons: ButtonsState,
+}
+
 #[cfg(any(feature = "usb", feature = "ble"))]
 /// Composite profile delta applied through one manager-owned session.
 /// Every field is optional. Frontends express their full draft in one value:

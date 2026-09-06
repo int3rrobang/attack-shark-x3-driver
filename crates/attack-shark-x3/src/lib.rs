@@ -24,7 +24,8 @@ pub use protocol::buttons::{
     KeyboardModifiers, X3ButtonAction,
 };
 pub use protocol::dpi::{
-    DecodedDpiReport, DpiFraming, DpiReport, DpiState, LiftOffDistance, SensorOptions,
+    DecodedDpiReport, DpiFraming, DpiReport, DpiState, LiftOffDistance, PhysicalId, SensorOptions,
+    WATERMARK_LENGTH, WatermarkDecode, decode_watermark,
 };
 pub use protocol::input::{
     BATTERY_REPORT_LENGTH, BATTERY_REPORT_PREFIX, BATTERY_REPORT_PREFIX_X3, BatteryEvent,

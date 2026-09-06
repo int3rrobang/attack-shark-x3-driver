@@ -106,6 +106,9 @@ impl Worker {
                 } => {
                     let _ = reply.send(self.read_profile(target_profile));
                 }
+                Command::RawReadback { request, reply } => {
+                    let _ = reply.send(self.read_raw_readback(request));
+                }
                 Command::SendRawFeatureReport { bytes, reply } => {
                     let _ = reply.send(
                         self.transport
@@ -153,6 +156,15 @@ impl Worker {
             PollingRateReport::decode_for_transport(packet, transport_kind, alias)
                 .map(|report| report.rate)
         })
+    }
+
+    /// Reads the raw report bytes for a bounded readback request.
+    ///
+    /// The armed A0 selector, readiness wait, and retry loop are unchanged;
+    /// only the decode step is replaced with an identity that returns the
+    /// exact report bytes untouched.
+    fn read_raw_readback(&mut self, request: ReadbackRequest) -> Result<Vec<u8>, DriverError> {
+        self.armed_read(request, |packet| Ok(packet.to_vec()))
     }
 
     fn send_dpi(&mut self, state: &DpiState) -> Result<(), DriverError> {
@@ -1377,19 +1389,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_exhaustion_carries_section_and_profile_context() {
+    async fn raw_readback_returns_exact_report_bytes_unchanged() {
         let target = profile(2);
         let mut steps = Vec::new();
-        // Force DPI read to exhaust with readiness timeouts; target profile is 2.
-        for _ in 0..2 {
-            steps.push(Step::Send(selector(ReadbackRequest::Dpi(target))));
-            steps.push(Step::Get {
+        successful_read(&mut steps, ReadbackRequest::Dpi(target), PROFILE_2_DPI);
+        let (handle, remaining) = handle(steps, test_policy(2));
+
+        let raw = handle
+            .read_raw_readback(ReadbackRequest::Dpi(target))
+            .await
+            .expect("raw prepared read must return the report");
+        assert_eq!(raw, bytes(PROFILE_2_DPI));
+        assert_eq!(remaining.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn raw_readback_reuses_the_armed_readiness_retry() {
+        // A not-ready mailbox re-arms before the target report is fetched,
+        // exactly as the typed read paths do.
+        let target = profile(2);
+        let request = ReadbackRequest::Buttons(target);
+        let steps = vec![
+            Step::Send(selector(request)),
+            Step::Get {
                 report_id: 0xa0,
                 capacity: 8,
                 response: not_ready(),
-            });
-        }
-        let (handle, remaining) = handle(
+            },
+            Step::Send(selector(request)),
+            Step::Get {
+                report_id: 0xa0,
+                capacity: 8,
+                response: ready(),
+            },
+            Step::Get {
+                report_id: 0x08,
+                capacity: 59,
+                response: bytes(PROFILE_2_BUTTONS),
+            },
+        ];
+        let (handle, remaining) = handle_with_transport(
             steps,
             ReadPolicy {
                 max_attempts: NonZeroU8::new(2).expect("two is nonzero"),
@@ -1397,24 +1436,14 @@ mod tests {
                 poll_interval: Duration::ZERO,
                 write_delay: Duration::ZERO,
             },
+            TransportKind::Wired,
         );
-        let error = handle
-            .read_dpi(target)
+
+        let raw = handle
+            .read_raw_readback(request)
             .await
-            .expect_err("DPI exhaustion must be reported");
-        match error {
-            DriverError::ReadAttemptsExhausted {
-                section,
-                profile,
-                attempts: 2,
-                last: ReadFailure::ReadinessTimeout,
-            } => {
-                assert_eq!(section, "dpi");
-                assert_eq!(profile, Some(target));
-                assert!(format!("{error}").contains("dpi"));
-            }
-            other => panic!("unexpected error shape: {other:?}"),
-        }
+            .expect("re-armed raw read must succeed");
+        assert_eq!(raw, bytes(PROFILE_2_BUTTONS));
         assert_eq!(remaining.load(Ordering::SeqCst), 0);
     }
 }

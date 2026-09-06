@@ -1,6 +1,6 @@
 use attack_shark_x3::{
-    DpiFraming, DpiReport, DpiState, DpiValue, ProfileId, ProtocolError, SensorOptions, StageIndex,
-    TransportKind,
+    DpiFraming, DpiReport, DpiState, DpiValue, PhysicalId, ProfileId, ProtocolError, SensorOptions,
+    StageIndex, TransportKind, WatermarkDecode, decode_watermark,
     protocol::{
         checksum::sum16,
         dpi::{DPI_WIRED_LENGTH, LiftOffDistance},
@@ -381,4 +381,155 @@ fn full_framing_rejects_nonzero_padding() {
             actual: 1,
         })
     );
+}
+// ---------------------------------------------------------------------------
+// Physical identity watermark codec.
+//
+// Exact 25-byte contract: bytes 0..=3 magic `X3ID`, byte 4 format version 1,
+// bytes 5..=20 random 128-bit token, bytes 21..=24 CRC-32 (IEEE) of bytes
+// 0..=20 stored big-endian. The watermark occupies report bytes 25..=49.
+// ---------------------------------------------------------------------------
+
+/// Independent IEEE CRC-32 reference (bitwise) used to pin the watermark
+/// check-value bytes without depending on the production `crc32fast` crate.
+fn crc32_ieee(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffff_u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = 0_u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+const FIXED_TOKEN: [u8; 16] = [
+    0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78,
+];
+
+fn identity() -> PhysicalId {
+    PhysicalId::from_token_bytes(FIXED_TOKEN)
+}
+
+fn stamped_state() -> DpiState {
+    DpiState::captured_empty_profile_one(vec![dpi(800), dpi(1600)], stage(2))
+        .expect("state must be valid")
+        .with_physical_id(identity())
+}
+
+#[test]
+fn watermark_occupies_the_25_byte_dpi_tail_with_exact_layout() {
+    let watermark = identity().to_watermark_bytes();
+    assert_eq!(watermark.len(), 25);
+    // bytes 0..=3: magic
+    assert_eq!(&watermark[0..4], b"X3ID");
+    // byte 4: format version 1
+    assert_eq!(watermark[4], 1);
+    // bytes 5..=20: 128-bit random token
+    assert_eq!(&watermark[5..21], &FIXED_TOKEN);
+    // bytes 21..=24: CRC-32 of bytes 0..=20, big-endian
+    let expected_crc = crc32_ieee(&watermark[0..21]);
+    assert_eq!(
+        u32::from_be_bytes(watermark[21..25].try_into().expect("four CRC bytes")),
+        expected_crc
+    );
+
+    // In a real DPI report the watermark is the whole opaque tail (25..=49).
+    let report = DpiReport::encode(&stamped_state(), TransportKind::Wired).unwrap();
+    assert_eq!(&report.as_bytes()[25..50], &watermark);
+}
+
+#[test]
+fn watermark_round_trips_through_dpi_report_and_state() {
+    let id = identity();
+    let report = DpiReport::encode(&stamped_state(), TransportKind::Wired).unwrap();
+    let decoded = DpiReport::decode(report.as_bytes(), TransportKind::Wired, profile(1))
+        .expect("stamped report must decode");
+    assert_eq!(decoded.state.physical_id(), WatermarkDecode::Valid(id));
+    assert_eq!(decoded.state.preserved_tail, id.to_watermark_bytes());
+
+    // The raw codec path (tail bytes in, identity out) round-trips too.
+    assert_eq!(
+        decode_watermark(&id.to_watermark_bytes()),
+        WatermarkDecode::Valid(id)
+    );
+}
+
+#[test]
+fn missing_magic_decodes_as_absent_and_never_yields_a_token() {
+    let watermark = identity().to_watermark_bytes();
+
+    let mut no_magic = watermark;
+    no_magic[0] ^= 0xff;
+    assert_eq!(decode_watermark(&no_magic), WatermarkDecode::Absent);
+
+    let mut wrong_magic = watermark;
+    wrong_magic[0..4].copy_from_slice(b"NOPE");
+    assert_eq!(decode_watermark(&wrong_magic), WatermarkDecode::Absent);
+
+    // A truncated tail is no watermark at all.
+    assert_eq!(decode_watermark(&watermark[..24]), WatermarkDecode::Absent);
+
+    for tail in [
+        no_magic.to_vec(),
+        wrong_magic.to_vec(),
+        watermark[..24].to_vec(),
+    ] {
+        assert!(decode_watermark(&tail).physical_id().is_none());
+    }
+}
+
+#[test]
+fn corrupt_token_or_check_decodes_as_malformed_and_never_yields_a_token() {
+    let watermark = identity().to_watermark_bytes();
+
+    let mut bad_token = watermark;
+    bad_token[7] ^= 0x01;
+    assert_eq!(decode_watermark(&bad_token), WatermarkDecode::Malformed);
+
+    let mut bad_check = watermark;
+    bad_check[21] ^= 0x01;
+    assert_eq!(decode_watermark(&bad_check), WatermarkDecode::Malformed);
+
+    for tail in [bad_token, bad_check] {
+        assert!(decode_watermark(&tail).physical_id().is_none());
+    }
+}
+
+#[test]
+fn unsupported_version_is_reported_and_never_yields_a_token() {
+    let watermark = identity().to_watermark_bytes();
+    for version in [0_u8, 2, 0x7f, 0xff] {
+        let mut future = watermark;
+        future[4] = version;
+        assert_eq!(
+            decode_watermark(&future),
+            WatermarkDecode::UnsupportedVersion { version }
+        );
+        assert!(decode_watermark(&future).physical_id().is_none());
+    }
+}
+
+#[test]
+fn identity_overlay_recomputes_the_outer_report_checksum() {
+    let mut state = DpiState::captured_empty_profile_one(vec![dpi(800), dpi(1600)], stage(2))
+        .expect("state must be valid");
+    let plain = DpiReport::encode(&state, TransportKind::Wired).unwrap();
+
+    state.overlay_physical_id(identity());
+    let stamped = DpiReport::encode(&state, TransportKind::Wired).unwrap();
+
+    // The watermark replaced the whole tail...
+    assert_eq!(
+        &stamped.as_bytes()[25..50],
+        &identity().to_watermark_bytes()
+    );
+    // ...and the outer checksum covers the tail, so it must be recomputed.
+    let expected = sum16(&stamped.as_bytes()[3..50]).to_be_bytes();
+    assert_eq!(&stamped.as_bytes()[50..52], &expected);
+    assert_ne!(&stamped.as_bytes()[50..52], &plain.as_bytes()[50..52]);
+    // The stamped report is still a valid report (outer checksum passes).
+    DpiReport::decode(stamped.as_bytes(), TransportKind::Wired, profile(1))
+        .expect("stamped report must decode");
 }

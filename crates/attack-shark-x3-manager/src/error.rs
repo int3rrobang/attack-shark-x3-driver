@@ -3,10 +3,11 @@ use std::{io, path::PathBuf, time::Duration};
 use thiserror::Error;
 
 use crate::{
-    device::{DeviceId, TransportSelection},
-    state::SCHEMA_VERSION,
+    device::{DeviceEndpoint, DeviceId, TransportSelection},
+    operation::IdentityCeremonyAction,
+    state::{IdentitySetupPhase, IdentitySetupStage, SCHEMA_VERSION},
 };
-use attack_shark_x3::{ProfileId, ProtocolError, TransportKind};
+use attack_shark_x3::{PhysicalId, ProfileId, ProtocolError, TransportKind};
 
 /// Errors returned while loading, validating, or storing durable manager state.
 #[derive(Debug, Error)]
@@ -32,7 +33,7 @@ pub enum StateError {
     LockBusy { path: PathBuf },
 
     /// The file uses a schema version this package does not understand.
-    #[error("unsupported state schema version {found}; expected {expected}")]
+    #[error("unsupported local-data format/version {found}; expected {expected}")]
     UnsupportedSchema { found: u32, expected: u32 },
 
     /// The document is syntactically valid but violates state invariants.
@@ -200,10 +201,82 @@ pub enum ManagerError {
         timeout: Duration,
         path: PathBuf,
     },
+
+    /// A physical-identity ceremony is already in flight; only one may run at
+    /// a time. The frontend should resume or cancel the existing ceremony.
+    #[error("an identity setup is already in progress ({phase:?}); resume or cancel it first")]
+    IdentitySetupInProgress { phase: IdentitySetupPhase },
+
+    /// A ceremony action was issued while no identity ceremony is in flight.
+    #[error("no identity ceremony is in progress; begin one first")]
+    NoIdentityCeremony,
+
+    /// The requested ceremony action is not valid while the journal is where
+    /// it is.
+    #[error("identity ceremony action {action:?} is not valid while {phase:?} is at {stage:?}")]
+    InvalidCeremonyAction {
+        action: IdentityCeremonyAction,
+        phase: IdentitySetupPhase,
+        stage: IdentitySetupStage,
+    },
+
+    /// The ceremony cannot proceed because of a physical/state requirement.
+    ///
+    /// `reason` is a stable diagnostic (for example "already-registered",
+    /// "adopt-instead", "requires-physical-id"), `detail` carries the
+    /// human-readable context. The frontend maps `reason` to its own copy.
+    #[error("identity ceremony {phase:?} refused: {detail}")]
+    IdentityCeremonyRefused {
+        phase: IdentitySetupPhase,
+        reason: &'static str,
+        detail: String,
+    },
+
+    /// The presented mouse carries a watermark that must not be overwritten
+    /// (an intact foreign/known token or an unsupported future format).
+    #[error("identity marker on {endpoint:?} must not be overwritten: {detail}")]
+    IntactIdentityMarker {
+        endpoint: Box<DeviceEndpoint>,
+        detail: String,
+    },
+
+    /// An ordinary device operation was refused while a ceremony involves the
+    /// device. The ceremony must complete or be cancelled first.
+    #[error(
+        "device {device} is involved in the in-progress identity setup ({phase:?}); ordinary operations are blocked until it completes or is cancelled"
+    )]
+    DeviceInvolvedInSetup {
+        device: DeviceId,
+        phase: IdentitySetupPhase,
+    },
+
+    /// The operating system random generator failed while minting a physical
+    /// identity token.
+    #[error("failed to generate a random physical identity token: {source}")]
+    TokenGeneration {
+        #[source]
+        source: getrandom::Error,
+    },
+
+    /// A discovered connection carries a reserved token; it is never
+    /// assignable and cannot be adopted.
+    #[error("token {physical_id:?} is reserved and never assignable to a device")]
+    ReservedPhysicalId { physical_id: PhysicalId },
+
+    /// A logical mouse has a physical id, but the endpoint opened for an
+    /// operation is not authenticated as that physical unit for this
+    /// attachment. No physical-id write may proceed against an unverified
+    /// device; the user must reconnect/restore the physical mouse.
+    #[error("endpoint {endpoint:?} is not authenticated as {device}: {detail}")]
+    AttachmentNotAuthenticated {
+        device: DeviceId,
+        endpoint: Box<DeviceEndpoint>,
+        detail: String,
+    },
 }
 #[cfg(test)]
 mod tests {
-    use super::ManagerError;
+    use super::{ManagerError, StateError};
     use attack_shark_x3::ProtocolError;
     use std::error::Error;
 
@@ -271,5 +344,21 @@ mod tests {
         let err = ManagerError::InvalidUpdate("custom message".to_owned());
         assert_eq!(format!("{err}"), "invalid update: custom message");
         assert!(err.source().is_none());
+    }
+    #[test]
+    fn unsupported_schema_display_uses_plain_local_data_language() {
+        let err = StateError::UnsupportedSchema {
+            found: 9,
+            expected: 3,
+        };
+        let display = format!("{err}");
+        assert_eq!(
+            display,
+            "unsupported local-data format/version 9; expected 3"
+        );
+        assert!(
+            !display.contains("schema"),
+            "Display must not surface schema jargon: {display}"
+        );
     }
 }

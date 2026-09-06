@@ -29,26 +29,55 @@ Brand aliases do not by themselves prove identical firmware. Each technical clai
 | [`research/`](research/README.md) | Dated investigations, binary-analysis provenance, and corrections |
 | [`evidence/`](evidence/README.md) | Raw descriptors, captures, packet dumps, and model-specific analyses |
 | [`ui-driver-spec.md`](ui-driver-spec.md) | Rust FA61 user-interface integration contract (composite `apply_profile_update`, resident pages) |
-| [`safety.md`](safety.md) | Shared hardware-test and recovery restrictions (polling-rate preflight, rebind ambiguity) |
+| [`logical-mouse-identity-spec.md`](logical-mouse-identity-spec.md) | Persistent physical identity design: watermark layout, ceremonies (Add another mouse / Restore / Adopt / BLE-associate), schema 5, identity rules |
+| [`safety.md`](safety.md) | Shared hardware-test and recovery restrictions (polling-rate preflight, watermark-authenticated power-cycle verification) |
 
 ## Device identity and durable state
 
-Manager durable state is schema 4 (`state.json`, `state.lock` plus per-device `*.operation.lock`). Device keys are logical `mouse-N` (`N >= 1`, canonical, allocated via `nextDeviceNumber`); serial numbers and HID paths are endpoint metadata only and never identity.
+Manager durable state is schema 5 (`state.json`, sibling `state.lock`, plus a per-device `device-<id>.lock` operation lock; no migration from schema 4). Schema 5 adds installation-level identity mode (`Legacy`/`Persistent`), per-device physical watermark ids, and a durable resumable identity-setup journal. Event subscriptions hold the input session without holding the operation lock. Device keys are logical `mouse-N` (`N >= 1`, canonical, allocated via `nextDeviceNumber`); serial numbers and HID paths are endpoint metadata only and never identity.
 
-- **Endpoint is a locator:** `DeviceLocator::UsbPath(path)` is the current verbatim HID path, `BlePlatformId` for BLE; `DeviceEndpoint` stores `vendor_id`/`product_id` and optional trimmed `serial_number` as metadata.
+- **Endpoint is a locator:** `DeviceLocator::UsbPath(path)` is the current verbatim HID path, `BlePlatformId` for BLE; `DeviceEndpoint` stores `vendor_id`/`product_id` and optional trimmed `serial_number` as metadata. In persistent identity mode the driver-owned watermark in the DPI tail is the per-unit identifier (see [`logical-mouse-identity-spec.md`](logical-mouse-identity-spec.md)).
 - **Exact rediscovery is automatic:** discovery upserts a known `(transport, locator)` in place.
-- **Cross-transport linkage is explicit:** `link_devices(source, target, precedence)` merges transports; discovery never auto-links by name/model/serial. `Refuse` (default) rejects merges that would discard evidence; `KeepTarget`/`KeepSource` discard one side; `Merge` copies a resource from the source only when the target has neither desired nor observed data for it, and reports skipped source evidence via `discarded_evidence`. No stable-serial or automatic-link claim.
-- **Unique replug can update the locator:** `rebind_missing_endpoint` (CLI `rebind`) succeeds only with exactly one matching candidate (same VID/PID for USB); zero or multiple candidates fail and refuse to guess. Selection without an explicit `--device` and with multiple connected identities returns `AmbiguousDevice`.
-- **Evidence-free shells are auto-dropped:** each discovery association removes identities with no configuration evidence whose every endpoint locator is now claimed by a *surviving* different identity — the residue of a port change resolved by a later rebind. Mutually claiming shells keep each other alive, and evidence-bearing identities are never auto-dropped; explicit removal is `forget` (refuses evidence-bearing identities without `--force`).
+- **Cross-transport linkage comes from physical identity:** the same watermark observed over wired and receiver resolves to one logical mouse; a BLE endpoint attaches only through the explicit association ceremony. Discovery never auto-links by name/model/serial/VID-PID or connection timing; there is no `link_devices`-style merge API. No stable-serial or automatic-link claim.
+- **A locator moves only with authentication:** in persistent identity mode a locator is replaced only by a reappearing endpoint whose current-profile watermark authenticates as the saved physical token (zero, multiple, malformed, unsupported, and foreign candidates are refused); legacy mode keeps the fuzzy same-locator or unique same-VID/PID behavior. Selection without an explicit `--device` and with multiple connected identities returns `AmbiguousDevice`.
+- **Evidence-free shells are auto-dropped:** each discovery association removes identities with no configuration evidence whose every endpoint locator is now claimed by a *surviving* different identity — the residue of a port change resolved by a later locator update. Mutually claiming shells keep each other alive, and evidence-bearing identities are never auto-dropped; explicit removal is `forget` (refuses evidence-bearing identities without `--force`).
 - **Display names are a lookup key:** `rename` sets `identity.display_name` (blank clears it); CLI device arguments accept a canonical `mouse-N` id or a unique case-insensitive display name. The `mouse-N` key itself never changes.
 - **Receiver is treated as permanently paired absent contrary evidence:** `fa60` identifies the shared receiver, not the mouse model; disappearance does not auto-unpair.
+- **GUI topology recovery is automatic:** operating-system USB hotplug notifications trigger rediscovery on receiver/wired arrival and removal (with a short Windows arrival settle delay); receiver radio connection events retain their input session across mouse power changes. A lightweight two-second endpoint scan is used only when the OS watcher cannot start. Battery input reports update telemetry only and never invalidate an open settings draft.
 
-GUI-only preferences are separate: `gui-preferences.json` (schema 1) beside `state.json`, managed by `x3-gui/src/app_settings.rs` with coalescing atomic writes and backup on unreadable/unsupported version, no `state.lock` or hardware access. Slint pages (`ui/app-window.slint`) are kept resident only where user-relevant so drafts survive navigation.
+GUI-only preferences are separate: `gui-preferences.json` (schema 1) beside `state.json`, managed by `x3-gui/src/app_settings.rs` with coalescing atomic writes and backup on unreadable/unsupported version, no `state.lock` or hardware access — stores `validation_choice` (Transport/Readback), per-transport `baseline_choice_wired` (default Live) / `baseline_choice_receiver` (default Stored, BLE forced Stored), `allow_explicit_defaults`, appearance, DPI range, and last page. Slint pages (`ui/app-window.slint`) are kept resident only where user-relevant so drafts survive navigation. Non-rate GUI saves merge against the complete manager-originated profile snapshot already held by the draft, avoiding a duplicate pre-write hardware read; requested post-write confirmation and the mandatory polling-rate safety check remain unchanged.
+
+## Physical identity (watermarks and ceremonies)
+
+- **Identity mode:** `Legacy` (one fuzzy logical mouse, no per-unit claim, no
+  watermark reads or writes) or `Persistent` (logical mice carry a
+  driver-owned physical watermark). The first **Add another mouse** is the
+  transition from Legacy to Persistent.
+- **Watermark:** the 25-byte opaque tail of DPI report `0x04` — magic `X3ID`,
+  format version 1, random 128-bit token, CRC-32 — see
+  [`protocols/04-dpi.md`](protocols/04-dpi.md).
+- **Resolution:** each discovered connection resolves to a logical mouse or to
+  an unassociated connection with a specific reason (`Absent`, `Malformed`,
+  `Unsupported`, `Unknown`, `Duplicate`, `Reserved`); discovery never
+  manufactures a `mouse-N` for an unassociated connection.
+- **Ceremonies** (`begin_identity_ceremony` / `identity_ceremony_action`):
+  initial enrollment (Add another mouse, first time — both mice nearby), Add
+  mouse, Restore (reassociate a mouse whose watermark was lost; rotates to a
+  fresh token), adopt (add a foreign-tagged mouse with explicit confirmation),
+  and BLE associate (explicit reconnect ceremony; BLE cannot verify a
+  watermark).
+- Power-cycle verification and locator updates authenticate by watermark in
+  persistent mode — see [`safety.md`](safety.md).
+
+The full design — storage and schema, stamping invariants, failure rules,
+naming, lifecycle — lives in
+[`logical-mouse-identity-spec.md`](logical-mouse-identity-spec.md).
 
 ## Packet reports
 
 | Report | Purpose |
 |:-------|:--------|
+| [`0x04`](protocols/04-dpi.md) | DPI stages and sensor fields; carries the physical-identity watermark in persistent mode |
 | [`0x05`](protocols/05-preferences.md) | Preferences, sleep, debounce, and lighting fields |
 | [`0x06`](protocols/06-polling-rate.md) | Polling rate |
 | [`0x07`](protocols/07-wakeup-mode.md) | Partially characterized wakeup mode |

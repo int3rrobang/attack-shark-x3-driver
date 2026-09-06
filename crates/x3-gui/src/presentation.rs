@@ -1,8 +1,9 @@
 use attack_shark_x3::{DebounceMs, DeepSleepMinutes, DpiValue, SleepTimer};
 use attack_shark_x3_manager::{
-    DeviceEndpoint, DeviceEvent, DeviceIdentity, FullProfileRefreshOutcome, LiftOffDistance,
+    DeviceEndpoint, DeviceEvent, DeviceIdentity, FullProfileRefreshOutcome, IdentityCeremonyKind,
+    IdentityCeremonyProgress, IdentityCeremonyStage, IdentityResolution, LiftOffDistance,
     ManagerError, ProfileId, ProfileMetadata, ProfileResourceKind, ProfileUpdateOutcome,
-    SafeButtonAction, SafeButtonSlot, TransportKind, Verification,
+    SafeButtonAction, SafeButtonSlot, TransportKind, UnassociatedReason, Verification,
 };
 
 pub const BINDING_ACTIONS: [&str; 49] = [
@@ -103,6 +104,11 @@ pub fn is_ble_identity(identity: &DeviceIdentity) -> bool {
     matches!(selected_transport(identity), Some(TransportKind::Ble))
 }
 
+#[allow(dead_code)]
+pub fn is_receiver_identity(identity: &DeviceIdentity) -> bool {
+    matches!(selected_transport(identity), Some(TransportKind::Receiver))
+}
+
 pub fn transport_label_for_identity(identity: &DeviceIdentity) -> String {
     match selected_transport(identity) {
         Some(transport) => transport_label(transport).to_owned(),
@@ -141,6 +147,161 @@ pub fn format_error_string(prefix: &str, error: ManagerError) -> String {
         other => other.to_string(),
     };
     format!("{prefix}: {message}")
+}
+
+/// Which action the identity-ceremony popup's primary button performs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CeremonyPrompt {
+    /// No primary action; the popup only informs.
+    None,
+    /// The user reconnected or presented the physical mouse.
+    Reconnect,
+    /// Assign the generated token and write the watermark.
+    Stamp,
+    /// Explicitly confirm adoption of the observed foreign token.
+    Adopt,
+    /// Pair the presented BLE endpoint with the target logical mouse.
+    Associate,
+    /// The ceremony finished (complete, cancelled, or failed); close it.
+    Done,
+}
+
+/// User-facing title of a physical-identity ceremony kind.
+pub fn ceremony_title(kind: IdentityCeremonyKind) -> &'static str {
+    match kind {
+        IdentityCeremonyKind::InitialEnrollment | IdentityCeremonyKind::AddMouse => {
+            "add another mouse"
+        }
+        IdentityCeremonyKind::Restore => "restore a saved mouse",
+        IdentityCeremonyKind::ForeignAdoption => "adopt this mouse",
+        IdentityCeremonyKind::BleAssociation => "pair a bluetooth mouse",
+    }
+}
+
+/// Success line shown when a ceremony completes.
+pub fn ceremony_success_copy(kind: IdentityCeremonyKind) -> &'static str {
+    match kind {
+        IdentityCeremonyKind::InitialEnrollment => {
+            "Both mice are set up and each keeps its own identity."
+        }
+        IdentityCeremonyKind::AddMouse => "The mouse was added.",
+        IdentityCeremonyKind::Restore => "The saved mouse is restored to this mouse.",
+        IdentityCeremonyKind::ForeignAdoption => "The mouse was added.",
+        IdentityCeremonyKind::BleAssociation => "The bluetooth mouse is paired.",
+    }
+}
+
+/// The step instruction shown for one ceremony progress report. Each line
+/// names the physical action the user must perform; internal ceremony terms
+/// stay in the engineering vocabulary.
+pub fn ceremony_instruction(progress: &IdentityCeremonyProgress) -> String {
+    let kind = progress.kind;
+    match &progress.stage {
+        IdentityCeremonyStage::Ready => "Ready.".into(),
+        IdentityCeremonyStage::AwaitingReconnect => match kind {
+            IdentityCeremonyKind::InitialEnrollment if progress.step == Some(1) => {
+                "Reconnect the mouse you're adding.".into()
+            }
+            IdentityCeremonyKind::InitialEnrollment => {
+                "Now reconnect your other mouse.".into()
+            }
+            IdentityCeremonyKind::AddMouse => "Reconnect the mouse you want to add.".into(),
+            IdentityCeremonyKind::Restore => {
+                "Disconnect the saved mouse if it's connected, then reconnect the mouse you're assigning to it.".into()
+            }
+            IdentityCeremonyKind::ForeignAdoption => {
+                "This mouse was set up on another computer. Make sure it's connected, then continue.".into()
+            }
+            IdentityCeremonyKind::BleAssociation => {
+                "Make sure the bluetooth mouse is on and nearby, then pair it.".into()
+            }
+        },
+        IdentityCeremonyStage::Capturing => {
+            "Reading the mouse and capturing its settings. Keep it connected.".into()
+        }
+        IdentityCeremonyStage::Stamping => {
+            "The app is setting up this mouse. Keep it connected.".into()
+        }
+        IdentityCeremonyStage::Verified => "The mouse confirmed its identity.".into(),
+        IdentityCeremonyStage::Complete => ceremony_success_copy(kind).into(),
+        IdentityCeremonyStage::Cancelled => "Setup was cancelled. Nothing was changed.".into(),
+        IdentityCeremonyStage::Failed { .. } => "Setup stopped. Nothing was changed.".into(),
+    }
+}
+
+/// Label for the ceremony popup's primary action button.
+pub fn ceremony_prompt_label(prompt: CeremonyPrompt, kind: IdentityCeremonyKind) -> &'static str {
+    match prompt {
+        CeremonyPrompt::None => "",
+        CeremonyPrompt::Reconnect => "I've reconnected the mouse",
+        CeremonyPrompt::Stamp => match kind {
+            IdentityCeremonyKind::Restore => "restore this mouse",
+            _ => "add this mouse",
+        },
+        CeremonyPrompt::Adopt => "adopt this mouse",
+        CeremonyPrompt::Associate => "pair this bluetooth mouse",
+        CeremonyPrompt::Done => "done",
+    }
+}
+
+/// Secondary line for the ceremony popup: step position and the logical
+/// mouse being processed when known.
+pub fn ceremony_detail(progress: &IdentityCeremonyProgress, target_name: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let (Some(step), Some(total)) = (progress.step, progress.total_steps)
+        && total > 1
+    {
+        parts.push(format!("step {step} of {total}"));
+    }
+    if let Some(name) = target_name {
+        parts.push(name.to_owned());
+    }
+    parts.join(" · ")
+}
+
+/// Display name for an unassociated connection, distinct from logical mice.
+pub fn unassociated_name(endpoint: &DeviceEndpoint) -> String {
+    endpoint
+        .display_name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| match endpoint.transport {
+            TransportKind::Ble => "Bluetooth mouse".to_owned(),
+            _ => "Unmarked mouse".to_owned(),
+        })
+}
+
+/// Why an unassociated connection cannot be attached to a logical mouse.
+pub fn unassociated_reason_copy(
+    endpoint: &DeviceEndpoint,
+    reason: UnassociatedReason,
+) -> &'static str {
+    match reason {
+        UnassociatedReason::Absent if endpoint.transport == TransportKind::Ble => {
+            "bluetooth, not paired yet"
+        }
+        UnassociatedReason::Absent => "no saved identity",
+        UnassociatedReason::Malformed => "its identity can't be read",
+        UnassociatedReason::Unsupported { .. } => "newer identity format — update the app",
+        UnassociatedReason::Unknown => "set up on another computer",
+        UnassociatedReason::Duplicate => "identity conflict",
+        UnassociatedReason::Reserved => "reserved identity",
+        UnassociatedReason::ReservedByJournal => "reserved by a running setup",
+    }
+}
+
+/// Detail line for one unassociated connection, leading with its transport.
+pub fn unassociated_detail(endpoint: &DeviceEndpoint, resolution: &IdentityResolution) -> String {
+    let transport = transport_label(endpoint.transport);
+    match resolution {
+        IdentityResolution::Resolved { .. } => format!("{transport} · known mouse"),
+        IdentityResolution::Unassociated { reason, .. } => {
+            format!(
+                "{transport} · {}",
+                unassociated_reason_copy(endpoint, *reason)
+            )
+        }
+    }
 }
 
 pub fn on_off(value: bool) -> &'static str {
@@ -617,12 +778,12 @@ pub fn event_snapshot_draft_warning(status: &str) -> String {
     )
 }
 
-/// True when an incoming snapshot must preserve the draft: an event-driven
-/// snapshot arriving while the user has unsaved edits. Explicit operations
-/// (refresh, apply, select, discard, reload) may always replace the models
-/// and clear the draft.
-pub fn snapshot_preserves_draft(event_driven: bool, dirty: bool) -> bool {
-    event_driven && dirty
+/// True when an incoming snapshot must preserve the draft: any event-driven
+/// snapshot preserves UI state (e.g. an open button-assignment popup) and
+/// only refreshes telemetry. Explicit operations (refresh, apply, select,
+/// discard, reload) may always replace the models and clear the draft.
+pub fn snapshot_preserves_draft(event_driven: bool, _dirty: bool) -> bool {
+    event_driven
 }
 
 #[cfg(test)]
@@ -960,7 +1121,7 @@ mod tests {
     #[test]
     fn event_snapshot_preserves_the_draft_only_when_dirty_and_event_driven() {
         assert!(snapshot_preserves_draft(true, true));
-        assert!(!snapshot_preserves_draft(true, false));
+        assert!(snapshot_preserves_draft(true, false));
         assert!(!snapshot_preserves_draft(false, true));
         assert!(!snapshot_preserves_draft(false, false));
     }

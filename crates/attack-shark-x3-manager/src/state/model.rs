@@ -1,19 +1,23 @@
 use std::collections::BTreeMap;
 
 use attack_shark_x3::{
-    ButtonsState, DpiState, PollingRate, PreferencesState, ProfileId, ProfileMetadata,
+    ButtonsState, DpiState, PhysicalId, PollingRate, PreferencesState, ProfileId, ProfileMetadata,
+    TransportKind,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::device::{DeviceId, DeviceIdentity};
+use crate::device::{DeviceEndpoint, DeviceId, DeviceIdentity};
 use crate::error::StateError;
 
 /// The durable-state schema understood by this manager.
 ///
-/// Schema 4 introduces logical `mouse-N` device keys, multi-transport
+/// Schema 4 introduced logical `mouse-N` device keys, multi-transport
 /// endpoints, next-device allocation, and strengthened evidence invariants.
-/// No migration from schema 3 exists; schema 3 documents are rejected.
-pub const SCHEMA_VERSION: u32 = 4;
+/// Schema 5 adds installation-level physical-identity mode, optional
+/// per-device physical watermark ids, and a durable resumable identity-setup
+/// journal. No migration from schema 4 exists; schema 4 documents are
+/// rejected.
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Maximum length of a local profile display name, in Unicode scalar values.
 ///
@@ -51,6 +55,11 @@ impl<T> ResourceState<T> {
             desired: None,
             observed: None,
         }
+    }
+    /// Returns true when there is no desired or observed evidence.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.desired.is_none() && self.observed.is_none()
     }
 
     /// Drops persistence evidence without changing the requested value.
@@ -466,6 +475,169 @@ fn mark_all_or_invalidate<T: PartialEq>(
         resource.invalidate_persistence();
     }
 }
+/// The physical-identity mode of the installation.
+///
+/// [`IdentityMode::Legacy`] is the default: the single logical mouse is a
+/// fuzzy placeholder that makes no claim about which physical unit it refers
+/// to, so no watermark is ever read or written. [`IdentityMode::Persistent`]
+/// means logical mice are physically identified via driver-stamped watermark
+/// tokens, and every present physical id must be unique across devices.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentityMode {
+    /// Fuzzy single-mouse semantics: at most one logical mouse, no physical ids.
+    #[default]
+    Legacy,
+    /// Physically identified logical mice; present physical ids are unique.
+    Persistent,
+}
+
+impl IdentityMode {
+    /// Returns true when this is the default fuzzy legacy mode.
+    #[must_use]
+    pub const fn is_legacy(self) -> bool {
+        matches!(self, Self::Legacy)
+    }
+}
+
+/// The physical-identity ceremony recorded by a durable setup journal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentitySetupPhase {
+    /// The Legacy -> Persistent transition: capture/stamp the mouse being
+    /// added first, then the existing mouse.
+    InitialEnrollment,
+    /// Adding a further mouse to an already-persistent installation.
+    AddMouse,
+    /// Restoring a logical mouse that lost its watermark. The reserved
+    /// `token` rotates in for the `old_token` currently on the bound device.
+    Restore,
+    /// Adopting a valid watermark token unknown to this installation as a
+    /// new local logical mouse.
+    ForeignAdoption,
+    /// Explicitly associating a BLE endpoint with an existing logical mouse.
+    BleAssociation,
+}
+
+/// Where an in-flight identity ceremony currently stands.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentitySetupStage {
+    /// Waiting for the user to reconnect/authenticate a physical mouse (or
+    /// pick the BLE device to associate).
+    #[default]
+    AwaitingCapture,
+    /// A subject is captured; its profiles are being stamped.
+    Stamping,
+    /// All captures/stamps are complete; finalization is pending.
+    Finalizing,
+}
+
+/// Progress stamping one firmware profile of an enrolled subject.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentityStampProgress {
+    /// The profile has not been touched yet.
+    #[default]
+    Pending,
+    /// The profile's current state has been captured but not yet stamped.
+    Captured,
+    /// The profile has been stamped with the reserved token.
+    Stamped,
+}
+
+/// One physical mouse enrolled in an in-flight identity ceremony.
+///
+/// The captured [`endpoint`](Self::endpoint) reference and the
+/// [`captured`](Self::captured) profile image are what make the journal
+/// resumable after an interruption: they record which authenticated physical
+/// mouse the ceremony is about and its actual state, together with the token
+/// it reserves (or adopts) and per-profile stamp progress.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdentitySetupSubject {
+    /// Captured endpoint reference for the authenticated physical mouse.
+    pub endpoint: DeviceEndpoint,
+    /// The logical mouse this subject is bound to, once assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<DeviceId>,
+    /// The token reserved for (or adopted by) this subject. `None` until the
+    /// token is generated/adopted, and always `None` for BLE association.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<PhysicalId>,
+    /// Restore only: the token being rotated away - the bound logical mouse's
+    /// current physical id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_token: Option<PhysicalId>,
+    /// The durable profile image captured from the authenticated physical
+    /// mouse, persisted so the ceremony can resume after an interruption
+    /// without reconnecting the device. `None` before capture (and always
+    /// `None` for BLE association).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured: Option<CapturedProfileImage>,
+    /// Per-profile stamp progress for this subject.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stamp_progress: BTreeMap<ProfileId, IdentityStampProgress>,
+}
+/// The durable profile image captured from one authenticated physical mouse.
+///
+/// This is the compact full-profile capture: device-global firmware profile
+/// metadata plus the resource images of every captured firmware profile, using
+/// the same evidence types as durable [`DeviceState`]. It is persisted on the
+/// setup subject so an interrupted ceremony can resume without reconnecting
+/// the physical mouse.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapturedProfileImage {
+    /// Device-global profile metadata captured from the hardware.
+    #[serde(default, skip_serializing_if = "ResourceState::is_empty")]
+    pub profile_metadata: ResourceState<ProfileMetadata>,
+    /// Resource images of every captured firmware profile.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profiles: BTreeMap<ProfileId, ProfileState>,
+}
+
+impl IdentitySetupSubject {
+    /// Returns true when the subject's stamp progress covers exactly the
+    /// captured profile keys and every one of them is stamped.
+    ///
+    /// A subject without a captured image, or whose stamp progress omits a
+    /// captured profile or tracks a profile that was not captured, is never
+    /// fully stamped.
+    #[must_use]
+    pub fn is_fully_stamped(&self) -> bool {
+        let Some(captured) = &self.captured else {
+            return false;
+        };
+        self.stamp_progress.len() == captured.profiles.len()
+            && self
+                .stamp_progress
+                .keys()
+                .all(|profile| captured.profiles.contains_key(profile))
+            && self
+                .stamp_progress
+                .values()
+                .all(|progress| matches!(progress, IdentityStampProgress::Stamped))
+    }
+}
+
+/// A compact durable, resumable journal for an in-flight physical-identity
+/// ceremony.
+///
+/// The journal records which ceremony is active, where it stands, and the
+/// per-subject facts needed to resume after an interruption: the captured
+/// endpoint reference of each authenticated physical mouse, the tokens the
+/// ceremony reserves (or adopts), and per-profile stamp progress.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdentitySetupJournal {
+    pub phase: IdentitySetupPhase,
+    pub stage: IdentitySetupStage,
+    /// Ordered per-physical-mouse progress: at most two subjects during
+    /// initial enrollment, at most one for every other ceremony.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subjects: Vec<IdentitySetupSubject>,
+}
 
 /// The complete internal manager-state document.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -475,6 +647,12 @@ pub struct StateFile {
     pub next_device_number: u64,
     pub selected_device: Option<DeviceId>,
     pub devices: BTreeMap<DeviceId, DeviceState>,
+    /// Installation-level physical-identity mode; defaults to fuzzy legacy.
+    #[serde(default)]
+    pub identity_mode: IdentityMode,
+    /// The active identity-setup journal, when a ceremony is in flight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_setup: Option<IdentitySetupJournal>,
 }
 
 impl Default for StateFile {
@@ -484,6 +662,8 @@ impl Default for StateFile {
             next_device_number: 1,
             selected_device: None,
             devices: BTreeMap::new(),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         }
     }
 }
@@ -586,6 +766,354 @@ impl StateFile {
                 }
             }
         }
+        self.validate_identity_mode()?;
+        if let Some(journal) = &self.identity_setup {
+            self.validate_identity_setup(journal)?;
+        }
+        Ok(())
+    }
+
+    /// Validates installation-level identity-mode invariants.
+    ///
+    /// Legacy mode allows at most one durable fuzzy logical mouse and forbids
+    /// physical ids entirely; Persistent mode requires every committed device
+    /// to carry a physical id and requires those ids to be unique.
+    fn validate_identity_mode(&self) -> Result<(), StateError> {
+        match self.identity_mode {
+            IdentityMode::Legacy => {
+                if self.devices.len() > 1 {
+                    return Err(StateError::invalid_state(format!(
+                        "legacy identity mode allows at most one logical mouse, found {}",
+                        self.devices.len()
+                    )));
+                }
+                for (device_id, device) in &self.devices {
+                    if device.identity.physical_id.is_some() {
+                        return Err(StateError::invalid_state(format!(
+                            "legacy identity mode must not carry a physical id for device {device_id}"
+                        )));
+                    }
+                }
+            }
+            IdentityMode::Persistent => {
+                let mut seen: Vec<&PhysicalId> = Vec::new();
+                for (device_id, device) in &self.devices {
+                    let Some(physical_id) = &device.identity.physical_id else {
+                        return Err(StateError::invalid_state(format!(
+                            "persistent identity mode requires a physical id for device {device_id}"
+                        )));
+                    };
+                    if seen.contains(&physical_id) {
+                        return Err(StateError::invalid_state(format!(
+                            "physical id {physical_id:?} is assigned to more than one logical mouse (duplicate on device {device_id})"
+                        )));
+                    }
+                    seen.push(physical_id);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates that an active identity-setup journal is coherent and that
+    /// every token it reserves is genuinely reserved: not already assigned to
+    /// a committed device, not reused within the ceremony, and consistent
+    /// with the rotation/adoption semantics its phase declares.
+    fn validate_identity_setup(&self, journal: &IdentitySetupJournal) -> Result<(), StateError> {
+        // Initial enrollment is exactly the Legacy -> Persistent transition;
+        // every other ceremony requires persistent identity.
+        match journal.phase {
+            IdentitySetupPhase::InitialEnrollment => {
+                if self.identity_mode != IdentityMode::Legacy {
+                    return Err(StateError::invalid_state(
+                        "initial enrollment setup requires legacy identity mode",
+                    ));
+                }
+            }
+            IdentitySetupPhase::AddMouse
+            | IdentitySetupPhase::Restore
+            | IdentitySetupPhase::ForeignAdoption
+            | IdentitySetupPhase::BleAssociation => {
+                if self.identity_mode != IdentityMode::Persistent {
+                    return Err(StateError::invalid_state(
+                        "this identity setup requires persistent identity mode",
+                    ));
+                }
+            }
+        }
+
+        // Subject counts per ceremony.
+        match journal.phase {
+            IdentitySetupPhase::InitialEnrollment => {
+                if journal.subjects.len() > 2 {
+                    return Err(StateError::invalid_state(
+                        "initial enrollment setup cannot enroll more than two mice",
+                    ));
+                }
+            }
+            IdentitySetupPhase::AddMouse
+            | IdentitySetupPhase::Restore
+            | IdentitySetupPhase::ForeignAdoption
+            | IdentitySetupPhase::BleAssociation => {
+                if journal.subjects.len() > 1 {
+                    return Err(StateError::invalid_state(
+                        "this identity setup ceremony cannot enroll more than one mouse",
+                    ));
+                }
+            }
+        }
+
+        // Stage coherence with subject progress.
+        match journal.stage {
+            IdentitySetupStage::AwaitingCapture => match journal.phase {
+                IdentitySetupPhase::InitialEnrollment => {
+                    if journal.subjects.len() > 1 {
+                        return Err(StateError::invalid_state(
+                            "initial enrollment cannot await capture with more than one subject",
+                        ));
+                    }
+                    if let Some(subject) = journal.subjects.first()
+                        && (subject.token.is_none() || !subject.is_fully_stamped())
+                    {
+                        return Err(StateError::invalid_state(
+                            "initial enrollment awaits the second mouse with an unfinished first subject",
+                        ));
+                    }
+                }
+                _ => {
+                    if !journal.subjects.is_empty() {
+                        return Err(StateError::invalid_state(
+                            "awaiting capture while a subject is already captured",
+                        ));
+                    }
+                }
+            },
+            IdentitySetupStage::Stamping => {
+                if journal.phase == IdentitySetupPhase::BleAssociation {
+                    return Err(StateError::invalid_state(
+                        "BLE association never stamps profiles",
+                    ));
+                }
+                let Some(subject) = journal.subjects.last() else {
+                    return Err(StateError::invalid_state(
+                        "stamping requires a captured subject",
+                    ));
+                };
+                let captured = subject.captured.as_ref().ok_or_else(|| {
+                    StateError::invalid_state("stamping requires a captured profile image")
+                })?;
+                if captured.profiles.is_empty() {
+                    return Err(StateError::invalid_state(
+                        "stamping requires at least one captured profile",
+                    ));
+                }
+                if subject.is_fully_stamped() {
+                    return Err(StateError::invalid_state(
+                        "stamping stage requires an incompletely stamped subject",
+                    ));
+                }
+            }
+            IdentitySetupStage::Finalizing => {
+                if journal.subjects.is_empty() {
+                    return Err(StateError::invalid_state(
+                        "finalizing requires captured subjects",
+                    ));
+                }
+                match journal.phase {
+                    IdentitySetupPhase::InitialEnrollment => {
+                        if journal.subjects.len() != 2 {
+                            return Err(StateError::invalid_state(
+                                "initial enrollment finalizing requires both mice",
+                            ));
+                        }
+                    }
+                    _ => {
+                        if journal.subjects.len() != 1 {
+                            return Err(StateError::invalid_state(
+                                "finalizing requires exactly one subject for this ceremony",
+                            ));
+                        }
+                    }
+                }
+                if journal.phase != IdentitySetupPhase::BleAssociation {
+                    for subject in &journal.subjects {
+                        if subject.token.is_none() {
+                            return Err(StateError::invalid_state(
+                                "finalizing requires every subject to have a reserved token",
+                            ));
+                        }
+                        if !subject.is_fully_stamped() {
+                            return Err(StateError::invalid_state(
+                                "finalizing requires every subject to be fully stamped",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Per-subject coherence and token reservation.
+        let mut reserved: Vec<&PhysicalId> = Vec::new();
+        for subject in &journal.subjects {
+            // Every durable captured image must satisfy the same evidence and
+            // embedded profile-id invariants as a committed device, so a
+            // corrupted capture can never become the baseline for resuming or
+            // finalizing a ceremony.
+            if let Some(captured) = &subject.captured {
+                validate_captured_profile_image(
+                    captured,
+                    &format!("identity setup subject {:?}", subject.endpoint.locator),
+                )?;
+            }
+            // Stamping requires the captured profile image to be durable.
+            if !subject.stamp_progress.is_empty() && subject.captured.is_none() {
+                return Err(StateError::invalid_state(
+                    "profile stamping requires a captured profile image",
+                ));
+            }
+            // Once stamping has begun, stamp progress must track exactly the
+            // captured profile keys: no captured profile may be missing and no
+            // profile outside the capture may be stamped.
+            if let Some(captured) = &subject.captured
+                && !subject.stamp_progress.is_empty()
+                && (subject.stamp_progress.len() != captured.profiles.len()
+                    || !subject
+                        .stamp_progress
+                        .keys()
+                        .all(|profile| captured.profiles.contains_key(profile)))
+            {
+                return Err(StateError::invalid_state(
+                    "stamp progress must track exactly the captured profile keys",
+                ));
+            }
+            if let Some(device_id) = &subject.device_id
+                && !self.devices.contains_key(device_id)
+            {
+                return Err(StateError::invalid_state(format!(
+                    "identity setup subject references unknown device {device_id}"
+                )));
+            }
+            // Stamped progress implies a token existed to stamp with.
+            if subject
+                .stamp_progress
+                .values()
+                .any(|progress| matches!(progress, IdentityStampProgress::Stamped))
+                && subject.token.is_none()
+            {
+                return Err(StateError::invalid_state(
+                    "stamped profile progress requires a reserved token",
+                ));
+            }
+            if let Some(token) = &subject.token {
+                if reserved.contains(&token) {
+                    return Err(StateError::invalid_state(
+                        "identity setup reserves the same token for more than one subject",
+                    ));
+                }
+                reserved.push(token);
+                // A reserved token must not already identify a committed device.
+                for (device_id, device) in &self.devices {
+                    if device.identity.physical_id.as_ref() == Some(token) {
+                        return Err(StateError::invalid_state(format!(
+                            "identity setup reserves token {token:?} already assigned to device {device_id}"
+                        )));
+                    }
+                }
+            }
+            if let Some(old_token) = &subject.old_token {
+                if reserved.contains(&old_token) {
+                    return Err(StateError::invalid_state(
+                        "identity setup rotates a token also reserved by another subject",
+                    ));
+                }
+                let device_id = subject.device_id.as_ref().ok_or_else(|| {
+                    StateError::invalid_state("restore rotation requires a bound device")
+                })?;
+                let device = self.devices.get(device_id).ok_or_else(|| {
+                    StateError::invalid_state(format!(
+                        "restore rotation references unknown device {device_id}"
+                    ))
+                })?;
+                let current = device.identity.physical_id.as_ref().ok_or_else(|| {
+                    StateError::invalid_state(format!(
+                        "restore rotation requires device {device_id} to have a physical id"
+                    ))
+                })?;
+                if current != old_token {
+                    return Err(StateError::invalid_state(format!(
+                        "restore old token does not match device {device_id} physical id"
+                    )));
+                }
+                if subject.token.as_ref() == Some(old_token) {
+                    return Err(StateError::invalid_state(
+                        "restore new token must differ from the rotated-away token",
+                    ));
+                }
+            }
+        }
+
+        // Phase-specific shape.
+        match journal.phase {
+            IdentitySetupPhase::BleAssociation => {
+                for subject in &journal.subjects {
+                    if subject.token.is_some() || subject.old_token.is_some() {
+                        return Err(StateError::invalid_state(
+                            "BLE association must not reserve or rotate tokens",
+                        ));
+                    }
+                    if !subject.stamp_progress.is_empty() {
+                        return Err(StateError::invalid_state(
+                            "BLE association must not track profile stamps",
+                        ));
+                    }
+                    if subject.captured.is_some() {
+                        return Err(StateError::invalid_state(
+                            "BLE association must not carry a captured profile image",
+                        ));
+                    }
+                    if subject.endpoint.transport != TransportKind::Ble {
+                        return Err(StateError::invalid_state(
+                            "BLE association endpoint must be a BLE endpoint",
+                        ));
+                    }
+                    for (device_id, device) in &self.devices {
+                        if Some(device_id) == subject.device_id.as_ref() {
+                            continue;
+                        }
+                        if device
+                            .identity
+                            .endpoints
+                            .values()
+                            .any(|endpoint| endpoint.locator == subject.endpoint.locator)
+                        {
+                            return Err(StateError::invalid_state(format!(
+                                "BLE association endpoint already belongs to device {device_id}"
+                            )));
+                        }
+                    }
+                }
+            }
+            IdentitySetupPhase::Restore => {
+                for subject in &journal.subjects {
+                    if subject.old_token.is_none() {
+                        return Err(StateError::invalid_state(
+                            "restore requires the rotated-away old token",
+                        ));
+                    }
+                }
+            }
+            IdentitySetupPhase::AddMouse
+            | IdentitySetupPhase::ForeignAdoption
+            | IdentitySetupPhase::InitialEnrollment => {
+                for subject in &journal.subjects {
+                    if subject.old_token.is_some() {
+                        return Err(StateError::invalid_state(
+                            "old-token rotation is only valid for restore",
+                        ));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -676,16 +1204,55 @@ fn validate_resource_state<T: PartialEq>(
     Ok(())
 }
 
+/// Validates a captured profile image with the same invariants as a committed
+/// device: device-global profile metadata evidence, every captured profile
+/// resource's evidence, and the embedded profile ids each resource must match
+/// the key it is stored under. This is the authoritative gate for every
+/// durable [`CapturedProfileImage`] persisted on a ceremony subject.
+fn validate_captured_profile_image(
+    image: &CapturedProfileImage,
+    ctx: &str,
+) -> Result<(), StateError> {
+    validate_resource_state(&image.profile_metadata, &format!("{ctx} profileMetadata"))?;
+    for (profile_id, profile) in &image.profiles {
+        validate_profile_resource(
+            profile_id,
+            &profile.dpi,
+            &format!("{ctx} dpi"),
+            |value: &DpiState| value.profile,
+        )?;
+        validate_profile_resource(
+            profile_id,
+            &profile.preferences,
+            &format!("{ctx} preferences"),
+            |value: &PreferencesState| value.profile,
+        )?;
+        validate_profile_resource(
+            profile_id,
+            &profile.buttons,
+            &format!("{ctx} buttons"),
+            |value: &ButtonsState| value.profile,
+        )?;
+        validate_resource_state(
+            &profile.polling_rate,
+            &format!("{ctx} pollingRate for profile {profile_id}"),
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplicationVerification, DesiredSource, DesiredState, DeviceState, MAX_PROFILE_NAME_CHARS,
-        ObservationSource, ObservedState, PersistenceVerification, ProfileState, ResourceState,
-        SCHEMA_VERSION, StateFile, Timestamp, Verification,
+        ApplicationVerification, CapturedProfileImage, DesiredSource, DesiredState, DeviceState,
+        IdentityMode, IdentitySetupJournal, IdentitySetupPhase, IdentitySetupStage,
+        IdentitySetupSubject, IdentityStampProgress, MAX_PROFILE_NAME_CHARS, ObservationSource,
+        ObservedState, PersistenceVerification, ProfileState, ResourceState, SCHEMA_VERSION,
+        StateFile, Timestamp, Verification,
     };
     use crate::device::{DeviceEndpoint, DeviceId, DeviceIdentity};
     use crate::error::StateError;
-    use attack_shark_x3::{DpiState, PollingRate, ProfileId};
+    use attack_shark_x3::{DpiState, PhysicalId, PollingRate, ProfileId, ProfileMetadata};
     use std::collections::BTreeMap;
 
     fn timestamp(seconds: i64) -> Timestamp {
@@ -698,7 +1265,7 @@ mod tests {
         DeviceEndpoint::usb(
             attack_shark_x3::TransportKind::Wired,
             0x1d57,
-            0xfa60,
+            0xfa61,
             None,
             path,
             None,
@@ -726,15 +1293,47 @@ mod tests {
         .expect("valid state")
     }
 
+    fn dpi_for_profile(target: ProfileId, value: u16) -> DpiState {
+        DpiState::new(
+            target,
+            vec![attack_shark_x3::DpiValue::new(value).expect("valid dpi")],
+            attack_shark_x3::StageIndex::new(1).expect("valid stage"),
+            [0; 25],
+        )
+        .expect("valid state")
+    }
+
     #[test]
-    fn default_state_file_starts_at_schema_four_with_next_one() {
+    fn default_state_file_starts_at_schema_five_with_legacy_identity() {
         let state = StateFile::default();
         assert_eq!(state.schema_version, SCHEMA_VERSION);
-        assert_eq!(state.schema_version, 4);
+        assert_eq!(state.schema_version, 5);
         assert_eq!(state.next_device_number, 1);
         assert!(state.selected_device.is_none());
         assert!(state.devices.is_empty());
+        assert_eq!(state.identity_mode, IdentityMode::Legacy);
+        assert!(state.identity_setup.is_none());
         assert!(state.validate().is_ok());
+
+        // The default document round-trips and explicitly records the legacy mode.
+        let json = serde_json::to_value(&state).expect("serialize default state");
+        assert_eq!(json["identityMode"], "legacy");
+        assert!(json.get("identitySetup").is_none());
+        let decoded: StateFile = serde_json::from_value(json).expect("deserialize default state");
+        assert_eq!(decoded, state);
+        assert!(decoded.validate().is_ok());
+
+        // A schema-5 document without the identity fields defaults to Legacy/no setup.
+        let bare = serde_json::json!({
+            "schemaVersion": SCHEMA_VERSION,
+            "nextDeviceNumber": 1,
+            "selectedDevice": null,
+            "devices": {},
+        });
+        let decoded_bare: StateFile = serde_json::from_value(bare).expect("deserialize bare state");
+        assert_eq!(decoded_bare.identity_mode, IdentityMode::Legacy);
+        assert!(decoded_bare.identity_setup.is_none());
+        assert!(decoded_bare.validate().is_ok());
     }
 
     #[test]
@@ -808,6 +1407,8 @@ mod tests {
                 DeviceId::new("mouse-1").unwrap(),
                 DeviceState::new(identity),
             )]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state.validate().is_ok());
     }
@@ -831,6 +1432,8 @@ mod tests {
                 DeviceId::new("mouse-1").unwrap(),
                 DeviceState::new(identity),
             )]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state.validate().is_err());
 
@@ -869,6 +1472,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), overlong)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(matches!(state.validate(), Err(StateError::InvalidState(_))));
 
@@ -882,6 +1487,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), blank)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(matches!(state.validate(), Err(StateError::InvalidState(_))));
     }
@@ -994,6 +1601,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state.clone())]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state.validate().is_ok());
 
@@ -1023,6 +1632,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state2)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state2.validate().is_err());
 
@@ -1052,6 +1663,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state3)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state3.validate().is_err());
 
@@ -1081,6 +1694,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state4)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(
             state4.validate().is_ok(),
@@ -1119,6 +1734,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state.validate().is_ok());
 
@@ -1148,6 +1765,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state2)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state2.validate().is_err());
 
@@ -1181,6 +1800,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state3)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state3.validate().is_err());
 
@@ -1211,6 +1832,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state4)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(
             state4.validate().is_ok(),
@@ -1252,6 +1875,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state.validate().is_ok());
 
@@ -1279,6 +1904,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state2)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state2.validate().is_err());
 
@@ -1306,6 +1933,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state3)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state3.validate().is_err());
 
@@ -1337,6 +1966,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state4)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state4.validate().is_err());
 
@@ -1368,6 +1999,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state5)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state5.validate().is_err());
     }
@@ -1404,6 +2037,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state.validate().is_ok());
 
@@ -1433,52 +2068,56 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state2)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state2.validate().is_err());
     }
 
     #[test]
-    fn schema_three_rejected_without_migration() {
+    fn older_schemas_rejected_without_migration() {
         let identity = device_identity("mouse-1", vec![ble_endpoint("test")]);
-        let json = serde_json::json!({
-            "schemaVersion": 3,
-            "nextDeviceNumber": 2,
-            "selectedDevice": null,
-            "devices": {
-                "mouse-1": {
-                    "identity": identity,
-                    "profileMetadata": { "desired": null, "observed": null },
-                    "profiles": {}
+        for old_schema in [3, 4] {
+            let json = serde_json::json!({
+                "schemaVersion": old_schema,
+                "nextDeviceNumber": 2,
+                "selectedDevice": null,
+                "devices": {
+                    "mouse-1": {
+                        "identity": identity.clone(),
+                        "profileMetadata": { "desired": null, "observed": null },
+                        "profiles": {}
+                    }
                 }
+            });
+            let state: Result<StateFile, _> = serde_json::from_value(json.clone());
+            // Deserialization may succeed (the struct allows any schema_version
+            // value), but validate must reject every older generation.
+            if let Ok(state) = state {
+                assert!(matches!(
+                    state.validate(),
+                    Err(StateError::UnsupportedSchema { found, .. }) if found == old_schema
+                ));
             }
-        });
-        let state: Result<StateFile, _> = serde_json::from_value(json.clone());
-        // Deserialization will succeed (struct allows any schema_version value), but validate must fail.
-        if let Ok(state) = state {
+
+            // Direct construction with an older schema must fail validation.
+            let old_state = StateFile {
+                schema_version: old_schema,
+                ..StateFile::default()
+            };
             assert!(matches!(
-                state.validate(),
-                Err(StateError::UnsupportedSchema { found: 3, .. })
+                old_state.validate(),
+                Err(StateError::UnsupportedSchema { found, .. }) if found == old_schema
             ));
-        } else {
-            // Or serde already errors? Either is acceptable as rejection.
+
+            // Also via store load path: file with the older schema is rejected.
+            let json_str = serde_json::to_string(&json).unwrap();
+            let header: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+            assert_eq!(header["schemaVersion"], old_schema);
         }
-
-        // Direct construction with schema 3 should fail validation.
-        let state3 = StateFile {
-            schema_version: 3,
-            ..StateFile::default()
-        };
-        assert!(matches!(
-            state3.validate(),
-            Err(StateError::UnsupportedSchema { .. })
-        ));
-
-        // Also via store load path: file with schema 3 rejected.
-        let json_str = serde_json::to_string(&json).unwrap();
-        let header: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(header["schemaVersion"], 3);
-        // Ensure our constant is 4, so load would reject.
-        assert_eq!(SCHEMA_VERSION, 4);
+        // No migration shim exists: the current schema is 5 and nothing below
+        // it is accepted.
+        assert_eq!(SCHEMA_VERSION, 5);
     }
 
     #[test]
@@ -1590,6 +2229,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state.validate().is_ok());
     }
@@ -1718,6 +2359,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ds)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state.validate().is_err());
 
@@ -1748,6 +2391,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ds2)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state2.validate().is_err());
 
@@ -1776,6 +2421,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ds3)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state3.validate().is_err());
 
@@ -1804,6 +2451,8 @@ mod tests {
             next_device_number: 2,
             selected_device: None,
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ds4)]),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
         assert!(state4.validate().is_err());
     }
@@ -1901,6 +2550,991 @@ mod tests {
             next_device_number: 2,
             selected_device: Some(id),
             devices: BTreeMap::new(),
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: None,
         };
+    }
+    fn physical_id(byte: u8) -> PhysicalId {
+        PhysicalId::from_token_bytes([byte; 16])
+    }
+
+    fn stamped_subject(
+        endpoint: DeviceEndpoint,
+        device_id: Option<&str>,
+        token: Option<PhysicalId>,
+        old_token: Option<PhysicalId>,
+        stamped_profiles: Vec<ProfileId>,
+    ) -> IdentitySetupSubject {
+        IdentitySetupSubject {
+            endpoint,
+            device_id: device_id.map(|id| DeviceId::new(id).unwrap()),
+            token,
+            old_token,
+            captured: Some(captured_image()),
+            stamp_progress: stamped_profiles
+                .into_iter()
+                .map(|profile| (profile, IdentityStampProgress::Stamped))
+                .collect(),
+        }
+    }
+    fn captured_image() -> CapturedProfileImage {
+        let profile = ProfileId::new(1).unwrap();
+        let profile_2 = ProfileId::new(2).unwrap();
+        let mut image = CapturedProfileImage {
+            profile_metadata: ResourceState {
+                desired: Some(DesiredState {
+                    value: ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap(),
+                    source: DesiredSource::Imported,
+                    verification: Verification::not_sent(),
+                    updated_at: timestamp(1),
+                }),
+                observed: None,
+            },
+            profiles: BTreeMap::new(),
+        };
+        for captured_profile in [profile, profile_2] {
+            image.profiles.insert(
+                captured_profile,
+                ProfileState {
+                    dpi: ResourceState {
+                        desired: Some(DesiredState {
+                            value: dpi_for_profile(captured_profile, 800),
+                            source: DesiredSource::Imported,
+                            verification: Verification::not_sent(),
+                            updated_at: timestamp(1),
+                        }),
+                        observed: None,
+                    },
+                    preferences: ResourceState::empty(),
+                    buttons: ResourceState::empty(),
+                    polling_rate: ResourceState::empty(),
+                },
+            );
+        }
+        image
+    }
+
+    fn ble_subject(endpoint: DeviceEndpoint, device_id: Option<&str>) -> IdentitySetupSubject {
+        IdentitySetupSubject {
+            endpoint,
+            device_id: device_id.map(|id| DeviceId::new(id).unwrap()),
+            token: None,
+            old_token: None,
+            captured: None,
+            stamp_progress: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn legacy_mode_rejects_multiple_devices_and_physical_ids() {
+        let one = DeviceState::new(device_identity("mouse-1", vec![wired_endpoint("/a")]));
+        let two = DeviceState::new(device_identity("mouse-2", vec![wired_endpoint("/b")]));
+        let state = StateFile {
+            identity_mode: IdentityMode::Legacy,
+            next_device_number: 3,
+            devices: BTreeMap::from([
+                (DeviceId::new("mouse-1").unwrap(), one),
+                (DeviceId::new("mouse-2").unwrap(), two),
+            ]),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_err(), "legacy allows at most one mouse");
+
+        let mut identified =
+            DeviceState::new(device_identity("mouse-1", vec![wired_endpoint("/a")]));
+        identified.identity.physical_id = Some(physical_id(1));
+        let state = StateFile {
+            identity_mode: IdentityMode::Legacy,
+            next_device_number: 2,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), identified)]),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_err(), "legacy forbids physical ids");
+    }
+
+    #[test]
+    fn persistent_mode_requires_unique_physical_ids() {
+        let mut a = DeviceState::new(device_identity("mouse-1", vec![wired_endpoint("/a")]));
+        a.identity.physical_id = Some(physical_id(1));
+        let mut b = DeviceState::new(device_identity("mouse-2", vec![wired_endpoint("/b")]));
+        b.identity.physical_id = Some(physical_id(2));
+        let mut state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            next_device_number: 3,
+            devices: BTreeMap::from([
+                (DeviceId::new("mouse-1").unwrap(), a),
+                (DeviceId::new("mouse-2").unwrap(), b),
+            ]),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_ok());
+
+        // The same physical id on two logical mice is impossible.
+        let mut duplicate =
+            DeviceState::new(device_identity("mouse-3", vec![wired_endpoint("/c")]));
+        duplicate.identity.physical_id = Some(physical_id(1));
+        state
+            .devices
+            .insert(DeviceId::new("mouse-3").unwrap(), duplicate);
+        assert!(state.validate().is_err(), "duplicate physical ids rejected");
+
+        // A committed device without a physical id is impossible in
+        // persistent mode: every logical mouse must be physically identified.
+        state.devices.remove(&DeviceId::new("mouse-3").unwrap());
+        let mut unassociated =
+            DeviceState::new(device_identity("mouse-3", vec![wired_endpoint("/c")]));
+        unassociated.identity.physical_id = None;
+        state
+            .devices
+            .insert(DeviceId::new("mouse-3").unwrap(), unassociated);
+        state.next_device_number = 4;
+        assert!(
+            state.validate().is_err(),
+            "persistent devices require physical ids"
+        );
+    }
+
+    #[test]
+    fn setup_journal_serde_round_trip() {
+        let profile = ProfileId::new(1).unwrap();
+        let profile_2 = ProfileId::new(2).unwrap();
+        let subject_a = stamped_subject(
+            wired_endpoint("/dev/hidraw-enroll-a"),
+            None,
+            Some(physical_id(10)),
+            None,
+            vec![profile, profile_2],
+        );
+        let subject_b = stamped_subject(
+            wired_endpoint("/dev/hidraw-enroll-b"),
+            None,
+            Some(physical_id(11)),
+            None,
+            vec![profile, profile_2],
+        );
+        let journal = IdentitySetupJournal {
+            phase: IdentitySetupPhase::InitialEnrollment,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![subject_a, subject_b.clone()],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: Some(journal.clone()),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_ok());
+
+        let json = serde_json::to_value(&state).expect("serialize journal state");
+        assert_eq!(json["identityMode"], "legacy");
+        assert_eq!(json["identitySetup"]["phase"], "initialEnrollment");
+        assert_eq!(json["identitySetup"]["stage"], "finalizing");
+        assert_eq!(
+            json["identitySetup"]["subjects"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(
+            json["identitySetup"]["subjects"][0]["token"],
+            serde_json::Value::String("0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a".to_owned())
+        );
+        assert_eq!(
+            json["identitySetup"]["subjects"][0]["captured"]["profiles"]
+                .as_object()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            json["identitySetup"]["subjects"][0]["captured"]["profileMetadata"]["desired"]["source"],
+            "imported"
+        );
+        assert!(
+            json["identitySetup"]["subjects"][1]
+                .get("captured")
+                .is_some(),
+            "stamped subjects persist their captured profile image"
+        );
+        // Every captured profile key is tracked and stamped.
+        assert_eq!(
+            json["identitySetup"]["subjects"][1]["stampProgress"]["1"],
+            "stamped"
+        );
+        assert_eq!(
+            json["identitySetup"]["subjects"][1]["stampProgress"]["2"],
+            "stamped"
+        );
+
+        let bare_subject = IdentitySetupSubject {
+            captured: None,
+            ..subject_b.clone()
+        };
+        let bare_json = serde_json::to_value(&bare_subject).expect("serialize bare subject");
+        assert!(
+            bare_json.get("captured").is_none(),
+            "captured must be omitted when absent"
+        );
+
+        let decoded: StateFile = serde_json::from_value(json).expect("deserialize journal state");
+        assert_eq!(decoded, state);
+        assert!(decoded.validate().is_ok());
+    }
+
+    #[test]
+    fn setup_journal_rejects_impossible_combinations() {
+        let profile = ProfileId::new(1).unwrap();
+        let profile_2 = ProfileId::new(2).unwrap();
+
+        // Ceremonies other than initial enrollment require persistent mode.
+        let add_journal = IdentitySetupJournal {
+            phase: IdentitySetupPhase::AddMouse,
+            stage: IdentitySetupStage::AwaitingCapture,
+            subjects: vec![],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: Some(add_journal),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_err(), "AddMouse in legacy mode");
+
+        // Initial enrollment requires legacy mode.
+        let enroll_journal = IdentitySetupJournal {
+            phase: IdentitySetupPhase::InitialEnrollment,
+            stage: IdentitySetupStage::AwaitingCapture,
+            subjects: vec![],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(enroll_journal),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "InitialEnrollment in persistent mode"
+        );
+
+        // Awaiting capture while a subject is already captured is impossible.
+        let awaiting_with_subject = IdentitySetupJournal {
+            phase: IdentitySetupPhase::AddMouse,
+            stage: IdentitySetupStage::AwaitingCapture,
+            subjects: vec![stamped_subject(
+                wired_endpoint("/x"),
+                None,
+                Some(physical_id(1)),
+                None,
+                vec![],
+            )],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(awaiting_with_subject),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_err(), "awaiting capture with a subject");
+
+        // Stamping requires a subject that is not fully stamped.
+        let stamping_done = IdentitySetupJournal {
+            phase: IdentitySetupPhase::AddMouse,
+            stage: IdentitySetupStage::Stamping,
+            subjects: vec![stamped_subject(
+                wired_endpoint("/x"),
+                None,
+                Some(physical_id(1)),
+                None,
+                vec![profile, profile_2],
+            )],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(stamping_done),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "stamping with a fully stamped subject"
+        );
+
+        // Stamped progress without a reserved token is impossible.
+        let mut tokenless = stamped_subject(wired_endpoint("/x"), None, None, None, vec![profile]);
+        tokenless
+            .stamp_progress
+            .insert(profile_2, IdentityStampProgress::Pending);
+        let stamping_tokenless = IdentitySetupJournal {
+            phase: IdentitySetupPhase::AddMouse,
+            stage: IdentitySetupStage::Stamping,
+            subjects: vec![tokenless],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(stamping_tokenless),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "stamped progress without a token"
+        );
+        // Stamping without a captured profile image is impossible.
+        let mut no_capture = stamped_subject(
+            wired_endpoint("/x"),
+            None,
+            Some(physical_id(1)),
+            None,
+            vec![],
+        );
+        no_capture
+            .stamp_progress
+            .insert(profile_2, IdentityStampProgress::Pending);
+        no_capture.captured = None;
+        let stamping_no_capture = IdentitySetupJournal {
+            phase: IdentitySetupPhase::AddMouse,
+            stage: IdentitySetupStage::Stamping,
+            subjects: vec![no_capture],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(stamping_no_capture),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "stamping without a captured image"
+        );
+
+        // Finalizing requires every subject fully stamped with a token.
+        let mut incomplete = stamped_subject(
+            wired_endpoint("/x"),
+            None,
+            Some(physical_id(1)),
+            None,
+            vec![profile],
+        );
+        incomplete
+            .stamp_progress
+            .insert(profile_2, IdentityStampProgress::Captured);
+        let finalizing_incomplete = IdentitySetupJournal {
+            phase: IdentitySetupPhase::AddMouse,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![incomplete],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(finalizing_incomplete),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "finalizing with an unstamped profile"
+        );
+
+        // Initial enrollment finalizing requires both mice.
+        let one_mouse = IdentitySetupJournal {
+            phase: IdentitySetupPhase::InitialEnrollment,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![stamped_subject(
+                wired_endpoint("/x"),
+                None,
+                Some(physical_id(1)),
+                None,
+                vec![],
+            )],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: Some(one_mouse),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "initial enrollment finalizing with one mouse"
+        );
+
+        // A reserved token must not already identify a committed device.
+        let mut committed =
+            DeviceState::new(device_identity("mouse-1", vec![wired_endpoint("/a")]));
+        committed.identity.physical_id = Some(physical_id(7));
+        let mut collision = stamped_subject(
+            wired_endpoint("/x"),
+            None,
+            Some(physical_id(7)),
+            None,
+            vec![],
+        );
+        collision
+            .stamp_progress
+            .insert(profile, IdentityStampProgress::Captured);
+        collision
+            .stamp_progress
+            .insert(profile_2, IdentityStampProgress::Pending);
+        let collision_journal = IdentitySetupJournal {
+            phase: IdentitySetupPhase::AddMouse,
+            stage: IdentitySetupStage::Stamping,
+            subjects: vec![collision],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            next_device_number: 2,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), committed)]),
+            identity_setup: Some(collision_journal),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "reserved token collides with a device"
+        );
+
+        // The same token cannot be reserved for two subjects.
+        let duplicate_tokens = IdentitySetupJournal {
+            phase: IdentitySetupPhase::InitialEnrollment,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![
+                stamped_subject(
+                    wired_endpoint("/a"),
+                    None,
+                    Some(physical_id(5)),
+                    None,
+                    vec![profile, profile_2],
+                ),
+                stamped_subject(
+                    wired_endpoint("/b"),
+                    None,
+                    Some(physical_id(5)),
+                    None,
+                    vec![profile, profile_2],
+                ),
+            ],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Legacy,
+            identity_setup: Some(duplicate_tokens),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_err(), "duplicate reserved token");
+
+        // A subject bound to an unknown device is rejected.
+        let unknown_device = IdentitySetupJournal {
+            phase: IdentitySetupPhase::BleAssociation,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![ble_subject(ble_endpoint("AA:BB"), Some("mouse-99"))],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(unknown_device),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "subject references unknown device"
+        );
+    }
+
+    #[test]
+    fn restore_rotation_and_ble_association_invariants() {
+        let mut lost = DeviceState::new(device_identity("mouse-1", vec![wired_endpoint("/a")]));
+        lost.identity.physical_id = Some(physical_id(9));
+        let fully_stamped = || vec![ProfileId::new(1).unwrap(), ProfileId::new(2).unwrap()];
+
+        // A valid restore rotates the device's old token to a fresh one.
+        let restore_ok = IdentitySetupJournal {
+            phase: IdentitySetupPhase::Restore,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![stamped_subject(
+                wired_endpoint("/a"),
+                Some("mouse-1"),
+                Some(physical_id(10)),
+                Some(physical_id(9)),
+                fully_stamped(),
+            )],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            next_device_number: 2,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), lost.clone())]),
+            identity_setup: Some(restore_ok),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_ok(), "valid restore rotation");
+
+        // Rotating to the same token is impossible.
+        let restore_same = IdentitySetupJournal {
+            phase: IdentitySetupPhase::Restore,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![stamped_subject(
+                wired_endpoint("/a"),
+                Some("mouse-1"),
+                Some(physical_id(9)),
+                Some(physical_id(9)),
+                fully_stamped(),
+            )],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            next_device_number: 2,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), lost.clone())]),
+            identity_setup: Some(restore_same),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "restore cannot reuse the old token"
+        );
+
+        // The old token must match the bound device's current physical id.
+        let restore_wrong = IdentitySetupJournal {
+            phase: IdentitySetupPhase::Restore,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![stamped_subject(
+                wired_endpoint("/a"),
+                Some("mouse-1"),
+                Some(physical_id(10)),
+                Some(physical_id(11)),
+                fully_stamped(),
+            )],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            next_device_number: 2,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), lost)]),
+            identity_setup: Some(restore_wrong),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "restore old token must match the device"
+        );
+
+        // Restore without an old token is impossible.
+        let restore_no_old = IdentitySetupJournal {
+            phase: IdentitySetupPhase::Restore,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![stamped_subject(
+                wired_endpoint("/a"),
+                Some("mouse-1"),
+                Some(physical_id(10)),
+                None,
+                fully_stamped(),
+            )],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(restore_no_old),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_err(), "restore requires the old token");
+
+        // Foreign adoption never rotates tokens.
+        let adoption = IdentitySetupJournal {
+            phase: IdentitySetupPhase::ForeignAdoption,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![stamped_subject(
+                wired_endpoint("/x"),
+                None,
+                Some(physical_id(3)),
+                Some(physical_id(4)),
+                fully_stamped(),
+            )],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(adoption),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "old-token rotation is restore-only"
+        );
+
+        // A valid explicit BLE association binds a BLE endpoint to a device.
+        let mut ble_device =
+            DeviceState::new(device_identity("mouse-1", vec![wired_endpoint("/a")]));
+        ble_device.identity.physical_id = Some(physical_id(1));
+        let ble_ok = IdentitySetupJournal {
+            phase: IdentitySetupPhase::BleAssociation,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![ble_subject(ble_endpoint("AA:BB"), Some("mouse-1"))],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            next_device_number: 2,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ble_device.clone())]),
+            identity_setup: Some(ble_ok),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_ok(), "valid BLE association");
+        // BLE association must not carry a captured profile image.
+        let mut ble_captured = ble_subject(ble_endpoint("AA:BB"), Some("mouse-1"));
+        ble_captured.captured = Some(captured_image());
+        let ble_captured_journal = IdentitySetupJournal {
+            phase: IdentitySetupPhase::BleAssociation,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![ble_captured],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            next_device_number: 2,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ble_device.clone())]),
+            identity_setup: Some(ble_captured_journal),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "BLE association with captured image"
+        );
+
+        let mut ble_token_subject = ble_subject(ble_endpoint("AA:BB"), Some("mouse-1"));
+        ble_token_subject.token = Some(physical_id(2));
+        let ble_token = IdentitySetupJournal {
+            phase: IdentitySetupPhase::BleAssociation,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![ble_token_subject],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            next_device_number: 2,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ble_device.clone())]),
+            identity_setup: Some(ble_token),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "BLE association without tokens only"
+        );
+
+        // BLE association must use a BLE endpoint.
+        let ble_wired = IdentitySetupJournal {
+            phase: IdentitySetupPhase::BleAssociation,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![ble_subject(wired_endpoint("/a"), Some("mouse-1"))],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            next_device_number: 2,
+            devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ble_device.clone())]),
+            identity_setup: Some(ble_wired),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "BLE association requires a BLE endpoint"
+        );
+
+        // The BLE endpoint must not already belong to another device.
+        let mut other = DeviceState::new(device_identity("mouse-2", vec![wired_endpoint("/b")]));
+        other.identity.physical_id = Some(physical_id(2));
+        other.identity.upsert_endpoint(ble_endpoint("AA:BB"));
+        let ble_taken = IdentitySetupJournal {
+            phase: IdentitySetupPhase::BleAssociation,
+            stage: IdentitySetupStage::Finalizing,
+            subjects: vec![ble_subject(ble_endpoint("AA:BB"), Some("mouse-1"))],
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            next_device_number: 3,
+            devices: BTreeMap::from([
+                (DeviceId::new("mouse-1").unwrap(), ble_device),
+                (DeviceId::new("mouse-2").unwrap(), other),
+            ]),
+            identity_setup: Some(ble_taken),
+            ..StateFile::default()
+        };
+        assert!(
+            state.validate().is_err(),
+            "BLE endpoint already owned by another device"
+        );
+    }
+
+    #[test]
+    fn captured_image_evidence_must_match_committed_device_invariants() {
+        let profile = ProfileId::new(1).unwrap();
+        let profile_2 = ProfileId::new(2).unwrap();
+        let endpoint = wired_endpoint("/dev/hidraw-stamp");
+        let progress = || {
+            BTreeMap::from([
+                (profile, IdentityStampProgress::Captured),
+                (profile_2, IdentityStampProgress::Pending),
+            ])
+        };
+
+        // A valid captured image with stamp progress tracking exactly the
+        // captured keys validates at Stamping.
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![IdentitySetupSubject {
+                    endpoint: endpoint.clone(),
+                    device_id: None,
+                    token: Some(physical_id(10)),
+                    old_token: None,
+                    captured: Some(captured_image()),
+                    stamp_progress: progress(),
+                }],
+            }),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_ok(), "valid stamping capture accepted");
+
+        // Malformed profile evidence: ReadbackVerified without an observed
+        // value cannot be the durable baseline for a stamp.
+        let mut malformed = captured_image();
+        malformed.profiles.get_mut(&profile).unwrap().dpi = ResourceState {
+            desired: Some(DesiredState {
+                value: dpi_for_profile(profile, 800),
+                source: DesiredSource::UserWrite,
+                verification: Verification {
+                    application: ApplicationVerification::ReadbackVerified,
+                    persistence: PersistenceVerification::Unknown,
+                },
+                updated_at: timestamp(1),
+            }),
+            observed: None,
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![IdentitySetupSubject {
+                    endpoint: endpoint.clone(),
+                    device_id: None,
+                    token: Some(physical_id(10)),
+                    old_token: None,
+                    captured: Some(malformed),
+                    stamp_progress: progress(),
+                }],
+            }),
+            ..StateFile::default()
+        };
+        assert!(matches!(
+            state.validate(),
+            Err(StateError::InvalidState(message))
+                if message.contains("ReadbackVerified requires an observed value")
+        ));
+
+        // Malformed metadata evidence: a persistence claim without matching
+        // readback application evidence is refused.
+        let mut malformed_metadata = captured_image();
+        malformed_metadata.profile_metadata = ResourceState {
+            desired: Some(DesiredState {
+                value: ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap(),
+                source: DesiredSource::Imported,
+                verification: Verification {
+                    application: ApplicationVerification::Acknowledged,
+                    persistence: PersistenceVerification::PowerCycleVerified {
+                        verified_at: timestamp(5),
+                    },
+                },
+                updated_at: timestamp(1),
+            }),
+            observed: None,
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![IdentitySetupSubject {
+                    endpoint,
+                    device_id: None,
+                    token: Some(physical_id(10)),
+                    old_token: None,
+                    captured: Some(malformed_metadata),
+                    stamp_progress: progress(),
+                }],
+            }),
+            ..StateFile::default()
+        };
+        assert!(matches!(
+            state.validate(),
+            Err(StateError::InvalidState(message))
+                if message.contains("persistence claim requires ReadbackVerified")
+        ));
+    }
+
+    #[test]
+    fn captured_image_rejects_mismatched_embedded_profile_ids() {
+        let profile = ProfileId::new(1).unwrap();
+        let profile_2 = ProfileId::new(2).unwrap();
+
+        // A dpi resource stored under profile 1 but targeting profile 2 must
+        // be rejected exactly like a committed device's would be.
+        let mut mismatched = captured_image();
+        mismatched.profiles.get_mut(&profile).unwrap().dpi = ResourceState {
+            desired: Some(DesiredState {
+                value: dpi_for_profile(profile_2, 800),
+                source: DesiredSource::Imported,
+                verification: Verification::not_sent(),
+                updated_at: timestamp(1),
+            }),
+            observed: None,
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![IdentitySetupSubject {
+                    endpoint: wired_endpoint("/dev/hidraw-mismatch"),
+                    device_id: None,
+                    token: Some(physical_id(10)),
+                    old_token: None,
+                    captured: Some(mismatched),
+                    stamp_progress: BTreeMap::from([
+                        (profile, IdentityStampProgress::Captured),
+                        (profile_2, IdentityStampProgress::Pending),
+                    ]),
+                }],
+            }),
+            ..StateFile::default()
+        };
+        assert!(matches!(
+            state.validate(),
+            Err(StateError::InvalidState(message))
+                if message.contains("stored under another profile")
+        ));
+    }
+
+    #[test]
+    fn stamping_requires_captured_image_and_nonempty_profile_set() {
+        // Stamping with no captured image is impossible even before any
+        // profile progress has been recorded.
+        let mut no_capture = stamped_subject(
+            wired_endpoint("/dev/hidraw-no-capture"),
+            None,
+            Some(physical_id(1)),
+            None,
+            vec![],
+        );
+        no_capture.captured = None;
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![no_capture],
+            }),
+            ..StateFile::default()
+        };
+        assert!(matches!(
+            state.validate(),
+            Err(StateError::InvalidState(message))
+                if message.contains("stamping requires a captured profile image")
+        ));
+
+        // Stamping with an empty captured profile set would stamp nothing and
+        // let the ceremony complete vacuously; it is refused.
+        let empty_capture = IdentitySetupSubject {
+            endpoint: wired_endpoint("/dev/hidraw-empty-capture"),
+            device_id: None,
+            token: Some(physical_id(1)),
+            old_token: None,
+            captured: Some(CapturedProfileImage {
+                profile_metadata: ResourceState::empty(),
+                profiles: BTreeMap::new(),
+            }),
+            stamp_progress: BTreeMap::new(),
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![empty_capture],
+            }),
+            ..StateFile::default()
+        };
+        assert!(matches!(
+            state.validate(),
+            Err(StateError::InvalidState(message))
+                if message.contains("stamping requires at least one captured profile")
+        ));
+
+        // A complete capture still validates: resumable stamping with all
+        // profiles captured but none stamped yet is accepted.
+        let resumable = IdentitySetupSubject {
+            endpoint: wired_endpoint("/dev/hidraw-resume"),
+            device_id: None,
+            token: Some(physical_id(1)),
+            old_token: None,
+            captured: Some(captured_image()),
+            stamp_progress: BTreeMap::from([
+                (ProfileId::new(1).unwrap(), IdentityStampProgress::Captured),
+                (ProfileId::new(2).unwrap(), IdentityStampProgress::Captured),
+            ]),
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![resumable],
+            }),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_ok(), "resumable stamping accepted");
+    }
+
+    #[test]
+    fn ceremony_journal_rejects_unknown_fields() {
+        // A misspelled journal stage field is a hard deserialization error.
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::AwaitingCapture,
+                subjects: vec![],
+            }),
+            ..StateFile::default()
+        };
+        let mut json = serde_json::to_value(&state).expect("serialize ceremony state");
+        json["identitySetup"]["stages"] = serde_json::json!("awaitingCapture");
+        assert!(
+            serde_json::from_value::<StateFile>(json).is_err(),
+            "misspelled journal stage field must fail deserialization"
+        );
+
+        // A misspelled stamp-progress field on a subject (previously ignored,
+        // silently yielding an empty progress map) is refused.
+        let mut subject = stamped_subject(
+            wired_endpoint("/dev/hidraw-typo"),
+            None,
+            Some(physical_id(10)),
+            None,
+            vec![],
+        );
+        subject
+            .stamp_progress
+            .insert(ProfileId::new(1).unwrap(), IdentityStampProgress::Captured);
+        subject
+            .stamp_progress
+            .insert(ProfileId::new(2).unwrap(), IdentityStampProgress::Pending);
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![subject],
+            }),
+            ..StateFile::default()
+        };
+        let mut json = serde_json::to_value(&state).expect("serialize ceremony state");
+        let stamp_progress = json["identitySetup"]["subjects"][0]
+            .get("stampProgress")
+            .expect("serialized subject has stamp progress")
+            .clone();
+        json["identitySetup"]["subjects"][0]["stmpProgress"] = stamp_progress;
+        assert!(
+            serde_json::from_value::<StateFile>(json).is_err(),
+            "misspelled stamp-progress field must fail deserialization"
+        );
+
+        // A misspelled captured-image field is refused too.
+        let mut json = serde_json::to_value(&state).expect("serialize ceremony state");
+        let mut captured = json["identitySetup"]["subjects"][0]["captured"].clone();
+        captured["profileMetadatax"] = serde_json::json!({});
+        json["identitySetup"]["subjects"][0]["captured"] = captured;
+        assert!(
+            serde_json::from_value::<StateFile>(json).is_err(),
+            "misspelled captured-image field must fail deserialization"
+        );
     }
 }
