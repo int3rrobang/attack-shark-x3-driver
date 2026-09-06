@@ -4,30 +4,38 @@ Status: prototype integration contract for a user-facing UI.
 
 This document describes the current Rust driver and GUI as a UI-facing capability
 surface. It separates behavior that is implemented today from UI policy that an
-adapter should enforce. It targets X3/FA61 wired devices and the constrained
-X3/M600 BLE write path; BLE configuration reads and readback are unavailable, and
-the GUI does not offer polling-rate writes over BLE.
+adapter should enforce. It targets the X3/M600 packet dialect across FA61 wired
+USB, the FA60 2.4 GHz receiver, and the constrained X3/M600 BLE write path; BLE
+configuration reads and readback are unavailable, and the GUI does not offer
+polling-rate writes over BLE.
 
-Canonical packet layouts remain in [`protocols/`](protocols/README.md). Device and
-transport constraints are in [`devices/x3-fa61.md`](devices/x3-fa61.md) and
-[`transports/usb-hid.md`](transports/usb-hid.md).
+Canonical packet layouts remain in [`protocols/`](protocols/README.md). Device
+and transport constraints are in [`devices/x3-fa61.md`](devices/x3-fa61.md) and
+[`transports/`](transports/README.md); identity and multi-mouse semantics are in
+[`logical-mouse-identity-spec.md`](logical-mouse-identity-spec.md).
 
 ## 1. Scope and support boundary
 
-### 1.1 Supported connection
+### 1.1 Supported connections
 
-The Rust hardware driver supports the FA61 USB configuration collection:
+The Rust `DeviceManager` operates the X3/M600 packet dialect across three
+transports:
 
-- USB vendor ID: `0x1d57`
-- USB product ID: `0xfa61`
-- interface: `2`
-- Windows collection: `Col04`
-- transport: wired USB HID only
+- FA61 wired USB HID — the configuration collection with vendor `0x1d57`,
+  product `0xfa61`, interface `2`, Windows collection `Col04`; the full
+  configuration surface;
+- FA60 2.4 GHz receiver — product `0xfa60`; the same dialect through the shared
+  receiver, which is a transport identity, not proof of the paired mouse model;
+- X3/M600 BLE GATT — constrained non-rate configuration writes from complete
+  stored/imported baselines; no configuration readback and no polling-rate
+  writes.
 
 The driver must not silently select another HID collection. Automatic selection
-is valid only when exactly one matching configuration collection exists. A UI that
-supports multiple mice must display the discovered device path and pass the exact
-path when opening a device.
+is valid only when exactly one matching configuration collection exists. A UI
+that supports multiple mice must display the discovered endpoints (HID path,
+receiver, or BLE platform id) and pass the exact endpoint when opening a device.
+Identity is logical `mouse-N`, never a raw endpoint; see
+[Section 2.3](#23-device-identity-and-ceremonies).
 
 Constrained BLE non-rate writes are covered below. BLE configuration
 reads/readback, safe polling-rate writes, and the dangerous unverified BLE
@@ -52,8 +60,16 @@ remain outside this contract.
 5. Profile metadata and target-section data are separate observations. The UI must
    not infer the live working profile from metadata alone.
 6. Unknown bytes are preserved, not relabeled or discarded.
-7. Operations on one device are serialized. The UI must not issue concurrent
-   target reads or writes to try to improve latency.
+7. Operations on one device are serialized behind the manager's per-device
+   operation lock. The UI must not issue concurrent target reads or writes to
+   try to improve latency. Event subscriptions keep the input session open
+   without holding the operation lock, so reads, writes, and verification
+   workflows keep running while events arrive.
+8. Device identity is physical, not locator-based. In persistent identity mode
+   the driver-owned watermark in the DPI tail is the per-unit identifier;
+   cross-transport linkage (wired/receiver/BLE) comes only from the watermark
+   or an explicit ceremony, never from model, serial, VID/PID, path, or
+   connection timing.
 
 ## 2. Device session model
 
@@ -63,36 +79,50 @@ remain outside this contract.
 listDevices() -> DeviceInfo[]
 ```
 
-`DeviceInfo` contains:
+`DeviceInfo` describes a discovered endpoint:
 
 ```text
 {
-  path: string,
+  transport: "wired" | "receiver" | "ble",
+  locator: string,        // verbatim HID path or BLE platform id
   vendorId: 0x1d57,
-  productId: 0xfa61,
-  interfaceNumber: 2,
+  productId: 0xfa61 | 0xfa60,
+  interfaceNumber?: 2,
   product?: string,
-  serialNumber?: string
+  serialNumber?: string   // trimmed metadata only; never identity
 }
 ```
 
+An endpoint is a locator, never physical identity. Discovery upserts a known
+`(transport, locator)` in place; the manager resolves each endpoint to an
+associated logical mouse (`mouse-N`) or an **unassociated connection** (unknown,
+absent, malformed, or duplicate watermark; BLE endpoint awaiting explicit
+association). Unassociated connections are presented as distinct objects and are
+never persisted as logical devices.
+
 The UI should show:
 
-- no device: `No compatible FA61 configuration collection found`;
-- one device: allow open by default;
-- multiple devices: require an explicit device selection.
+- no device: `No compatible device found`;
+- one associated device: allow open by default;
+- multiple associated devices: require an explicit selection by logical name or id;
+- unassociated connections: surface them as `This mouse isn't recognized` with
+  the identity ceremonies of [Section 2.3](#23-device-identity-and-ceremonies).
 
 ### 2.2 Open session
 
 ```text
-open(devicePath?: string) -> MouseSession
+open(locator?: string) -> MouseSession
 close(session)
 ```
 
-A session owns one exclusive HID worker. Cloning a Rust `MouseHandle` is allowed,
-but all clones still share the same serialized worker. A UI adapter should expose
-one session object per selected device and should close it when the device is
-removed or the application shuts down.
+A session owns one exclusive transport worker behind the manager's per-device
+operation lock. Cloning a Rust `MouseHandle` is allowed, but all clones still
+share the same serialized worker, and the manager serializes per-device
+operations through the durable `device-<id>.lock` operation lock. A UI adapter
+should expose one session object per selected logical device and should close it
+when the device is removed or the application shuts down. Opening must pass the
+exact discovered locator; the manager resolves it against the saved identity, so
+the UI never guesses identity from a path.
 
 On USB the driver publishes decoded report-`0x03` input events through
 `MouseHandle::subscribe_input_events()` (see `transports/usb-hid.md`). At the
@@ -102,6 +132,48 @@ operation lock, so reads, writes, and verification workflows keep running while
 events arrive. BLE has no input-event stream: over BLE the UI shows stored
 settings only and must refresh state after opening, after a write, after profile
 activation, and after reconnecting a device.
+
+### 2.3 Device identity and ceremonies
+
+Logical identity is `mouse-N` (`N >= 1`), persisted in `state.json` schema 5
+with a sibling `state.lock` and a per-device `device-<id>.lock` operation lock;
+there is no migration from schema 4. In legacy mode there is exactly one fuzzy
+logical mouse: no watermark is required, none is written, and no identity read
+is added on startup. The first **Add another mouse** transitions the
+installation to persistent identity mode, after which the driver-owned
+watermark in the DPI `0x04` opaque tail (report offsets 25–49) is the per-unit
+identifier.
+
+The watermark layout is `X3ID` magic, format version 1, a random 128-bit token,
+and CRC-32 over the first 21 bytes; a failed decode is never a best-effort
+token. Every driver-owned `0x04` write re-stamps the owning mouse's watermark,
+so a DPI write can never transfer or erase identity. The watermark survives
+power cycles, profile loads, button changes, and preference changes; the stock
+application's virtual-profile switching can erase it, after which the identity
+is unknown and must be restored — never guessed from model, VID/PID, path, or
+configuration similarity.
+
+The identity ceremonies are explicit physical actions; watermark enrollment and
+verification require wired or receiver USB (BLE cannot enroll or verify a
+watermark):
+
+- **Add another mouse** — the initial transition from legacy to persistent mode
+  walks two reconnect ceremonies and stamps distinct tokens; later adds need
+  only the mouse being added.
+- **Restore** — reassociates a mouse whose watermark was lost; it rotates to a
+  fresh token (never reuses the old one) and is a user assertion, not a
+  hardware fact.
+- **Adopt** — a valid watermark unknown to this installation is added as a new
+  logical mouse only after explicit confirmation.
+- **BLE associate** — a BLE platform id is cached as the locator for an
+  identified mouse only through an explicit reconnect ceremony; identity cannot
+  be revalidated over BLE until the mouse is seen over USB again.
+
+The full design lives in
+[`logical-mouse-identity-spec.md`](logical-mouse-identity-spec.md). The UI must
+never manufacture a `mouse-N` for an unassociated connection, must never guess
+identity from model, serial, VID/PID, path, or connection timing, and must never
+automatically stamp an existing token onto an unverified device.
 
 ## 3. State model
 
@@ -170,8 +242,13 @@ Validation:
 - `activeStage` must refer to a configured stage;
 - `preservedTail` is not user-editable and must survive read-modify-write.
 
-The preserved tail has unresolved semantics. The UI may display it in a diagnostic
-view, but must not offer arbitrary editing.
+Outside persistent identity mode the tail's host-side semantics are unresolved
+(stock applications write per-stage RGB bytes plus a status byte; the firmware
+treats the block opaquely). In persistent identity mode the entire 25-byte tail
+is the driver-owned watermark surface: the UI may display it in a diagnostic
+view, must not offer arbitrary editing, and must rely on the driver to re-stamp
+the owning mouse's watermark on every `0x04` write (see
+[Section 2.3](#23-device-identity-and-ceremonies)).
 
 ### 3.4 Preferences state
 
@@ -221,9 +298,11 @@ displayed as `Unknown (0xNN)` and preserved unless the user explicitly selects
 a replacement.
 
 Known CLI light-mode labels are `off`, `static`, `breathing`, `neon`,
-`color-breathing`, `static-dpi`, and `breathing-dpi`. The X3 BLE warning about
-light mode `0x00` does not apply to this wired USB transport, but a UI should still
-avoid presenting unverified hardware effects as fact.
+`color-breathing`, `static-dpi`, and `breathing-dpi`. A well-formed report `0x05`
+with light-mode byte `0x00` was accepted over both USB and BLE in the corrected
+same-hardware probe (2026-07-22); the earlier crash attribution was not
+reproduced and remains unresolved. A UI should still avoid presenting unverified
+hardware effects as fact.
 
 ### 3.5 Button state
 
@@ -319,7 +398,8 @@ button writes.
 The UI must not construct a complete profile from factory/default constants when
 editing an existing profile. In particular, it must preserve:
 
-- DPI `preservedTail`;
+- DPI `preservedTail` (in persistent identity mode the driver re-stamps the
+  owning mouse's watermark over it on every `0x04` write);
 - preference `lightModeRaw`, `configurationRaw`, `deepSleepRaw`, host-color bytes,
   sleep timer, and debounce fields not edited;
 - every button slot not edited;
@@ -494,8 +574,11 @@ configuration path:
   profile-reload and power-cycle verification. Profile reload performs the
   manager's deliberate profile switch-away/switch-back check; power-cycle
   verification closes the session and waits for the exact USB device to
-  disappear and return before reopening it and comparing the complete profile
-  readback;
+  disappear and return before reopening it. In persistent identity mode the
+  reappearing device must first authenticate by its current-profile watermark —
+  exactly one candidate carrying the saved physical token is accepted, never a
+  guess by model or VID/PID — and only then is the complete profile readback
+  compared;
 - before starting power-cycle verification, instruct the user to unplug the
   mouse, power the mouse off, wait for the exact device to disappear, then power
   it on and reconnect it. Only a complete matching readback from one of these
@@ -508,12 +591,16 @@ configuration path:
 
 ### 5.1 Serialization
 
-One worker thread exclusively owns the HID handle. The worker serializes every
-read, write, activation, maximum update, and polling-rate operation. A UI must
-queue operations through the session rather than issuing direct HID requests.
+One worker thread exclusively owns the transport handle, and the manager
+serializes per-device operations behind the per-device operation lock
+(`device-<id>.lock`). The worker serializes every read, write, activation,
+maximum update, and polling-rate operation. A UI must queue operations through
+the session rather than issuing direct transport requests.
 
 Do not use `Promise.all` or equivalent parallelism for reads on the same device.
-Serialization is required for correctness, not only for rate limiting.
+Serialization is required for correctness, not only for rate limiting. Event
+subscriptions hold the input session without holding the operation lock, so
+reads, writes, and verification workflows keep running while events arrive.
 
 ### 5.2 FA61 read transaction
 
@@ -677,8 +764,11 @@ observed state to the user.
 
 ### 8.1 Startup
 
-1. Enumerate FA61 configuration collections.
-2. Let the user select a device if more than one is found.
+1. Discover wired, receiver, and already-connected BLE endpoints through the
+   manager; resolve each to a logical mouse or an unassociated connection.
+2. Let the user select a logical device when more than one is found; present
+   unassociated connections with the identity ceremonies of Section 2.3 rather
+   than inventing a logical identity.
 3. Open one session.
 4. Read profile metadata.
 5. Read the current enabled profile with `readProfile(currentProfile)` for a
@@ -744,11 +834,14 @@ This is the explicit diagnostic workflow (`verify --method profile-reload` or
 `verify --method power-cycle` in the CLI); it is never part of the normal
 Apply flow.
 
-1. Close the HID session.
-2. Reopen the selected exact device path after it reconnects.
-3. Read metadata and the expected profile sections.
-4. Compare against the last verified state.
-5. Set `persistence-verified` only for fields that match.
+1. Close the transport session.
+2. Wait for the exact endpoint to disappear and reappear, then reopen it.
+3. In persistent identity mode, authenticate the reappearing device by its
+   current-profile watermark before any comparison; zero, multiple, malformed,
+   unsupported, or foreign candidates are refused.
+4. Read metadata and the expected profile sections.
+5. Compare against the last verified state.
+6. Set `persistence-verified` only for fields that match.
 
 ### 8.6 Changing the polling rate
 
@@ -770,7 +863,7 @@ Apply flow.
 ## 9. Capability matrix
 | Capability | Current Rust implementation | UI exposure recommendation |
 |:-----------|:----------------------------|:----------------------------|
-| Discover FA61 collections | supported | required |
+| Discover wired, receiver, and BLE endpoints | supported | required |
 | Profile metadata read | supported | required |
 | Profile activation | supported | required |
 | Maximum-profile update | supported and bounded | required with confirmation |

@@ -8,11 +8,10 @@ use tokio::time::sleep;
 // and 08 bind 12 00 <slot>. Checksum = sum(P0[8..64])+sum(P1[4..64]) BE at P2[10..11].
 
 fn usage() -> String {
-    format!(
-        "usage: macro-wired --profile <1..5> --slot <1|2|3|4|7|8> --macro <press-A|press-B> [--transport wired|receiver] [--dry-run]\n\
-         slots: 1 Left(01) 2 Right(02) 3 Middle(03) 4 DPI(04) 7 Forward(07) 8 Backward(08) — array slots 1,2,3,4,7,8 (no wheel 5/6)\n\
-         macros: press-A = 04 01 0a00 / 04 02 0a00 -> round 01/81 + 04 ; press-B = 05"
-    )
+    "usage: macro-wired --profile <1..5> --slot <1|2|3|4|7|8> --macro <press-A|press-B> [--transport wired|receiver] [--dry-run]\n\
+     slots: 1 Left(01) 2 Right(02) 3 Middle(03) 4 DPI(04) 7 Forward(07) 8 Backward(08) — array slots 1,2,3,4,7,8 (no wheel 5/6)\n\
+     macros: press-A = 04 01 0a00 / 04 02 0a00 -> round 01/81 + 04 ; press-B = 05"
+        .to_owned()
 }
 
 fn parse_args() -> Result<(ProfileId, u8, String, UsbDeviceKind, bool), String> {
@@ -142,7 +141,7 @@ fn build_packets(
     b08[off + 2] = wire_id; // reference == slot/wireId per 0x414705
 
     // patch checksum sum16 slots[3..56] BE at 57..58
-    let sum08: u16 = b08[3..57].iter().map(|b| *b as u16).sum::<u16>() & 0xFFFF;
+    let sum08: u16 = b08[3..57].iter().map(|b| *b as u16).sum::<u16>();
     b08[57] = (sum08 >> 8) as u8;
     b08[58] = (sum08 & 0xFF) as u8;
 

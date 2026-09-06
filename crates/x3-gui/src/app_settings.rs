@@ -251,7 +251,9 @@ pub fn load_gui_preferences_from_path(path: &Path) -> (GuiPreferences, Option<St
             path,
             &bytes,
             Some(schema),
-            &format!("GUI preferences schema v{schema} is not supported — reset to defaults"),
+            &format!(
+                "GUI preferences use an unsupported local-data format (version {schema}) — reset to defaults"
+            ),
         );
     }
 

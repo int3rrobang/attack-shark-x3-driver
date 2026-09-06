@@ -491,28 +491,31 @@ async fn dispatch(
             let current = manager
                 .identity_ceremony_progress()
                 .map_err(|error| error.to_string())?;
-            let progress = match current {
-                None => manager
-                    .begin_identity_ceremony(IdentityCeremonyKind::ForeignAdoption, None)
-                    .await
-                    .map_err(|error| error.to_string())?,
-                Some(progress)
-                    if progress.kind == IdentityCeremonyKind::ForeignAdoption
-                        && matches!(&progress.stage, IdentityCeremonyStage::Stamping) =>
-                {
-                    manager
-                        .identity_ceremony_action(IdentityCeremonyAction::Adopt, None, None)
+            match current {
+                None => {
+                    let progress = manager
+                        .begin_identity_ceremony(IdentityCeremonyKind::ForeignAdoption, None)
                         .await
-                        .map_err(|error| error.to_string())?
+                        .map_err(|error| error.to_string())?;
+                    output.print(format_progress_human(&progress), &progress)
                 }
-                Some(progress) => {
-                    return Err(format!(
-                        "another identity ceremony is in progress ({}); finish or cancel it first",
-                        identity_kind_human(progress.kind)
-                    ));
+                Some(progress) if progress.kind == IdentityCeremonyKind::ForeignAdoption => {
+                    // `identity adopt` only begins the ceremony; it never
+                    // confirms or writes. When the ceremony is already running
+                    // it reports progress and lets `identity stamp` confirm.
+                    output.print(
+                        format!(
+                            "An adoption ceremony is already in progress.\n{}\nConfirm the adoption with `x3ctl identity stamp`.",
+                            format_progress_human(&progress)
+                        ),
+                        &progress,
+                    )
                 }
-            };
-            output.print(format_progress_human(&progress), &progress)
+                Some(progress) => Err(format!(
+                    "another identity ceremony is in progress ({}); finish or cancel it first",
+                    identity_kind_human(progress.kind)
+                )),
+            }
         }
         Action::IdentityAssociate { device } => {
             let target = resolve_device_arg(manager, &device)?;
@@ -637,17 +640,16 @@ async fn dispatch(
                         output.print(format_progress_human(&progress), &progress)
                     }
                 }
-                IdentityCeremonyStage::Stamping => {
-                    let action = if progress.kind == IdentityCeremonyKind::ForeignAdoption {
-                        IdentityCeremonyAction::Adopt
-                    } else {
-                        IdentityCeremonyAction::Stamp
-                    };
-                    let progress = manager
-                        .identity_ceremony_action(action, None, None)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    output.print(format_progress_human(&progress), &progress)
+                IdentityCeremonyStage::Complete
+                    if progress.kind == IdentityCeremonyKind::InitialEnrollment =>
+                {
+                    // The enrollment is fully stamped and parked at
+                    // `Finalizing`; the migration decision must be an explicit
+                    // choice, so continue never finalizes on its own.
+                    Err(
+                        "both mice are stamped; run `x3ctl identity accept-migration` or `x3ctl identity skip-migration` to finish the setup"
+                            .to_owned(),
+                    )
                 }
                 _ => Err(
                     "cannot continue from this stage; run `x3ctl identity status` to inspect"
@@ -661,10 +663,7 @@ async fn dispatch(
                 .await
                 .map_err(|error| error.to_string())?;
             output.print(
-                format!(
-                    "Will keep the old single-mouse name and settings when they match.\n{}",
-                    format_progress_human(&progress)
-                ),
+                "Kept the old single-mouse name and settings where they matched.\nFirst-time setup complete.",
                 &progress,
             )
         }
@@ -674,10 +673,7 @@ async fn dispatch(
                 .await
                 .map_err(|error| error.to_string())?;
             output.print(
-                format!(
-                    "Will use fresh names and default settings.\n{}",
-                    format_progress_human(&progress)
-                ),
+                "Used fresh names and default settings.\nFirst-time setup complete.",
                 &progress,
             )
         }
@@ -968,7 +964,7 @@ async fn dispatch(
                 .unwrap_or_else(|| "no previous file existed".to_owned());
             output.print(
                 format!(
-                    "Replaced the state file with a fresh empty state; previous file preserved at {backup}"
+                    "Replaced the local data with a fresh empty state; previous file preserved at {backup}"
                 ),
                 &reset,
             )
@@ -977,11 +973,17 @@ async fn dispatch(
 }
 
 /// Accepts a canonical `mouse-N` id or a unique display name.
+///
+/// A canonical `mouse-N` input is authoritative: when the key is missing it
+/// reports not-found and never falls through to case-insensitive display-name
+/// resolution, so an id can never alias a display name. Non-ID strings still
+/// resolve as unique display names.
 fn resolve_device_arg(manager: &DeviceManager, raw: &str) -> Result<DeviceId, String> {
-    if let Ok(id) = parse_device_id(raw)
-        && manager.device_identity(&id).is_ok()
-    {
-        return Ok(id);
+    if let Ok(id) = parse_device_id(raw) {
+        return manager
+            .device_identity(&id)
+            .map(|_| id)
+            .map_err(|error| error.to_string());
     }
     manager
         .find_device_by_name(raw)
@@ -1657,13 +1659,20 @@ fn identity_next_human(
         IdentityCeremonyStage::Stamping
             if kind == IdentityCeremonyKind::InitialEnrollment && step == Some(2) =>
         {
-            "decide migration (`x3ctl identity accept-migration` or `x3ctl identity skip-migration`), then run `x3ctl identity stamp`".to_owned()
+            "run `x3ctl identity accept-migration` or `x3ctl identity skip-migration` to finish the setup".to_owned()
         }
         IdentityCeremonyStage::Stamping if kind == IdentityCeremonyKind::ForeignAdoption => {
-            "run `x3ctl identity adopt` to confirm".to_owned()
+            "run `x3ctl identity stamp` to confirm the adoption".to_owned()
         }
         IdentityCeremonyStage::Stamping => {
             "run `x3ctl identity stamp` to write the physical identity".to_owned()
+        }
+        IdentityCeremonyStage::Complete
+            if kind == IdentityCeremonyKind::InitialEnrollment =>
+        {
+            // The enrollment is fully stamped and parked at `Finalizing`
+            // awaiting the explicit migration choice.
+            "run `x3ctl identity accept-migration` or `x3ctl identity skip-migration` to finish the setup".to_owned()
         }
         IdentityCeremonyStage::Verified => "nothing; the identity is confirmed".to_owned(),
         IdentityCeremonyStage::Complete => "nothing; the setup is complete".to_owned(),
@@ -1711,8 +1720,10 @@ fn format_progress_human(progress: &IdentityCeremonyProgress) -> String {
 /// Discovery resolves every connection; the presented mouse is the
 /// unassociated/eligible one. Foreign adoption needs the connection carrying
 /// an unknown valid token; every other ceremony wants an unrecognized USB
-/// mouse. Legacy-mode enrollment falls back to a single connection, because
-/// legacy discovery resolves everything to the fuzzy mouse.
+/// mouse. Only legacy-mode initial enrollment falls back to a lone connected
+/// connection (legacy discovery resolves everything to the fuzzy mouse);
+/// persistent ceremonies refuse ambiguity and never pick a known mouse as the
+/// presented one.
 fn pick_ceremony_endpoint(
     view: &DiscoveryView,
     kind: IdentityCeremonyKind,
@@ -1769,10 +1780,14 @@ fn pick_ceremony_endpoint(
     match unassociated.len() {
         1 => Ok(unassociated[0].endpoint.clone()),
         0 => {
-            if connected_usb.len() == 1 {
+            // Legacy-mode initial enrollment resolves every connection to the
+            // single fuzzy logical mouse, so a lone connected USB mouse is the
+            // presented one. Persistent ceremonies operate on an explicitly
+            // unassociated endpoint and never fall back to a known mouse.
+            if kind == IdentityCeremonyKind::InitialEnrollment && connected_usb.len() == 1 {
                 Ok(connected_usb[0].endpoint.clone())
             } else {
-                Err(ambiguous_endpoint_error(&connected_usb))
+                Err("no unrecognized mouse is connected; the mouse being added must be an unmarked mouse".to_owned())
             }
         }
         _ => Err(ambiguous_endpoint_error(&unassociated)),
@@ -1840,7 +1855,7 @@ fn action_name(action: &Action) -> &'static str {
         Action::IdentityStatus => "read identity ceremony progress",
         Action::IdentityBegin { .. } => "begin identity ceremony",
         Action::IdentityRestore { .. } => "begin identity restore ceremony",
-        Action::IdentityAdopt => "adopt a mouse from another installation",
+        Action::IdentityAdopt => "begin adopting a mouse from another installation",
         Action::IdentityAssociate { .. } => "associate a Bluetooth mouse",
         Action::IdentityReconnect => "continue identity ceremony with the reconnected mouse",
         Action::IdentityStamp => "write the physical identity",
@@ -1863,7 +1878,9 @@ mod tests {
     use super::*;
     use args::BindCommand;
     use attack_shark_x3_manager::{
-        IdentityMode, ObservationSource, ObservedState, ResourceState, Timestamp,
+        CapturedProfileImage, DeviceIdentity, IdentityMode, IdentitySetupJournal,
+        IdentitySetupPhase, IdentitySetupStage, IdentitySetupSubject, ObservationSource,
+        ObservedState, PhysicalId, ResourceState, Timestamp,
     };
     #[test]
     fn build_identity_begin_action_maps_kinds() {
@@ -2063,6 +2080,54 @@ mod tests {
         .expect_err("no adoptable mouse");
         assert!(error.contains("another installation"), "{error}");
     }
+    #[test]
+    fn persistent_ceremony_never_falls_back_to_a_known_connected_mouse() {
+        let known = |transport| ResolvedConnection {
+            endpoint: DeviceEndpoint::usb(transport, 0x1d57, 0xfa61, None, "HID#x", None)
+                .expect("endpoint"),
+            connected: true,
+            resolution: IdentityResolution::Resolved {
+                identity: DeviceId::new("mouse-1").unwrap(),
+            },
+        };
+        let view = |connections| DiscoveryView {
+            mode: IdentityMode::Persistent,
+            devices: Vec::new(),
+            connections,
+        };
+        for kind in [
+            IdentityCeremonyKind::AddMouse,
+            IdentityCeremonyKind::Restore,
+        ] {
+            let error = pick_ceremony_endpoint(&view(vec![known(TransportKind::Wired)]), kind)
+                .expect_err("a known mouse is never the presented mouse");
+            assert!(error.contains("unrecognized mouse"), "{kind:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn persistent_ceremony_refuses_ambiguous_endpoints() {
+        let unmarked = |transport| ResolvedConnection {
+            endpoint: DeviceEndpoint::usb(transport, 0x1d57, 0xfa61, None, "HID#x", None)
+                .expect("endpoint"),
+            connected: true,
+            resolution: IdentityResolution::Unassociated {
+                reason: UnassociatedReason::Absent,
+                physical_id: None,
+            },
+        };
+        let view = DiscoveryView {
+            mode: IdentityMode::Persistent,
+            devices: Vec::new(),
+            connections: vec![
+                unmarked(TransportKind::Wired),
+                unmarked(TransportKind::Receiver),
+            ],
+        };
+        let error =
+            pick_ceremony_endpoint(&view, IdentityCeremonyKind::AddMouse).expect_err("ambiguous");
+        assert!(error.contains("more than one eligible mouse"), "{error}");
+    }
 
     #[test]
     fn pick_ble_endpoint_selects_the_connected_bluetooth_mouse() {
@@ -2128,6 +2193,28 @@ mod tests {
         assert!(text.contains("step: 2 of 2"), "{text}");
         assert!(text.contains("Now reconnect your other mouse."), "{text}");
         assert!(text.contains("identity reconnect"), "{text}");
+    }
+    #[test]
+    fn foreign_adoption_next_step_requires_identity_stamp() {
+        let next = identity_next_human(
+            IdentityCeremonyKind::ForeignAdoption,
+            &IdentityCeremonyStage::Stamping,
+            None,
+        );
+        assert!(next.contains("identity stamp"), "{next}");
+        assert!(next.contains("confirm"), "{next}");
+    }
+
+    #[test]
+    fn parked_enrollment_next_step_requires_explicit_migration_choice() {
+        let next = identity_next_human(
+            IdentityCeremonyKind::InitialEnrollment,
+            &IdentityCeremonyStage::Complete,
+            Some(2),
+        );
+        assert!(next.contains("accept-migration"), "{next}");
+        assert!(next.contains("skip-migration"), "{next}");
+        assert!(!next.contains("setup is complete"), "{next}");
     }
 
     #[test]
@@ -2344,6 +2431,39 @@ mod tests {
         assert!(parse_profile(0).is_err());
         assert!(parse_device_id(" ").is_err());
     }
+    #[test]
+    fn resolve_device_arg_never_aliases_a_missing_canonical_id_to_a_display_name() {
+        let manager = DeviceManager::new(StateStore::memory()).expect("manager");
+        // A display name that looks exactly like a canonical `mouse-N` id.
+        manager
+            .register_device(DeviceIdentity::new(
+                DeviceId::new("mouse-1").unwrap(),
+                Some("mouse-2".to_owned()),
+            ))
+            .expect("register");
+
+        // `mouse-2` parses as a canonical id but is missing: the not-found
+        // error must win over case-insensitive display-name resolution, so
+        // an id can never alias a display name.
+        let error = resolve_device_arg(&manager, "mouse-2").expect_err("missing canonical id");
+        assert!(error.contains("device not found"), "{error}");
+        assert!(error.contains("mouse-2"), "{error}");
+
+        // The real canonical id still resolves.
+        assert_eq!(
+            resolve_device_arg(&manager, "mouse-1").expect("existing id"),
+            DeviceId::new("mouse-1").unwrap()
+        );
+
+        // Non-id display names still resolve case-insensitively.
+        manager
+            .rename_device(&DeviceId::new("mouse-1").unwrap(), "Desk Mouse")
+            .expect("rename");
+        assert_eq!(
+            resolve_device_arg(&manager, "desk mouse").expect("display name"),
+            DeviceId::new("mouse-1").unwrap()
+        );
+    }
 
     #[test]
     fn dpi_stage_parser_rejects_empty_elements() {
@@ -2558,5 +2678,61 @@ mod tests {
             cli2.command,
             Some(Command::Debug(DebugCommand::Dpi(_)))
         ));
+    }
+    #[tokio::test]
+    async fn identity_continue_never_auto_finalizes_a_parked_enrollment() {
+        let store = StateStore::memory();
+        {
+            let mut txn = store.transaction().expect("txn");
+            let subject = |path: &str, token: u8| IdentitySetupSubject {
+                endpoint: DeviceEndpoint::usb(
+                    TransportKind::Wired,
+                    0x1d57,
+                    0xfa61,
+                    None,
+                    path,
+                    None,
+                )
+                .expect("endpoint"),
+                device_id: None,
+                token: Some(PhysicalId::from_token_bytes([token; 16])),
+                old_token: None,
+                captured: Some(CapturedProfileImage::default()),
+                stamp_progress: std::collections::BTreeMap::new(),
+            };
+            txn.state_mut().identity_setup = Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::InitialEnrollment,
+                stage: IdentitySetupStage::Finalizing,
+                subjects: vec![
+                    subject(r"\\.\HID#enroll-a", 0x11),
+                    subject(r"\\.\HID#enroll-b", 0x22),
+                ],
+            });
+            txn.commit().expect("commit");
+        }
+        let manager = DeviceManager::new(store).expect("manager");
+        let cli = args::Cli::try_parse_from(["x3ctl", "identity", "continue"]).expect("parse");
+        let action = build_action(&cli, cli.command.as_ref().unwrap()).expect("build");
+        assert!(matches!(action, Action::IdentityContinue));
+
+        // Continue must not choose the migration itself: it errors with the
+        // explicit choice and leaves the enrollment parked.
+        let error = dispatch(
+            &cli,
+            &manager,
+            action,
+            &Output::new(args::OutputFormat::Human),
+        )
+        .await
+        .expect_err("continue must not auto-finalize");
+        assert!(error.contains("accept-migration"), "{error}");
+        assert!(error.contains("skip-migration"), "{error}");
+
+        let progress = manager
+            .identity_ceremony_progress()
+            .expect("progress")
+            .expect("enrollment is still parked");
+        assert_eq!(progress.stage, IdentityCeremonyStage::Complete);
+        assert_eq!(progress.kind, IdentityCeremonyKind::InitialEnrollment);
     }
 }

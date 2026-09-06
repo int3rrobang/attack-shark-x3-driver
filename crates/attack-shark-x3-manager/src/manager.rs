@@ -1,7 +1,6 @@
 #[cfg(feature = "usb")]
 use std::collections::HashSet;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -50,9 +49,6 @@ pub struct DeviceManager {
     /// therefore authenticate independently.
     identity_cache:
         Mutex<BTreeMap<(TransportKind, DeviceLocator), (WatermarkDecode, DeviceEndpoint)>>,
-    /// Opt-out of legacy name/state migration for the next initial-enrollment
-    /// finalize, set via the `SkipMigration` ceremony action.
-    skip_migration: AtomicBool,
 }
 
 impl DeviceManager {
@@ -61,7 +57,6 @@ impl DeviceManager {
             store,
             factory: Arc::new(RealSessionFactory),
             identity_cache: Mutex::new(BTreeMap::new()),
-            skip_migration: AtomicBool::new(false),
         })
     }
 
@@ -74,7 +69,6 @@ impl DeviceManager {
             store,
             factory,
             identity_cache: Mutex::new(BTreeMap::new()),
-            skip_migration: AtomicBool::new(false),
         }
     }
 
@@ -626,7 +620,8 @@ impl DeviceManager {
     > {
         let guard = self
             .store
-            .acquire_operation_lock(device, OPERATION_LOCK_TIMEOUT, operation)?;
+            .acquire_operation_lock_async(device, OPERATION_LOCK_TIMEOUT, operation)
+            .await?;
         let device_owned = device.clone();
         let state = self.store.load_async().await?;
         if let Some(journal) = &state.identity_setup
@@ -1014,7 +1009,7 @@ impl DeviceManager {
             || baseline.buttons.profile != profile
         {
             return Err(ManagerError::InvalidUpdate(format!(
-                "provided profile baseline does not target profile {profile}"
+                "provided stored/profile copy does not target profile {profile}"
             )));
         }
         self.apply_profile_update_inner(device, profile, update, policy, Some(baseline))
@@ -1036,7 +1031,7 @@ impl DeviceManager {
         }
         if update.has_polling() && update.has_non_rate() {
             return Err(ManagerError::InvalidUpdate(
-                "polling rate cannot be combined with DPI/preferences/buttons; report 0x06 must remain isolated".to_owned(),
+                "polling rate cannot be combined with DPI/preferences/buttons; it must be set on its own".to_owned(),
             ));
         }
         if let Some(dpi_delta) = &update.dpi
@@ -1532,7 +1527,6 @@ impl DeviceManager {
                 });
             })
             .await?;
-        self.skip_migration.store(false, Ordering::SeqCst);
         let state = self.store.load_async().await?;
         Ok(ceremony_progress_from_journal(
             state.identity_setup.as_ref().expect("journal just created"),
@@ -1571,20 +1565,7 @@ impl DeviceManager {
                 self.ceremony_associate(endpoint, target).await
             }
             IdentityCeremonyAction::AcceptMigration | IdentityCeremonyAction::SkipMigration => {
-                let state = self.store.load_async().await?;
-                let Some(journal) = state.identity_setup.as_ref() else {
-                    return Err(ManagerError::NoIdentityCeremony);
-                };
-                if journal.phase != IdentitySetupPhase::InitialEnrollment {
-                    return Err(ManagerError::InvalidCeremonyAction {
-                        action,
-                        phase: journal.phase,
-                        stage: journal.stage,
-                    });
-                }
-                let skip = matches!(action, IdentityCeremonyAction::SkipMigration);
-                self.skip_migration.store(skip, Ordering::SeqCst);
-                Ok(ceremony_progress_from_journal(journal))
+                self.ceremony_finalize_migration(action).await
             }
             IdentityCeremonyAction::Cancel => self.ceremony_cancel().await,
         }
@@ -1798,7 +1779,6 @@ impl DeviceManager {
             progress.stage = IdentityCeremonyStage::Complete;
             progress
         });
-        let skip_migration = self.skip_migration.load(Ordering::SeqCst);
         let inner: Result<(), ManagerError> = self
             .store
             .mutate_async(move |state| {
@@ -1817,7 +1797,7 @@ impl DeviceManager {
                     // Every profile already carries the adopted token: the
                     // adoption completes without any hardware write.
                     current.stage = IdentitySetupStage::Finalizing;
-                    finalize_ceremony(state, skip_migration)?;
+                    finalize_ceremony(state, false)?;
                 } else {
                     current.stage = IdentitySetupStage::Stamping;
                 }
@@ -1826,7 +1806,6 @@ impl DeviceManager {
             .await?;
         inner?;
         if let Some(progress) = completed_progress {
-            self.skip_migration.store(false, Ordering::SeqCst);
             return Ok(progress);
         }
         let state = self.store.load_async().await?;
@@ -1991,10 +1970,10 @@ impl DeviceManager {
         }
 
         // One atomic transition: mark the last pending profile stamped (a
-        // no-op on a clean resume) and advance — await the second mouse, or
-        // finalize the ceremony into durable devices.
+        // no-op on a clean resume) and advance — await the second mouse,
+        // pause first-time setup for the migration decision, or finalize the
+        // ceremony into durable devices.
         let pending_last = pending.last().copied();
-        let skip_migration = self.skip_migration.load(Ordering::SeqCst);
         let transition: Result<(), ManagerError> =
             self.store
                 .mutate_async(move |current_state| {
@@ -2016,20 +1995,24 @@ impl DeviceManager {
                         }
                         if await_second {
                             current.stage = IdentitySetupStage::AwaitingCapture;
+                        } else if phase == IdentitySetupPhase::InitialEnrollment {
+                            // Both mice are stamped; first-time setup parks at
+                            // `Finalizing` (a durable pending-choice state) so
+                            // the legacy-migration decision
+                            // (`accept-migration` / `skip-migration`) finishes
+                            // the enrollment as its own step. The choice is
+                            // applied in the same call that finalizes, never
+                            // recorded in process-local state.
+                            current.stage = IdentitySetupStage::Finalizing;
                         } else {
                             current.stage = IdentitySetupStage::Finalizing;
+                            finalize_ceremony(current_state, false)?;
                         }
-                    }
-                    if !await_second {
-                        finalize_ceremony(current_state, skip_migration)?;
                     }
                     Ok(())
                 })
                 .await?;
         transition?;
-        if !await_second {
-            self.skip_migration.store(false, Ordering::SeqCst);
-        }
 
         let state = self.store.load_async().await?;
         match state.identity_setup.as_ref() {
@@ -2061,6 +2044,50 @@ impl DeviceManager {
             });
         }
         self.ceremony_stamp().await
+    }
+
+    /// Applies the final legacy-migration decision of first-time setup.
+    ///
+    /// The decision is the enrollment's last step: when both mice are captured
+    /// and fully stamped, the choice finalizes the ceremony and clears the
+    /// journal in the same call. Any other stage is refused with the ceremony
+    /// error model — the choice is never recorded in process-local state for a
+    /// later step, so it survives only by completing the work it governs.
+    async fn ceremony_finalize_migration(
+        &self,
+        action: IdentityCeremonyAction,
+    ) -> Result<IdentityCeremonyProgress, ManagerError> {
+        let state = self.store.load_async().await?;
+        let Some(journal) = state.identity_setup.as_ref() else {
+            return Err(ManagerError::NoIdentityCeremony);
+        };
+        if journal.phase != IdentitySetupPhase::InitialEnrollment
+            || journal.stage != IdentitySetupStage::Finalizing
+            || journal.subjects.len() != 2
+            || !journal
+                .subjects
+                .iter()
+                .all(|subject| subject.is_fully_stamped())
+        {
+            return Err(ManagerError::InvalidCeremonyAction {
+                action,
+                phase: journal.phase,
+                stage: journal.stage,
+            });
+        }
+        let skip = matches!(action, IdentityCeremonyAction::SkipMigration);
+        let snapshot = journal.clone();
+        let inner: Result<(), ManagerError> = self
+            .store
+            .mutate_async(move |state| {
+                finalize_ceremony(state, skip)?;
+                Ok(())
+            })
+            .await?;
+        inner?;
+        let mut progress = ceremony_progress_from_journal(&snapshot);
+        progress.stage = IdentityCeremonyStage::Complete;
+        Ok(progress)
     }
 
     /// Associates a presented BLE endpoint with the target logical mouse.
@@ -2184,7 +2211,6 @@ impl DeviceManager {
                 state.identity_setup = None;
             })
             .await?;
-        self.skip_migration.store(false, Ordering::SeqCst);
         Ok(cancelled)
     }
 
@@ -2756,7 +2782,7 @@ mod tests {
     };
     use crate::state::{
         ApplicationVerification, DesiredSource, DesiredState, DeviceState, IdentityMode,
-        IdentityStampProgress, StatePaths, StateStore, Verification,
+        IdentitySetupStage, IdentityStampProgress, StatePaths, StateStore, Verification,
     };
     use attack_shark_x3::{
         ButtonAssignment, ButtonsState, DpiState, DpiValue, PhysicalId, PollingRate,
@@ -5256,6 +5282,34 @@ mod tests {
             .identity_ceremony_action(IdentityCeremonyAction::Stamp, None, None)
             .await
             .unwrap();
+        assert_eq!(
+            progress.stage,
+            IdentityCeremonyStage::Complete,
+            "after both mice are stamped, first-time setup parks at Finalizing for the migration decision"
+        );
+        assert_eq!(progress.step, Some(2));
+        // The pending choice is durable: the journal persists at `Finalizing`
+        // with both subjects fully stamped until a migration choice runs.
+        let state = manager.store().load().unwrap();
+        let journal = state
+            .identity_setup
+            .as_ref()
+            .expect("the journal persists awaiting the migration decision");
+        assert_eq!(journal.stage, IdentitySetupStage::Finalizing);
+        assert_eq!(journal.subjects.len(), 2);
+        assert!(
+            journal
+                .subjects
+                .iter()
+                .all(|subject| subject.is_fully_stamped()),
+            "a Finalizing journal holds only fully stamped subjects"
+        );
+
+        // The migration decision finalizes the enrollment in the same call.
+        let progress = manager
+            .identity_ceremony_action(IdentityCeremonyAction::AcceptMigration, None, None)
+            .await
+            .unwrap();
         assert_eq!(progress.stage, IdentityCeremonyStage::Complete);
 
         let state = manager.store().load().unwrap();
@@ -5268,6 +5322,13 @@ mod tests {
                 .values()
                 .all(|device| device.identity.display_name.as_deref() != Some("LEGACY")),
             "a non-matching legacy identity must not migrate to either captured mouse"
+        );
+        assert!(
+            state.devices.values().all(|device| matches!(
+                device.identity.display_name.as_deref(),
+                Some("Mouse 1") | Some("Mouse 2")
+            )),
+            "accepted enrollment with no legacy match uses fresh Mouse N names"
         );
         let tokens: Vec<PhysicalId> = state
             .devices
@@ -5289,6 +5350,270 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn migration_decision_is_refused_until_both_mice_are_stamped() {
+        let store = StateStore::memory();
+        insert_device_with_endpoint(&store, wired_endpoint_named(r"\\?\hid#legacy", "LEGACY"));
+        let ep_a = wired_endpoint_named(r"\\?\hid#migrate-a", "MIGRATE-A");
+        let ep_b = wired_endpoint_named(r"\\?\hid#migrate-b", "MIGRATE-B");
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_endpoint(make_discovered(ep_a.clone(), true), unmarked_session())
+                .with_endpoint(make_discovered(ep_b.clone(), true), unmarked_session()),
+        );
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+
+        async fn assert_refused(
+            manager: &DeviceManager,
+            action: IdentityCeremonyAction,
+        ) -> ManagerError {
+            manager
+                .identity_ceremony_action(action, None, None)
+                .await
+                .expect_err("migration decision requires a captured and stamped ceremony")
+        }
+
+        // No ceremony yet: nothing to finalize.
+        match assert_refused(&manager, IdentityCeremonyAction::AcceptMigration).await {
+            ManagerError::NoIdentityCeremony => {}
+            other => panic!("expected NoIdentityCeremony, got {other:?}"),
+        }
+
+        manager
+            .identity_ceremony_action(
+                IdentityCeremonyAction::Begin(IdentityCeremonyKind::InitialEnrollment),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        // Awaiting the first reconnect: not ready.
+        match assert_refused(&manager, IdentityCeremonyAction::SkipMigration).await {
+            ManagerError::InvalidCeremonyAction { action, .. } => {
+                assert_eq!(action, IdentityCeremonyAction::SkipMigration)
+            }
+            other => panic!("expected InvalidCeremonyAction at AwaitingCapture, got {other:?}"),
+        }
+
+        manager
+            .identity_ceremony_action(
+                IdentityCeremonyAction::Reconnected,
+                Some(ep_a.clone()),
+                None,
+            )
+            .await
+            .unwrap();
+        // One mouse captured, none stamped: not ready.
+        match assert_refused(&manager, IdentityCeremonyAction::AcceptMigration).await {
+            ManagerError::InvalidCeremonyAction { action, .. } => {
+                assert_eq!(action, IdentityCeremonyAction::AcceptMigration)
+            }
+            other => panic!("expected InvalidCeremonyAction with one subject, got {other:?}"),
+        }
+
+        manager
+            .identity_ceremony_action(IdentityCeremonyAction::Stamp, None, None)
+            .await
+            .unwrap();
+        manager
+            .identity_ceremony_action(
+                IdentityCeremonyAction::Reconnected,
+                Some(ep_b.clone()),
+                None,
+            )
+            .await
+            .unwrap();
+        // Both mice captured, but the second mouse is not stamped yet: not
+        // ready, and the refusal must not have finalized or mutated anything.
+        match assert_refused(&manager, IdentityCeremonyAction::AcceptMigration).await {
+            ManagerError::InvalidCeremonyAction { action, .. } => {
+                assert_eq!(action, IdentityCeremonyAction::AcceptMigration)
+            }
+            other => panic!("expected InvalidCeremonyAction before stamps, got {other:?}"),
+        }
+        let state = manager.store().load().unwrap();
+        assert!(
+            state.identity_setup.is_some(),
+            "a refused migration decision leaves the journal in flight"
+        );
+        assert_eq!(state.devices.len(), 1, "no finalize happened on refusal");
+        assert_eq!(state.identity_mode, IdentityMode::Legacy);
+    }
+
+    #[tokio::test]
+    async fn accepted_migration_applies_unique_legacy_match_in_the_same_call() {
+        let store = StateStore::memory();
+        insert_device_with_endpoint(&store, wired_endpoint_named(r"\\?\hid#legacy", "LEGACY"));
+        let ep_a = wired_endpoint_named(r"\\?\hid#legacy-match-a", "LEGACY-MATCH-A");
+        let ep_b = wired_endpoint_named(r"\\?\hid#legacy-match-b", "LEGACY-MATCH-B");
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_endpoint(make_discovered(ep_a.clone(), true), unmarked_session())
+                .with_endpoint(make_discovered(ep_b.clone(), true), unmarked_session()),
+        );
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+
+        manager
+            .identity_ceremony_action(
+                IdentityCeremonyAction::Begin(IdentityCeremonyKind::InitialEnrollment),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        manager
+            .identity_ceremony_action(
+                IdentityCeremonyAction::Reconnected,
+                Some(ep_a.clone()),
+                None,
+            )
+            .await
+            .unwrap();
+        manager
+            .identity_ceremony_action(IdentityCeremonyAction::Stamp, None, None)
+            .await
+            .unwrap();
+        manager
+            .identity_ceremony_action(
+                IdentityCeremonyAction::Reconnected,
+                Some(ep_b.clone()),
+                None,
+            )
+            .await
+            .unwrap();
+        manager
+            .identity_ceremony_action(IdentityCeremonyAction::Stamp, None, None)
+            .await
+            .unwrap();
+
+        // Seed the legacy mouse with the exact durable evidence captured from
+        // the first enrolled mouse, so the unique-match rule applies.
+        {
+            let mut txn = store.transaction().unwrap();
+            let captured = txn
+                .state()
+                .identity_setup
+                .as_ref()
+                .unwrap()
+                .subjects
+                .first()
+                .unwrap()
+                .captured
+                .clone()
+                .expect("the first subject was captured");
+            let mut legacy = DeviceState::new(DeviceIdentity::new(
+                DeviceId::new("mouse-1").unwrap(),
+                Some("Desk Mouse".to_string()),
+            ));
+            legacy.profile_metadata = captured.profile_metadata;
+            legacy.profiles = captured.profiles;
+            txn.state_mut().devices.clear();
+            txn.state_mut()
+                .devices
+                .insert(DeviceId::new("mouse-1").unwrap(), legacy);
+            txn.commit().unwrap();
+        }
+
+        // Skip: fresh names despite the unique match.
+        let progress = manager
+            .identity_ceremony_action(IdentityCeremonyAction::SkipMigration, None, None)
+            .await
+            .unwrap();
+        assert_eq!(progress.stage, IdentityCeremonyStage::Complete);
+        let state = manager.store().load().unwrap();
+        assert!(state.identity_setup.is_none());
+        assert!(
+            state.devices.values().all(|device| matches!(
+                device.identity.display_name.as_deref(),
+                Some("Mouse 1") | Some("Mouse 2")
+            )),
+            "skip migration must use fresh names even on a unique match"
+        );
+    }
+
+    #[tokio::test]
+    async fn stamp_confirms_partially_marked_foreign_adoption() {
+        let store = StateStore::memory();
+        {
+            let mut txn = store.transaction().unwrap();
+            txn.state_mut().identity_mode = IdentityMode::Persistent;
+            txn.commit().unwrap();
+        }
+        let token = PhysicalId::from_token_bytes([0x77; 16]);
+        let ep = wired_endpoint_named(r"\\?\hid#foreign-partial", "FOREIGN-PARTIAL");
+        // Only the current profile (1) carries the foreign token; the other
+        // profiles are unmarked, so the adoption needs a confirmation stamp.
+        let mut session = ScriptedFakeSession::usb()
+            .with_metadata(
+                ProfileMetadata::new(ProfileId::new(1).unwrap(), ProfileId::new(5).unwrap())
+                    .unwrap(),
+            )
+            .with_polling_rate(PollingRate::Hz1000);
+        for target in ProfileId::MIN..=ProfileId::MAX {
+            let target = ProfileId::new(target).expect("test profile must be valid");
+            let tail = if target == ProfileId::new(1).unwrap() {
+                token.to_watermark_bytes()
+            } else {
+                [0_u8; 25]
+            };
+            session = session.with_profile(snapshot_with_tail(target, tail));
+        }
+        let factory = Arc::new(
+            ScriptedFakeFactory::new()
+                .with_endpoint(make_discovered(ep.clone(), true), session.clone()),
+        );
+        let manager = DeviceManager::with_store_and_factory(store.clone(), factory);
+
+        let progress = manager
+            .identity_ceremony_action(
+                IdentityCeremonyAction::Begin(IdentityCeremonyKind::ForeignAdoption),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(progress.stage, IdentityCeremonyStage::AwaitingReconnect);
+
+        // `identity adopt` equivalent: begin only. Reconnect captures and
+        // reserves the foreign token; profiles 2..=5 await the confirmation
+        // stamp.
+        let progress = manager
+            .identity_ceremony_action(IdentityCeremonyAction::Reconnected, Some(ep.clone()), None)
+            .await
+            .unwrap();
+        assert_eq!(progress.stage, IdentityCeremonyStage::Stamping);
+
+        // `identity stamp` confirms the adoption: it writes only the unmarked
+        // profiles and finalizes, preserving journal-before-write.
+        let progress = manager
+            .identity_ceremony_action(IdentityCeremonyAction::Stamp, None, None)
+            .await
+            .unwrap();
+        assert_eq!(progress.stage, IdentityCeremonyStage::Complete);
+
+        let dpi_writes: Vec<u8> = session
+            .writes()
+            .into_iter()
+            .filter_map(|write| match write {
+                ScriptedWrite::Dpi(dpi) => Some(dpi.profile.get()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            dpi_writes,
+            vec![2, 3, 4, 5],
+            "adoption confirmation stamps only profiles that do not carry the token"
+        );
+        let state = manager.store().load().unwrap();
+        assert!(state.identity_setup.is_none());
+        assert_eq!(state.devices.len(), 1);
+        let adopted = state.devices.values().next().unwrap();
+        assert_eq!(
+            adopted.identity.physical_id,
+            Some(token),
+            "the foreign token is adopted, not replaced by a minted one"
+        );
+    }
     #[tokio::test]
     async fn interrupted_stamp_resumes_without_restamping_completed_profiles() {
         let store = StateStore::memory();

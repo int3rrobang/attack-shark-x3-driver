@@ -590,7 +590,7 @@ fn install_callbacks(
                 parse_raw_byte(ui.get_preference_configuration_raw().as_str())
             else {
                 ui.set_status_text(
-                    "fix the raw configuration byte before changing deep sleep (the last valid value is kept)"
+                    "fix the raw configuration value before changing deep sleep (the last valid value is kept)"
                         .into(),
                 );
                 return;
@@ -626,7 +626,7 @@ fn install_callbacks(
                 parse_raw_byte(ui.get_preference_configuration_raw().as_str())
             else {
                 ui.set_status_text(
-                    "fix the raw configuration byte before changing deep sleep (the last valid value is kept)"
+                    "fix the raw configuration value before changing deep sleep (the last valid value is kept)"
                         .into(),
                 );
                 return;
@@ -649,9 +649,9 @@ fn install_callbacks(
                 ui.set_advanced_preferences(advanced);
                 ui.set_status_text(
                     if advanced {
-                        "raw preference bytes shown; typed fields update from raw bytes"
+                        "raw preference settings shown; typed fields update from raw values"
                     } else {
-                        "raw preference bytes hidden"
+                        "raw preference settings hidden"
                     }
                     .into(),
                 );
@@ -667,7 +667,7 @@ fn install_callbacks(
             }
             let Some(value) = parse_raw_byte(text.as_str()) else {
                 ui.set_status_text(
-                    "raw preference bytes must be one or two hex digits (for example 0a or 0x0a)"
+                    "raw preference values must be one or two hex digits (for example 0a or 0x0a)"
                         .into(),
                 );
                 return;
@@ -701,7 +701,7 @@ fn install_callbacks(
                 }
             }
             ui.set_dirty(true);
-            ui.set_status_text("raw preference byte changed in the draft — save to apply".into());
+            ui.set_status_text("raw preference value changed in the draft — save to apply".into());
         });
     }
     {
@@ -1344,7 +1344,7 @@ fn install_callbacks(
                 Err(field) => {
                     ui.set_status_text(
                         format!(
-                            "raw {} byte is not valid hex (one or two digits); the last valid value is kept — fix it before saving",
+                            "raw {} value is not valid hex (one or two digits); the last valid value is kept — fix it before saving",
                             raw_preference_field_label(field)
                         )
                         .into(),

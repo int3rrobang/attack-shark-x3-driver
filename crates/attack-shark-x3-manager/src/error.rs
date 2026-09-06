@@ -33,7 +33,7 @@ pub enum StateError {
     LockBusy { path: PathBuf },
 
     /// The file uses a schema version this package does not understand.
-    #[error("unsupported state schema version {found}; expected {expected}")]
+    #[error("unsupported local-data format/version {found}; expected {expected}")]
     UnsupportedSchema { found: u32, expected: u32 },
 
     /// The document is syntactically valid but violates state invariants.
@@ -276,7 +276,7 @@ pub enum ManagerError {
 }
 #[cfg(test)]
 mod tests {
-    use super::ManagerError;
+    use super::{ManagerError, StateError};
     use attack_shark_x3::ProtocolError;
     use std::error::Error;
 
@@ -344,5 +344,21 @@ mod tests {
         let err = ManagerError::InvalidUpdate("custom message".to_owned());
         assert_eq!(format!("{err}"), "invalid update: custom message");
         assert!(err.source().is_none());
+    }
+    #[test]
+    fn unsupported_schema_display_uses_plain_local_data_language() {
+        let err = StateError::UnsupportedSchema {
+            found: 9,
+            expected: 3,
+        };
+        let display = format!("{err}");
+        assert_eq!(
+            display,
+            "unsupported local-data format/version 9; expected 3"
+        );
+        assert!(
+            !display.contains("schema"),
+            "Display must not surface schema jargon: {display}"
+        );
     }
 }

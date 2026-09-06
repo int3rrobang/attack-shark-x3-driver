@@ -254,7 +254,7 @@ impl DeviceManager {
         let buttons = session.read_buttons(profile).await?;
         if buttons.profile != profile {
             return Err(ManagerError::InvalidUpdate(format!(
-                "button readback targets profile {} instead of requested profile {}",
+                "mouse-reported button settings target profile {} instead of requested profile {}",
                 buttons.profile, profile
             )));
         }

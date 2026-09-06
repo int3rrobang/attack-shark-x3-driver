@@ -554,7 +554,7 @@ pub enum IdentityStampProgress {
 /// mouse the ceremony is about and its actual state, together with the token
 /// it reserves (or adopts) and per-profile stamp progress.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IdentitySetupSubject {
     /// Captured endpoint reference for the authenticated physical mouse.
     pub endpoint: DeviceEndpoint,
@@ -587,7 +587,7 @@ pub struct IdentitySetupSubject {
 /// setup subject so an interrupted ceremony can resume without reconnecting
 /// the physical mouse.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CapturedProfileImage {
     /// Device-global profile metadata captured from the hardware.
     #[serde(default, skip_serializing_if = "ResourceState::is_empty")]
@@ -629,7 +629,7 @@ impl IdentitySetupSubject {
 /// endpoint reference of each authenticated physical mouse, the tokens the
 /// ceremony reserves (or adopts), and per-profile stamp progress.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IdentitySetupJournal {
     pub phase: IdentitySetupPhase,
     pub stage: IdentitySetupStage,
@@ -899,6 +899,14 @@ impl StateFile {
                         "stamping requires a captured subject",
                     ));
                 };
+                let captured = subject.captured.as_ref().ok_or_else(|| {
+                    StateError::invalid_state("stamping requires a captured profile image")
+                })?;
+                if captured.profiles.is_empty() {
+                    return Err(StateError::invalid_state(
+                        "stamping requires at least one captured profile",
+                    ));
+                }
                 if subject.is_fully_stamped() {
                     return Err(StateError::invalid_state(
                         "stamping stage requires an incompletely stamped subject",
@@ -947,10 +955,15 @@ impl StateFile {
         // Per-subject coherence and token reservation.
         let mut reserved: Vec<&PhysicalId> = Vec::new();
         for subject in &journal.subjects {
-            if !subject.endpoint.is_coherent() {
-                return Err(StateError::invalid_state(
-                    "identity setup subject endpoint is incoherent",
-                ));
+            // Every durable captured image must satisfy the same evidence and
+            // embedded profile-id invariants as a committed device, so a
+            // corrupted capture can never become the baseline for resuming or
+            // finalizing a ceremony.
+            if let Some(captured) = &subject.captured {
+                validate_captured_profile_image(
+                    captured,
+                    &format!("identity setup subject {:?}", subject.endpoint.locator),
+                )?;
             }
             // Stamping requires the captured profile image to be durable.
             if !subject.stamp_progress.is_empty() && subject.captured.is_none() {
@@ -1191,6 +1204,43 @@ fn validate_resource_state<T: PartialEq>(
     Ok(())
 }
 
+/// Validates a captured profile image with the same invariants as a committed
+/// device: device-global profile metadata evidence, every captured profile
+/// resource's evidence, and the embedded profile ids each resource must match
+/// the key it is stored under. This is the authoritative gate for every
+/// durable [`CapturedProfileImage`] persisted on a ceremony subject.
+fn validate_captured_profile_image(
+    image: &CapturedProfileImage,
+    ctx: &str,
+) -> Result<(), StateError> {
+    validate_resource_state(&image.profile_metadata, &format!("{ctx} profileMetadata"))?;
+    for (profile_id, profile) in &image.profiles {
+        validate_profile_resource(
+            profile_id,
+            &profile.dpi,
+            &format!("{ctx} dpi"),
+            |value: &DpiState| value.profile,
+        )?;
+        validate_profile_resource(
+            profile_id,
+            &profile.preferences,
+            &format!("{ctx} preferences"),
+            |value: &PreferencesState| value.profile,
+        )?;
+        validate_profile_resource(
+            profile_id,
+            &profile.buttons,
+            &format!("{ctx} buttons"),
+            |value: &ButtonsState| value.profile,
+        )?;
+        validate_resource_state(
+            &profile.polling_rate,
+            &format!("{ctx} pollingRate for profile {profile_id}"),
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1202,9 +1252,7 @@ mod tests {
     };
     use crate::device::{DeviceEndpoint, DeviceId, DeviceIdentity};
     use crate::error::StateError;
-    use attack_shark_x3::{
-        DpiState, PhysicalId, PollingRate, ProfileId, ProfileMetadata, TransportKind,
-    };
+    use attack_shark_x3::{DpiState, PhysicalId, PollingRate, ProfileId, ProfileMetadata};
     use std::collections::BTreeMap;
 
     fn timestamp(seconds: i64) -> Timestamp {
@@ -1217,7 +1265,7 @@ mod tests {
         DeviceEndpoint::usb(
             attack_shark_x3::TransportKind::Wired,
             0x1d57,
-            0xfa60,
+            0xfa61,
             None,
             path,
             None,
@@ -1241,6 +1289,16 @@ mod tests {
         DpiState::captured_empty_profile_one(
             vec![attack_shark_x3::DpiValue::new(value).expect("valid dpi")],
             attack_shark_x3::StageIndex::new(1).expect("valid stage"),
+        )
+        .expect("valid state")
+    }
+
+    fn dpi_for_profile(target: ProfileId, value: u16) -> DpiState {
+        DpiState::new(
+            target,
+            vec![attack_shark_x3::DpiValue::new(value).expect("valid dpi")],
+            attack_shark_x3::StageIndex::new(1).expect("valid stage"),
+            [0; 25],
         )
         .expect("valid state")
     }
@@ -2540,7 +2598,7 @@ mod tests {
                 ProfileState {
                     dpi: ResourceState {
                         desired: Some(DesiredState {
-                            value: dpi_profile_one(800),
+                            value: dpi_for_profile(captured_profile, 800),
                             source: DesiredSource::Imported,
                             verification: Verification::not_sent(),
                             updated_at: timestamp(1),
@@ -2951,27 +3009,6 @@ mod tests {
         };
         assert!(state.validate().is_err(), "duplicate reserved token");
 
-        // An incoherent captured endpoint is rejected.
-        let mut bad_endpoint = ble_endpoint("ble-1");
-        bad_endpoint.transport = TransportKind::Wired; // tamper
-        let incoherent = IdentitySetupJournal {
-            phase: IdentitySetupPhase::AddMouse,
-            stage: IdentitySetupStage::Finalizing,
-            subjects: vec![stamped_subject(
-                bad_endpoint,
-                None,
-                Some(physical_id(6)),
-                None,
-                vec![profile, profile_2],
-            )],
-        };
-        let state = StateFile {
-            identity_mode: IdentityMode::Persistent,
-            identity_setup: Some(incoherent),
-            ..StateFile::default()
-        };
-        assert!(state.validate().is_err(), "incoherent subject endpoint");
-
         // A subject bound to an unknown device is rejected.
         let unknown_device = IdentitySetupJournal {
             phase: IdentitySetupPhase::BleAssociation,
@@ -3201,6 +3238,303 @@ mod tests {
         assert!(
             state.validate().is_err(),
             "BLE endpoint already owned by another device"
+        );
+    }
+
+    #[test]
+    fn captured_image_evidence_must_match_committed_device_invariants() {
+        let profile = ProfileId::new(1).unwrap();
+        let profile_2 = ProfileId::new(2).unwrap();
+        let endpoint = wired_endpoint("/dev/hidraw-stamp");
+        let progress = || {
+            BTreeMap::from([
+                (profile, IdentityStampProgress::Captured),
+                (profile_2, IdentityStampProgress::Pending),
+            ])
+        };
+
+        // A valid captured image with stamp progress tracking exactly the
+        // captured keys validates at Stamping.
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![IdentitySetupSubject {
+                    endpoint: endpoint.clone(),
+                    device_id: None,
+                    token: Some(physical_id(10)),
+                    old_token: None,
+                    captured: Some(captured_image()),
+                    stamp_progress: progress(),
+                }],
+            }),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_ok(), "valid stamping capture accepted");
+
+        // Malformed profile evidence: ReadbackVerified without an observed
+        // value cannot be the durable baseline for a stamp.
+        let mut malformed = captured_image();
+        malformed.profiles.get_mut(&profile).unwrap().dpi = ResourceState {
+            desired: Some(DesiredState {
+                value: dpi_for_profile(profile, 800),
+                source: DesiredSource::UserWrite,
+                verification: Verification {
+                    application: ApplicationVerification::ReadbackVerified,
+                    persistence: PersistenceVerification::Unknown,
+                },
+                updated_at: timestamp(1),
+            }),
+            observed: None,
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![IdentitySetupSubject {
+                    endpoint: endpoint.clone(),
+                    device_id: None,
+                    token: Some(physical_id(10)),
+                    old_token: None,
+                    captured: Some(malformed),
+                    stamp_progress: progress(),
+                }],
+            }),
+            ..StateFile::default()
+        };
+        assert!(matches!(
+            state.validate(),
+            Err(StateError::InvalidState(message))
+                if message.contains("ReadbackVerified requires an observed value")
+        ));
+
+        // Malformed metadata evidence: a persistence claim without matching
+        // readback application evidence is refused.
+        let mut malformed_metadata = captured_image();
+        malformed_metadata.profile_metadata = ResourceState {
+            desired: Some(DesiredState {
+                value: ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap(),
+                source: DesiredSource::Imported,
+                verification: Verification {
+                    application: ApplicationVerification::Acknowledged,
+                    persistence: PersistenceVerification::PowerCycleVerified {
+                        verified_at: timestamp(5),
+                    },
+                },
+                updated_at: timestamp(1),
+            }),
+            observed: None,
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![IdentitySetupSubject {
+                    endpoint,
+                    device_id: None,
+                    token: Some(physical_id(10)),
+                    old_token: None,
+                    captured: Some(malformed_metadata),
+                    stamp_progress: progress(),
+                }],
+            }),
+            ..StateFile::default()
+        };
+        assert!(matches!(
+            state.validate(),
+            Err(StateError::InvalidState(message))
+                if message.contains("persistence claim requires ReadbackVerified")
+        ));
+    }
+
+    #[test]
+    fn captured_image_rejects_mismatched_embedded_profile_ids() {
+        let profile = ProfileId::new(1).unwrap();
+        let profile_2 = ProfileId::new(2).unwrap();
+
+        // A dpi resource stored under profile 1 but targeting profile 2 must
+        // be rejected exactly like a committed device's would be.
+        let mut mismatched = captured_image();
+        mismatched.profiles.get_mut(&profile).unwrap().dpi = ResourceState {
+            desired: Some(DesiredState {
+                value: dpi_for_profile(profile_2, 800),
+                source: DesiredSource::Imported,
+                verification: Verification::not_sent(),
+                updated_at: timestamp(1),
+            }),
+            observed: None,
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![IdentitySetupSubject {
+                    endpoint: wired_endpoint("/dev/hidraw-mismatch"),
+                    device_id: None,
+                    token: Some(physical_id(10)),
+                    old_token: None,
+                    captured: Some(mismatched),
+                    stamp_progress: BTreeMap::from([
+                        (profile, IdentityStampProgress::Captured),
+                        (profile_2, IdentityStampProgress::Pending),
+                    ]),
+                }],
+            }),
+            ..StateFile::default()
+        };
+        assert!(matches!(
+            state.validate(),
+            Err(StateError::InvalidState(message))
+                if message.contains("stored under another profile")
+        ));
+    }
+
+    #[test]
+    fn stamping_requires_captured_image_and_nonempty_profile_set() {
+        // Stamping with no captured image is impossible even before any
+        // profile progress has been recorded.
+        let mut no_capture = stamped_subject(
+            wired_endpoint("/dev/hidraw-no-capture"),
+            None,
+            Some(physical_id(1)),
+            None,
+            vec![],
+        );
+        no_capture.captured = None;
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![no_capture],
+            }),
+            ..StateFile::default()
+        };
+        assert!(matches!(
+            state.validate(),
+            Err(StateError::InvalidState(message))
+                if message.contains("stamping requires a captured profile image")
+        ));
+
+        // Stamping with an empty captured profile set would stamp nothing and
+        // let the ceremony complete vacuously; it is refused.
+        let empty_capture = IdentitySetupSubject {
+            endpoint: wired_endpoint("/dev/hidraw-empty-capture"),
+            device_id: None,
+            token: Some(physical_id(1)),
+            old_token: None,
+            captured: Some(CapturedProfileImage {
+                profile_metadata: ResourceState::empty(),
+                profiles: BTreeMap::new(),
+            }),
+            stamp_progress: BTreeMap::new(),
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![empty_capture],
+            }),
+            ..StateFile::default()
+        };
+        assert!(matches!(
+            state.validate(),
+            Err(StateError::InvalidState(message))
+                if message.contains("stamping requires at least one captured profile")
+        ));
+
+        // A complete capture still validates: resumable stamping with all
+        // profiles captured but none stamped yet is accepted.
+        let resumable = IdentitySetupSubject {
+            endpoint: wired_endpoint("/dev/hidraw-resume"),
+            device_id: None,
+            token: Some(physical_id(1)),
+            old_token: None,
+            captured: Some(captured_image()),
+            stamp_progress: BTreeMap::from([
+                (ProfileId::new(1).unwrap(), IdentityStampProgress::Captured),
+                (ProfileId::new(2).unwrap(), IdentityStampProgress::Captured),
+            ]),
+        };
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![resumable],
+            }),
+            ..StateFile::default()
+        };
+        assert!(state.validate().is_ok(), "resumable stamping accepted");
+    }
+
+    #[test]
+    fn ceremony_journal_rejects_unknown_fields() {
+        // A misspelled journal stage field is a hard deserialization error.
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::AwaitingCapture,
+                subjects: vec![],
+            }),
+            ..StateFile::default()
+        };
+        let mut json = serde_json::to_value(&state).expect("serialize ceremony state");
+        json["identitySetup"]["stages"] = serde_json::json!("awaitingCapture");
+        assert!(
+            serde_json::from_value::<StateFile>(json).is_err(),
+            "misspelled journal stage field must fail deserialization"
+        );
+
+        // A misspelled stamp-progress field on a subject (previously ignored,
+        // silently yielding an empty progress map) is refused.
+        let mut subject = stamped_subject(
+            wired_endpoint("/dev/hidraw-typo"),
+            None,
+            Some(physical_id(10)),
+            None,
+            vec![],
+        );
+        subject
+            .stamp_progress
+            .insert(ProfileId::new(1).unwrap(), IdentityStampProgress::Captured);
+        subject
+            .stamp_progress
+            .insert(ProfileId::new(2).unwrap(), IdentityStampProgress::Pending);
+        let state = StateFile {
+            identity_mode: IdentityMode::Persistent,
+            identity_setup: Some(IdentitySetupJournal {
+                phase: IdentitySetupPhase::AddMouse,
+                stage: IdentitySetupStage::Stamping,
+                subjects: vec![subject],
+            }),
+            ..StateFile::default()
+        };
+        let mut json = serde_json::to_value(&state).expect("serialize ceremony state");
+        let stamp_progress = json["identitySetup"]["subjects"][0]
+            .get("stampProgress")
+            .expect("serialized subject has stamp progress")
+            .clone();
+        json["identitySetup"]["subjects"][0]["stmpProgress"] = stamp_progress;
+        assert!(
+            serde_json::from_value::<StateFile>(json).is_err(),
+            "misspelled stamp-progress field must fail deserialization"
+        );
+
+        // A misspelled captured-image field is refused too.
+        let mut json = serde_json::to_value(&state).expect("serialize ceremony state");
+        let mut captured = json["identitySetup"]["subjects"][0]["captured"].clone();
+        captured["profileMetadatax"] = serde_json::json!({});
+        json["identitySetup"]["subjects"][0]["captured"] = captured;
+        assert!(
+            serde_json::from_value::<StateFile>(json).is_err(),
+            "misspelled captured-image field must fail deserialization"
         );
     }
 }

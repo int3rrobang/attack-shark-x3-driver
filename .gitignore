@@ -22,6 +22,9 @@ desktop.ini
 /target/
 
 # Machine-local probe output and Windows shell artifacts
+/after_*.json
+/before.json
+/backup.json
 /ble-results.jsonl
 /ble-recovery-results.jsonl
 /NUL

@@ -283,8 +283,8 @@ pub enum IdentityCommand {
     },
     /// Adopt a mouse carrying a valid identity from another installation.
     ///
-    /// Starts the adoption ceremony, or confirms it when the mouse has already
-    /// been reconnected and awaits the stamp.
+    /// Starts the adoption ceremony only; run `identity stamp` to confirm the
+    /// adoption once the mouse is reconnected.
     Adopt,
     /// Associate a Bluetooth endpoint with a saved logical mouse.
     Associate {
@@ -297,12 +297,16 @@ pub enum IdentityCommand {
     /// added must be the only unrecognized mouse connected.
     Reconnect,
     /// Write the assigned physical identity to the presented mouse.
+    ///
+    /// This is also the confirmation step for a foreign adoption.
     Stamp,
     /// Resume the ceremony: perform the action its current stage requires.
     Continue,
-    /// Keep the old single-mouse name and settings when they match one mouse.
+    /// Finish first-time setup, keeping the old single-mouse name and settings
+    /// when they match one mouse.
     AcceptMigration,
-    /// Use fresh names and default settings instead of migrating.
+    /// Finish first-time setup with fresh names and default settings instead
+    /// of migrating.
     SkipMigration,
     /// Cancel the in-flight ceremony (before any identity has been written).
     Cancel,
