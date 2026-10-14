@@ -77,11 +77,6 @@ pub const DEFAULT_DPI_DISPLAY_MAX: f32 = 3_200.0;
 pub const DPI_LABELS: [&str; MAX_DPI_STAGES] = [
     "stage 01", "stage 02", "stage 03", "stage 04", "stage 05", "stage 06", "stage 07", "stage 08",
 ];
-pub const RAW_PREFERENCE_CONFIGURATION: i32 = 0;
-pub const RAW_PREFERENCE_DEEP_SLEEP: i32 = 1;
-pub const RAW_PREFERENCE_SLEEP_TIMER: i32 = 2;
-pub const RAW_PREFERENCE_DEBOUNCE: i32 = 3;
-
 pub const VERIFICATION_INSTRUCTION_PROFILE_RELOAD: &str = "Keep the mouse connected. This check switches your active profile twice to test it. Don't unplug or turn it off.";
 pub const VERIFICATION_INSTRUCTION_POWER_CYCLE: &str = "Unplug USB, turn the mouse off, wait for it to disappear, then turn it on and reconnect. The check waits for each step.";
 
@@ -357,45 +352,14 @@ pub fn parse_raw_byte(text: &str) -> Option<u8> {
     u8::from_str_radix(body, 16).ok()
 }
 
-/// The four raw preference bytes captured from the UI at Save time.
+/// The four raw preference bytes captured from the headless draft store at
+/// Save time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RawPreferenceBytes {
     pub configuration: u8,
     pub deep_sleep: u8,
     pub sleep_timer: u8,
     pub debounce: u8,
-}
-
-/// Parses all four raw preference text fields at Save time so invalid text
-/// can never serialize as a zero byte. Returns the failing field index (one
-/// of the `RAW_PREFERENCE_*` constants) when any displayed text is invalid;
-/// the model keeps the last valid byte until that field is corrected.
-pub fn parse_raw_preference_draft(
-    configuration: &str,
-    deep_sleep: &str,
-    sleep_timer: &str,
-    debounce: &str,
-) -> Result<RawPreferenceBytes, i32> {
-    let configuration = parse_raw_byte(configuration).ok_or(RAW_PREFERENCE_CONFIGURATION)?;
-    let deep_sleep = parse_raw_byte(deep_sleep).ok_or(RAW_PREFERENCE_DEEP_SLEEP)?;
-    let sleep_timer = parse_raw_byte(sleep_timer).ok_or(RAW_PREFERENCE_SLEEP_TIMER)?;
-    let debounce = parse_raw_byte(debounce).ok_or(RAW_PREFERENCE_DEBOUNCE)?;
-    Ok(RawPreferenceBytes {
-        configuration,
-        deep_sleep,
-        sleep_timer,
-        debounce,
-    })
-}
-
-pub fn raw_preference_field_label(field: i32) -> &'static str {
-    match field {
-        RAW_PREFERENCE_CONFIGURATION => "configuration",
-        RAW_PREFERENCE_DEEP_SLEEP => "deep sleep",
-        RAW_PREFERENCE_SLEEP_TIMER => "sleep timer",
-        RAW_PREFERENCE_DEBOUNCE => "debounce",
-        _ => "unknown",
-    }
 }
 
 /// Status message for an auxiliary action that would silently discard an
@@ -770,36 +734,6 @@ mod tests {
         assert_eq!(parse_raw_byte("zz"), None);
         assert_eq!(parse_raw_byte(""), None);
         assert_eq!(parse_raw_byte("0x"), None);
-    }
-
-    #[test]
-    fn raw_draft_parsing_rejects_each_invalid_field_with_its_index() {
-        let ok = parse_raw_preference_draft("03", "a8", "01", "04").expect("valid draft parses");
-        assert_eq!(ok.configuration, 0x03);
-        assert_eq!(ok.deep_sleep, 0xa8);
-        assert_eq!(ok.sleep_timer, 0x01);
-        assert_eq!(ok.debounce, 0x04);
-
-        assert_eq!(
-            parse_raw_preference_draft("zz", "a8", "01", "04"),
-            Err(RAW_PREFERENCE_CONFIGURATION)
-        );
-        assert_eq!(
-            parse_raw_preference_draft("03", "zz", "01", "04"),
-            Err(RAW_PREFERENCE_DEEP_SLEEP)
-        );
-        assert_eq!(
-            parse_raw_preference_draft("03", "a8", "zz", "04"),
-            Err(RAW_PREFERENCE_SLEEP_TIMER)
-        );
-        assert_eq!(
-            parse_raw_preference_draft("03", "a8", "01", "zz"),
-            Err(RAW_PREFERENCE_DEBOUNCE)
-        );
-        assert_eq!(
-            parse_raw_preference_draft("100", "a8", "01", "04"),
-            Err(RAW_PREFERENCE_CONFIGURATION)
-        );
     }
 
     #[test]

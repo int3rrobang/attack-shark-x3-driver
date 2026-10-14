@@ -892,11 +892,6 @@ component AdvancedPage inherits Rectangle {
     in-out property <int> baseline-choice-receiver: 1;
     in-out property <bool> allow-explicit-defaults: false;
     in-out property <bool> warn-no-left-click: true;
-    in-out property <bool> advanced-preferences: false;
-    in-out property <string> preference-configuration-raw;
-    in-out property <string> preference-deep-sleep-raw;
-    in-out property <string> preference-sleep-timer-raw;
-    in-out property <string> preference-debounce-raw;
     in property <string> verification-instruction;
     in property <bool> verification-running: false;
     in property <bool> ceremony-active: false;
@@ -905,8 +900,6 @@ component AdvancedPage inherits Rectangle {
     callback set-baseline-choice-receiver(int);
     callback set-allow-explicit-defaults(bool);
     callback set-warn-no-left-click(bool);
-    callback toggle-advanced-preferences;
-    callback set-preference-raw(int, string);
     callback request-import;
     callback request-export;
     callback request-invalidate-state;
@@ -946,16 +939,6 @@ component AdvancedPage inherits Rectangle {
                 }
                 ToggleRow { x: 276px; y: 88px; width: parent.width - 294px; label: "use defaults if needed"; detail: "Allow full-profile writes when no baseline exists (first Bluetooth setup)."; checked <=> root.allow-explicit-defaults; interactive: root.interactive; toggled(value) => { root.set-allow-explicit-defaults(value); } }
                 ToggleRow { x: 276px; y: 152px; width: parent.width - 294px; label: "warn when click breaks"; detail: "Popup and banner if a save would leave no button left-clicking."; checked <=> root.warn-no-left-click; interactive: root.interactive; toggled(value) => { root.set-warn-no-left-click(value); } }
-            }
-            Card {
-                width: parent.width; height: root.advanced-preferences ? 330px : 98px;
-                Text { x: 18px; y: 15px; text: "technical preference fields"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 40px; width: parent.width - 190px; text: "For diagnosis and recovery. Leave collapsed during normal use."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
-                ActionButton { x: parent.width - 164px; y: 16px; width: 146px; label: root.advanced-preferences ? "hide fields" : "show fields"; compact: true; enabled: root.interactive; clicked => { root.toggle-advanced-preferences(); } }
-                if root.advanced-preferences : VerticalLayout {
-                    x: 18px; y: 86px; width: parent.width - 36px; height: 226px; spacing: 8px;
-                    Rectangle { height: 44px; background: transparent; Text { x: 0px; y: 0px; width: 150px; text: "configuration"; color: Theme.text; font-size: 10px; vertical-alignment: center; } InputField { x: 160px; y: 5px; width: parent.width - 160px; height: 34px; text <=> root.preference-configuration-raw; interactive: root.interactive; accepted(value) => { root.set-preference-raw(0, value); } } }
-                }
             }
             Card {
                 width: parent.width; height: 184px;
@@ -1303,11 +1286,10 @@ export component AppWindow inherits Window {
     in-out property <bool> deep-sleep-known: false;
     in-out property <int> lift-off-choice: 0;
     in-out property <bool> angle-snap: false;
-    in-out property <bool> advanced-preferences: false;
-    in-out property <string> preference-configuration-raw: "";
-    in-out property <string> preference-deep-sleep-raw: "";
-    in-out property <string> preference-sleep-timer-raw: "";
-    in-out property <string> preference-debounce-raw: "";
+    in property <string> preference-configuration-raw: "";
+    in property <string> preference-deep-sleep-raw: "";
+    in property <string> preference-sleep-timer-raw: "";
+    in property <string> preference-debounce-raw: "";
     in-out property <int> baseline-choice-wired: 0;
     in-out property <int> baseline-choice-receiver: 1;
     in-out property <bool> allow-explicit-defaults: false;
@@ -1383,8 +1365,6 @@ export component AppWindow inherits Window {
     callback set-debounce-text(string);
     callback set-sleep-text(string);
     callback set-deep-sleep-text(string);
-    callback toggle-advanced-preferences;
-    callback set-preference-raw(int, string);
     callback set-baseline-choice-wired(int);
     callback set-baseline-choice-receiver(int);
     callback set-allow-explicit-defaults(bool);
@@ -1505,8 +1485,7 @@ export component AppWindow inherits Window {
         AdvancedPage { visible: root.current-page == 4;
             width: parent.width; height: parent.height; devices: root.devices; transport-label: root.transport-label; device-name: root.device-name; device-id-text: root.device-id-text; device-product-text: root.device-product-text;
             validation-choice: root.validation-choice; interactive: root.hardware-ready && !root.busy; preferences-ready: root.preferences-ready; ble-device: root.ble-device; all-profiles-observed: root.all-profiles-observed;
-            baseline-choice-wired <=> root.baseline-choice-wired; baseline-choice-receiver <=> root.baseline-choice-receiver; allow-explicit-defaults <=> root.allow-explicit-defaults; warn-no-left-click <=> root.warn-no-left-click; advanced-preferences <=> root.advanced-preferences;
-            preference-configuration-raw <=> root.preference-configuration-raw; preference-deep-sleep-raw <=> root.preference-deep-sleep-raw; preference-sleep-timer-raw <=> root.preference-sleep-timer-raw; preference-debounce-raw <=> root.preference-debounce-raw;
+            baseline-choice-wired <=> root.baseline-choice-wired; baseline-choice-receiver <=> root.baseline-choice-receiver; allow-explicit-defaults <=> root.allow-explicit-defaults; warn-no-left-click <=> root.warn-no-left-click;
             verification-running: root.verification-running; verification-instruction: root.verification-instruction;
             unassociated: root.unassociated; ceremony-active: root.ceremony-active;
             set-validation-choice(value) => { root.set-validation-choice(value); }
@@ -1514,8 +1493,6 @@ export component AppWindow inherits Window {
             set-baseline-choice-receiver(value) => { root.set-baseline-choice-receiver(value); }
             set-allow-explicit-defaults(value) => { root.set-allow-explicit-defaults(value); }
             set-warn-no-left-click(value) => { root.set-warn-no-left-click(value); }
-            toggle-advanced-preferences => { root.toggle-advanced-preferences(); }
-            set-preference-raw(index, value) => { root.set-preference-raw(index, value); }
             request-import => { root.request-import(); }
             request-export => { root.request-export(); }
             request-invalidate-state => { root.request-invalidate-state(); }

@@ -1,8 +1,6 @@
 use slint::{Model, ModelRc, VecModel};
 
-use crate::presentation::{
-    CeremonyPrompt, DPI_LABELS, clamp_dpi_value, dpi_bounds, parse_raw_byte,
-};
+use crate::presentation::{CeremonyPrompt, DPI_LABELS, clamp_dpi_value, dpi_bounds};
 use crate::worker::{LiveProfile, LiveSnapshot, UnassociatedRow as WorkerUnassociatedRow};
 use crate::{AppWindow, BindingRow, DeviceRow, DpiStage, ProfileRow, UnassociatedRow};
 
@@ -539,31 +537,6 @@ pub fn binding(button: &str, location: &str, action: &str) -> BindingRow {
         action: action.into(),
         original_action: action.into(),
         editable: true,
-    }
-}
-
-/// Re-decodes the deep-sleep typed fields from the two raw bytes that encode
-/// them (the configuration high nibble and the deep-sleep byte). Invalid raw
-/// text (a rejected edit) reports the typed value as unknown instead of
-/// decoding against a synthesized zero.
-pub fn refresh_deep_sleep_display(ui: &AppWindow) {
-    let (Some(configuration), Some(deep_sleep)) = (
-        parse_raw_byte(ui.get_preference_configuration_raw().as_str()),
-        parse_raw_byte(ui.get_preference_deep_sleep_raw().as_str()),
-    ) else {
-        ui.set_deep_sleep_minutes(0);
-        ui.set_deep_sleep_known(false);
-        return;
-    };
-    match attack_shark_x3::DeepSleepMinutes::from_raw(configuration >> 4, deep_sleep) {
-        Some(deep) => {
-            ui.set_deep_sleep_minutes(deep.get() as i32);
-            ui.set_deep_sleep_known(true);
-        }
-        None => {
-            ui.set_deep_sleep_minutes(0);
-            ui.set_deep_sleep_known(false);
-        }
     }
 }
 

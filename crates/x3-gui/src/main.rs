@@ -1,6 +1,5 @@
 use std::{error::Error, thread};
 
-use attack_shark_x3::{DebounceMs, SleepTimer};
 use attack_shark_x3_manager::{DeviceId, IdentityCeremonyAction, IdentityCeremonyKind, ProfileId};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tokio::sync::{mpsc, watch};
@@ -16,19 +15,18 @@ pub use generated_ui::{
 };
 
 use crate::presentation::{
-    BINDING_ACTIONS, MAX_DPI_STAGES, RAW_PREFERENCE_CONFIGURATION, RAW_PREFERENCE_DEBOUNCE,
-    RAW_PREFERENCE_DEEP_SLEEP, RAW_PREFERENCE_SLEEP_TIMER, VERIFICATION_INSTRUCTION_POWER_CYCLE,
+    BINDING_ACTIONS, MAX_DPI_STAGES, VERIFICATION_INSTRUCTION_POWER_CYCLE,
     VERIFICATION_INSTRUCTION_PROFILE_RELOAD, configured_product_label, format_dpi_setting,
     page_status, parse_dpi_range,
 };
 use crate::presentation::{
-    canonical_debounce_ms, canonical_deep_sleep_minutes, canonical_sleep_minutes,
-    dirty_draft_message, format_byte, parse_raw_byte, parse_raw_preference_draft,
-    raw_preference_field_label, round_dpi_step, validated_binding_action,
+    RawPreferenceBytes, canonical_debounce_ms, canonical_deep_sleep_minutes,
+    canonical_sleep_minutes, dirty_draft_message, format_byte, parse_raw_byte, round_dpi_step,
+    validated_binding_action,
 };
 use crate::projection::{
-    append_dpi_stage, dpi_from_ratio, refresh_deep_sleep_display, refresh_dpi_ratios,
-    refresh_lmb_break_warning, remove_dpi_stage, set_active_dpi_stage, update_single_dpi_ratio,
+    append_dpi_stage, dpi_from_ratio, refresh_dpi_ratios, refresh_lmb_break_warning,
+    remove_dpi_stage, set_active_dpi_stage, update_single_dpi_ratio,
 };
 use crate::worker::{BaselineChoice, Command, Draft, VerificationChoice, worker_main};
 
@@ -100,7 +98,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui.set_deep_sleep_known(false);
     ui.set_lift_off_choice(0);
     ui.set_angle_snap(false);
-    ui.set_advanced_preferences(false);
     ui.set_preference_configuration_raw("00".into());
     ui.set_preference_deep_sleep_raw("00".into());
     ui.set_preference_sleep_timer_raw("00".into());
@@ -589,15 +586,10 @@ fn install_callbacks(
                 ui.set_status_text("deep sleep must be 1 to 60 minutes".into());
                 return;
             };
-            let Some(current_configuration) =
-                parse_raw_byte(ui.get_preference_configuration_raw().as_str())
-            else {
-                ui.set_status_text(
-                    "fix the raw configuration value before changing deep sleep (the last valid value is kept)"
-                        .into(),
-                );
-                return;
-            };
+            // Headless draft bytes: always valid hex (seeded from snapshots,
+            // written by format_byte), so this parse is infallible.
+            let current_configuration =
+                parse_raw_byte(ui.get_preference_configuration_raw().as_str()).unwrap_or(0x03);
             ui.set_preference_configuration_raw(
                 format_byte(deep.configuration_with(current_configuration)).into(),
             );
@@ -625,15 +617,8 @@ fn install_callbacks(
                 ui.set_status_text("deep sleep must be 1 to 60 minutes".into());
                 return;
             };
-            let Some(current_configuration) =
-                parse_raw_byte(ui.get_preference_configuration_raw().as_str())
-            else {
-                ui.set_status_text(
-                    "fix the raw configuration value before changing deep sleep (the last valid value is kept)"
-                        .into(),
-                );
-                return;
-            };
+            let current_configuration =
+                parse_raw_byte(ui.get_preference_configuration_raw().as_str()).unwrap_or(0x03);
             ui.set_preference_configuration_raw(
                 format_byte(deep.configuration_with(current_configuration)).into(),
             );
@@ -642,69 +627,6 @@ fn install_callbacks(
             ui.set_deep_sleep_known(true);
             ui.set_dirty(true);
             ui.set_status_text("deep sleep changed in the draft — save to apply".into());
-        });
-    }
-    {
-        let weak = ui.as_weak();
-        ui.on_toggle_advanced_preferences(move || {
-            if let Some(ui) = weak.upgrade() {
-                let advanced = !ui.get_advanced_preferences();
-                ui.set_advanced_preferences(advanced);
-                ui.set_status_text(
-                    if advanced {
-                        "raw preference settings shown; typed fields update from raw values"
-                    } else {
-                        "raw preference settings hidden"
-                    }
-                    .into(),
-                );
-            }
-        });
-    }
-    {
-        let weak = ui.as_weak();
-        ui.on_set_preference_raw(move |field, text| {
-            let Some(ui) = weak.upgrade() else { return };
-            if !ui.get_hardware_ready() || ui.get_busy() {
-                return;
-            }
-            let Some(value) = parse_raw_byte(text.as_str()) else {
-                ui.set_status_text(
-                    "raw preference values must be one or two hex digits (for example 0a or 0x0a)"
-                        .into(),
-                );
-                return;
-            };
-            match field {
-                RAW_PREFERENCE_CONFIGURATION => {
-                    ui.set_preference_configuration_raw(format_byte(value).into());
-                    refresh_deep_sleep_display(&ui);
-                }
-                RAW_PREFERENCE_DEEP_SLEEP => {
-                    ui.set_preference_deep_sleep_raw(format_byte(value).into());
-                    refresh_deep_sleep_display(&ui);
-                }
-                RAW_PREFERENCE_SLEEP_TIMER => {
-                    ui.set_preference_sleep_timer_raw(format_byte(value).into());
-                    let half = SleepTimer::from_raw(value).map(|timer| timer.get() as i32);
-                    if let Some(half) = half {
-                        ui.set_sleep_half_minutes(half);
-                    }
-                }
-                RAW_PREFERENCE_DEBOUNCE => {
-                    ui.set_preference_debounce_raw(format_byte(value).into());
-                    let ms = DebounceMs::from_raw(value).map(|debounce| debounce.get() as i32);
-                    if let Some(ms) = ms {
-                        ui.set_debounce_ms(ms);
-                    }
-                }
-                _ => {
-                    ui.set_status_text("unknown raw preference field".into());
-                    return;
-                }
-            }
-            ui.set_dirty(true);
-            ui.set_status_text("raw preference value changed in the draft — save to apply".into());
         });
     }
     {
@@ -1333,27 +1255,16 @@ fn install_callbacks(
             let buttons = (0..bindings.row_count())
                 .filter_map(|row| bindings.row_data(row).map(|item| item.action.to_string()))
                 .collect();
-            // The raw preference text fields keep whatever the user typed, so
-            // an invalid draft must abort here — never serialize as a zero
-            // byte — before any Command is queued. The model retains the last
-            // valid byte until the offending field is corrected.
-            let raw = match parse_raw_preference_draft(
-                ui.get_preference_configuration_raw().as_str(),
-                ui.get_preference_deep_sleep_raw().as_str(),
-                ui.get_preference_sleep_timer_raw().as_str(),
-                ui.get_preference_debounce_raw().as_str(),
-            ) {
-                Ok(raw) => raw,
-                Err(field) => {
-                    ui.set_status_text(
-                        format!(
-                            "raw {} value is not valid hex (one or two digits); the last valid value is kept — fix it before saving",
-                            raw_preference_field_label(field)
-                        )
-                        .into(),
-                    );
-                    return;
-                }
+            // Headless draft bytes: seeded from snapshots and written only by
+            // format_byte, so these parses are infallible.
+            let raw = RawPreferenceBytes {
+                configuration: parse_raw_byte(ui.get_preference_configuration_raw().as_str())
+                    .unwrap_or(0x03),
+                deep_sleep: parse_raw_byte(ui.get_preference_deep_sleep_raw().as_str())
+                    .unwrap_or(0xa8),
+                sleep_timer: parse_raw_byte(ui.get_preference_sleep_timer_raw().as_str())
+                    .unwrap_or(0x01),
+                debounce: parse_raw_byte(ui.get_preference_debounce_raw().as_str()).unwrap_or(0x04),
             };
             let draft = Draft {
                 profile: (ui.get_selected_profile() + 1).clamp(1, ProfileId::MAX as i32) as u8,
