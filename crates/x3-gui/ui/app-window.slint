@@ -944,7 +944,7 @@ component AdvancedPage inherits Rectangle {
                     ChoiceButton { label: "from mouse"; compact: true; selected: root.baseline-choice-receiver == 0; enabled: root.interactive; clicked => { root.baseline-choice-receiver = 0; root.set-baseline-choice-receiver(0); } }
                     ChoiceButton { label: "saved"; compact: true; selected: root.baseline-choice-receiver == 1; enabled: root.interactive; clicked => { root.baseline-choice-receiver = 1; root.set-baseline-choice-receiver(1); } }
                 }
-                ToggleRow { x: 276px; y: 88px; width: parent.width - 294px; label: "use defaults if needed"; detail: "Use only when no saved or connected configuration is available."; checked <=> root.allow-explicit-defaults; interactive: root.interactive; toggled(value) => { root.set-allow-explicit-defaults(value); } }
+                ToggleRow { x: 276px; y: 88px; width: parent.width - 294px; label: "use defaults if needed"; detail: "Allow full-profile writes when no baseline exists (first Bluetooth setup)."; checked <=> root.allow-explicit-defaults; interactive: root.interactive; toggled(value) => { root.set-allow-explicit-defaults(value); } }
                 ToggleRow { x: 276px; y: 152px; width: parent.width - 294px; label: "warn when click breaks"; detail: "Popup and banner if a save would leave no button left-clicking."; checked <=> root.warn-no-left-click; interactive: root.interactive; toggled(value) => { root.set-warn-no-left-click(value); } }
             }
             Card {

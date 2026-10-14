@@ -754,9 +754,9 @@ fn install_callbacks(
                 ui.set_allow_explicit_defaults(enabled);
                 ui.set_status_text(
                     if enabled {
-                        "explicit defaults allowed when no saved settings exist"
+                        "full-profile writes allowed when no baseline exists"
                     } else {
-                        "explicit defaults off; missing saved settings will fail safely"
+                        "writes without a baseline will fail safely"
                     }
                     .into(),
                 );
