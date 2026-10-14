@@ -20,8 +20,8 @@ use crate::operation::DeviceTopologyEvent;
 use crate::operation::{
     DeviceStatus, DiscoveredDevice, DiscoveredEndpoint, DiscoveryView, IdentityCeremonyAction,
     IdentityCeremonyKind, IdentityCeremonyProgress, IdentityCeremonyStage, IdentityResolution,
-    LiveProfileSnapshot, ResolvedConnection, ResourceSnapshot, UnassociatedReason,
-    VerificationMethod,
+    LiveProfileSnapshot, Resolution, ResolvedConnection, ResourceSnapshot, UnassociatedReason,
+    VerificationMethod, resolve_endpoint,
 };
 use crate::refresh;
 use crate::state::{
@@ -272,6 +272,15 @@ impl DeviceManager {
         }
         mark_scan_duplicates(&mut resolved);
 
+        // Auto-resolve unknown connections through the connection-resolution
+        // decision tree: remembered mappings and single-candidate silent
+        // attaches resolve here; disambiguation stays unassociated for the
+        // GUI to ask per endpoint. Legacy mode keeps its fuzzy fuzzy-mouse
+        // behavior and skips this entirely.
+        if !mode.is_legacy() {
+            self.auto_resolve_unknowns(&mut resolved).await?;
+        }
+
         // Persist endpoint associations for resolved mice only.
         self.sync_endpoint_associations(&resolved, selection)
             .await?;
@@ -283,6 +292,132 @@ impl DeviceManager {
             devices,
             connections: resolved,
         })
+    }
+
+    /// Applies the connection-resolution decision tree to this scan's
+    /// unknown connections: remembered endpoint→mouse mappings and
+    /// single-candidate silent attaches become `Resolved` (persisting the
+    /// mapping); everything else stays unassociated for GUI disambiguation.
+    async fn auto_resolve_unknowns(
+        &self,
+        resolved: &mut [ResolvedConnection],
+    ) -> Result<(), ManagerError> {
+        let state = self.store.load_async().await?;
+        if state.identity_setup.is_some() {
+            return Ok(());
+        }
+        let unknown_count = resolved
+            .iter()
+            .filter(|row| {
+                row.connected
+                    && matches!(
+                        row.resolution,
+                        IdentityResolution::Unassociated {
+                            reason: UnassociatedReason::Absent | UnassociatedReason::Unknown,
+                            ..
+                        }
+                    )
+            })
+            .count();
+        if unknown_count == 0 {
+            return Ok(());
+        }
+        // Never auto-attach simultaneous unknowns: disambiguation asks per
+        // endpoint. The GUI runs the same tree per row for its pending list.
+        if unknown_count >= 2 {
+            return Ok(());
+        }
+        let candidates = resolution_candidates(&state);
+        // Fingerprint-known = the mapping remembers this endpoint AND the
+        // remembered mouse still exists.
+        let mut silent: Vec<(DeviceEndpoint, DeviceId, bool)> = Vec::new();
+        for row in resolved.iter() {
+            let IdentityResolution::Unassociated { reason, .. } = &row.resolution else {
+                continue;
+            };
+            if !row.connected {
+                continue;
+            }
+            if !matches!(
+                reason,
+                UnassociatedReason::Absent | UnassociatedReason::Unknown
+            ) {
+                continue;
+            }
+            let fingerprint = endpoint_fingerprint(&row.endpoint);
+            if let Some(remembered) = state.endpoint_mapping.endpoints.get(&fingerprint)
+                && state.devices.contains_key(remembered)
+            {
+                let keep = state
+                    .devices
+                    .get(remembered)
+                    .is_some_and(device_has_evidence);
+                silent.push((row.endpoint.clone(), remembered.clone(), keep));
+                continue;
+            }
+            let stored = candidates
+                .iter()
+                .find(|candidate| candidate.has_stored_state)
+                .is_some();
+            match resolve_endpoint(
+                false,
+                unknown_count,
+                row.endpoint.transport,
+                &candidates,
+                stored,
+            ) {
+                Resolution::SilentAttach {
+                    attach_to,
+                    keep_stored_settings,
+                } => silent.push((row.endpoint.clone(), attach_to, keep_stored_settings)),
+                Resolution::SetupFirst
+                | Resolution::AskWhich(_)
+                | Resolution::AskNewOrMine { .. } => {}
+            }
+        }
+        if silent.is_empty() {
+            return Ok(());
+        }
+        for (endpoint, device, _keep) in &silent {
+            let endpoint = endpoint.clone();
+            let device = device.clone();
+            let inner: Result<(), ManagerError> = self
+                .store
+                .mutate_async(move |state| {
+                    let Some(device_state) = state.devices.get_mut(&device) else {
+                        return Ok(());
+                    };
+                    device_state.identity.upsert_endpoint(endpoint.clone());
+                    remember_endpoint_mapping(state, &endpoint, &device);
+                    Ok(())
+                })
+                .await?;
+            inner?;
+        }
+        // Re-resolve the now-attached connections against fresh state.
+        let state = self.store.load_async().await?;
+        for row in resolved.iter_mut() {
+            if !matches!(
+                row.resolution,
+                IdentityResolution::Unassociated {
+                    reason: UnassociatedReason::Absent | UnassociatedReason::Unknown,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            if let Some(remembered) = state
+                .endpoint_mapping
+                .endpoints
+                .get(&endpoint_fingerprint(&row.endpoint))
+                && state.devices.contains_key(remembered)
+            {
+                row.resolution = IdentityResolution::Resolved {
+                    identity: remembered.clone(),
+                };
+            }
+        }
+        Ok(())
     }
 
     async fn ensure_legacy_mouse(
@@ -381,6 +516,99 @@ impl DeviceManager {
 
     pub fn selected_device(&self) -> Result<Option<DeviceId>, ManagerError> {
         Ok(self.store.load()?.selected_device)
+    }
+
+    /// Resolves one connection through the connection-resolution decision
+    /// tree, for GUI disambiguation flows.
+    ///
+    /// Pure decision over durable state: builds the saved-mouse candidate
+    /// list, counts this scan's simultaneous unknowns from `connections`,
+    /// treats a remembered endpoint→mouse mapping as a known fingerprint,
+    /// and delegates to [`resolve_endpoint`]. Persists nothing; call
+    /// [`Self::remember_resolution`] once the user (or silent path) picks a
+    /// mouse.
+    pub fn resolve_connection_decision(
+        &self,
+        endpoint: &DeviceEndpoint,
+        connections: &[ResolvedConnection],
+    ) -> Result<Resolution, ManagerError> {
+        let state = self.store.load()?;
+        let fingerprint = endpoint_fingerprint(endpoint);
+        if let Some(remembered) = state.endpoint_mapping.endpoints.get(&fingerprint)
+            && state.devices.contains_key(remembered)
+        {
+            let keep = state
+                .devices
+                .get(remembered)
+                .is_some_and(device_has_evidence);
+            return Ok(Resolution::SilentAttach {
+                attach_to: remembered.clone(),
+                keep_stored_settings: keep,
+            });
+        }
+        let unknown_count = connections
+            .iter()
+            .filter(|row| {
+                row.connected
+                    && matches!(
+                        row.resolution,
+                        IdentityResolution::Unassociated {
+                            reason: UnassociatedReason::Absent | UnassociatedReason::Unknown,
+                            ..
+                        }
+                    )
+            })
+            .count();
+        let candidates = resolution_candidates(&state);
+        let stored = candidates
+            .iter()
+            .any(|candidate| candidate.has_stored_state);
+        Ok(resolve_endpoint(
+            false,
+            unknown_count.max(1),
+            endpoint.transport,
+            &candidates,
+            stored,
+        ))
+    }
+
+    /// True when the durable endpoint→mouse mapping remembers `endpoint`
+    /// against a mouse that still exists: the known fingerprint.
+    pub fn is_endpoint_remembered(&self, endpoint: &DeviceEndpoint) -> bool {
+        let Ok(state) = self.store.load() else {
+            return false;
+        };
+        state
+            .endpoint_mapping
+            .endpoints
+            .get(&endpoint_fingerprint(endpoint))
+            .is_some_and(|remembered| state.devices.contains_key(remembered))
+    }
+
+    /// Persists one endpoint→mouse mapping decision (silent or answered),
+    /// attaching the endpoint to the logical mouse. Survives restarts via
+    /// the existing state store; matched on reconnect as a known
+    /// fingerprint.
+    pub fn remember_resolution(
+        &self,
+        endpoint: &DeviceEndpoint,
+        device: &DeviceId,
+    ) -> Result<(), ManagerError> {
+        let mut txn = self.store.transaction()?;
+        if !txn.state().devices.contains_key(device) {
+            return Err(ManagerError::DeviceNotFound(device.clone()));
+        }
+        let endpoint = endpoint.clone();
+        let device = device.clone();
+        let device_state = txn
+            .state_mut()
+            .devices
+            .get_mut(&device)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?;
+        device_state.identity.upsert_endpoint(endpoint.clone());
+        remember_endpoint_mapping(txn.state_mut(), &endpoint, &device);
+        txn.commit()?;
+        Ok(())
     }
 
     pub fn select_device(&self, device: &DeviceId) -> Result<(), ManagerError> {
@@ -2337,6 +2565,74 @@ fn is_supported_usb_device(device: &nusb::DeviceInfo) -> bool {
 /// logical mouse (no identity claim is made). In persistent mode a valid
 /// known token resolves to its logical mouse; every other case is an explicit
 /// non-association with a reason.
+/// Stable endpoint fingerprint for the endpoint→mouse mapping: BLE uses the
+/// platform id; USB uses VID/PID/serial (empty serial when the transport
+/// reports none). Never an OS HID path, which changes on replug.
+fn endpoint_fingerprint(endpoint: &DeviceEndpoint) -> String {
+    match endpoint.transport {
+        TransportKind::Ble => match &endpoint.locator {
+            DeviceLocator::BlePlatformId(id) => format!("ble:{id}"),
+            DeviceLocator::UsbPath(path) => format!("ble:{path}"),
+        },
+        TransportKind::Wired | TransportKind::Receiver => {
+            let vid = endpoint.vendor_id.unwrap_or(0);
+            let pid = endpoint.product_id.unwrap_or(0);
+            let serial = endpoint.serial_number.as_deref().unwrap_or("");
+            let kind = match endpoint.transport {
+                TransportKind::Wired => "wired",
+                TransportKind::Receiver => "receiver",
+                TransportKind::Ble => unreachable!("matched above"),
+            };
+            format!("usb:{kind}:{vid:04x}:{pid:04x}:{serial}")
+        }
+    }
+}
+
+/// Builds the [`Candidate`] list for [`resolve_endpoint`]: every saved
+/// logical mouse in stable id order, with last-seen transport from the
+/// durable endpoints and stored-state evidence from the durable device.
+fn resolution_candidates(state: &StateFile) -> Vec<crate::operation::Candidate> {
+    let mut ids: Vec<&DeviceId> = state.devices.keys().collect();
+    ids.sort();
+    ids.into_iter()
+        .map(|id| {
+            let device = &state.devices[id];
+            let last_transport = device.identity.selected_transport();
+            let last_seen_unix_seconds = state
+                .endpoint_mapping
+                .last_seen_unix_seconds
+                .values()
+                .copied()
+                .max();
+            crate::operation::Candidate {
+                identity: id.clone(),
+                display_name: device.identity.display_name.clone(),
+                last_transport,
+                last_seen_unix_seconds,
+                has_stored_state: device_has_evidence(device),
+            }
+        })
+        .collect()
+}
+
+/// Persists one endpoint→mouse disambiguation decision (with its last-seen
+/// timestamp) so the next reconnect of the same endpoint resolves silently.
+fn remember_endpoint_mapping(state: &mut StateFile, endpoint: &DeviceEndpoint, device: &DeviceId) {
+    let fingerprint = endpoint_fingerprint(endpoint);
+    state
+        .endpoint_mapping
+        .endpoints
+        .insert(fingerprint.clone(), device.clone());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    state
+        .endpoint_mapping
+        .last_seen_unix_seconds
+        .insert(fingerprint, now);
+}
+
 fn resolve_connection(
     devices: &BTreeMap<DeviceId, DeviceState>,
     journal: Option<&IdentitySetupJournal>,

@@ -45,13 +45,14 @@ pub use offline_debug::{
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use operation::ProfileUpdate;
 pub use operation::{
-    BaselineSource, DeviceEvent, DeviceStatus, DeviceTopologyEvent, DiscoveredConnection,
-    DiscoveredDevice, DiscoveredEndpoint, DiscoveryView, FullProfileRefreshOutcome,
-    IdentityCeremonyAction, IdentityCeremonyKind, IdentityCeremonyProgress, IdentityCeremonyStage,
-    IdentityResolution, LiveProfileSnapshot, PowerCycleVerificationOutcome, ProfileResourceKind,
-    ProfileUpdateBaseline, ProfileUpdateOutcome, ProfileVerificationOutcome, RefreshedProfile,
+    BaselineSource, Candidate, DeviceEvent, DeviceStatus, DeviceTopologyEvent,
+    DiscoveredConnection, DiscoveredDevice, DiscoveredEndpoint, DiscoveryView,
+    FullProfileRefreshOutcome, IdentityCeremonyAction, IdentityCeremonyKind,
+    IdentityCeremonyProgress, IdentityCeremonyStage, IdentityResolution, LiveProfileSnapshot,
+    PowerCycleVerificationOutcome, ProfileResourceKind, ProfileUpdateBaseline,
+    ProfileUpdateOutcome, ProfileVerificationOutcome, RefreshedProfile, Resolution,
     ResolvedConnection, ResourceSnapshot, UnassociatedReason, UpdatePolicy, VerificationMethod,
-    WriteOutcome,
+    WriteOutcome, resolve_endpoint,
 };
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use resources::buttons::{ButtonSlotDelta, SafeButtonAction, SafeButtonSlot};
@@ -63,9 +64,9 @@ pub use resources::settings::PreferencesDelta;
 pub use resources::state::{ConfigurationExport, PortableDpi, ProfileConfiguration};
 pub use state::{
     ApplicationVerification, CapturedProfileImage, DesiredSource, DesiredState,
-    DeviceOperationGuard, DeviceState, IdentityMode, IdentitySetupJournal, IdentitySetupPhase,
-    IdentitySetupStage, IdentitySetupSubject, IdentityStampProgress, MAX_PROFILE_NAME_CHARS,
-    ObservationSource, ObservedState, PersistenceVerification, ProfileState, ResourceState,
-    SCHEMA_VERSION, StateFile, StatePaths, StateReset, StateStore, StateTransaction, Timestamp,
-    Verification,
+    DeviceOperationGuard, DeviceState, EndpointMapping, IdentityMode, IdentitySetupJournal,
+    IdentitySetupPhase, IdentitySetupStage, IdentitySetupSubject, IdentityStampProgress,
+    MAX_PROFILE_NAME_CHARS, ObservationSource, ObservedState, PersistenceVerification,
+    ProfileState, ResourceState, SCHEMA_VERSION, StateFile, StatePaths, StateReset, StateStore,
+    StateTransaction, Timestamp, Verification,
 };

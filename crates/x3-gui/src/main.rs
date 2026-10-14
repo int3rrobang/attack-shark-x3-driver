@@ -27,8 +27,8 @@ use crate::presentation::{
     raw_preference_field_label, round_dpi_step, validated_binding_action,
 };
 use crate::projection::{
-    append_dpi_stage, dpi_from_ratio, refresh_button_change_summary, refresh_deep_sleep_display,
-    refresh_dpi_ratios, remove_dpi_stage, set_active_dpi_stage, update_single_dpi_ratio,
+    append_dpi_stage, dpi_from_ratio, refresh_deep_sleep_display, refresh_dpi_ratios,
+    refresh_lmb_break_warning, remove_dpi_stage, set_active_dpi_stage, update_single_dpi_ratio,
 };
 use crate::worker::{BaselineChoice, Command, Draft, VerificationChoice, worker_main};
 
@@ -109,6 +109,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui.set_baseline_choice_wired(gui_prefs.baseline_choice_wired);
     ui.set_baseline_choice_receiver(gui_prefs.baseline_choice_receiver);
     ui.set_allow_explicit_defaults(gui_prefs.allow_explicit_defaults);
+    ui.set_warn_no_left_click(gui_prefs.warn_no_left_click);
+    ui.set_lmb_break_warning(0);
+    ui.set_banner_dismissed(false);
     ui.set_ble_device(false);
     ui.set_verification_running(false);
     ui.set_last_enabled_profile(-1);
@@ -1219,7 +1222,7 @@ fn install_callbacks(
             item.action = action.into();
             bindings.set_row_data(row, item);
             ui.set_dirty(true);
-            refresh_button_change_summary(&ui);
+            refresh_lmb_break_warning(&ui);
             ui.set_status_text("button assignment changed — save to apply".into());
         });
     }
@@ -1396,6 +1399,84 @@ fn install_callbacks(
     }
     {
         let weak = ui.as_weak();
+        let bindings = bindings.clone();
+        ui.on_restore_lmb(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if !ui.get_hardware_ready() || ui.get_busy() {
+                ui.set_status_text("connect the mouse before restoring left click".into());
+                return;
+            }
+            let mut restored = false;
+            for row in 0..bindings.row_count() {
+                let Some(mut item) = bindings.row_data(row) else {
+                    continue;
+                };
+                if item.button.as_str() == "lmb" && item.action.as_str() != "left click" {
+                    item.action = "left click".into();
+                    bindings.set_row_data(row, item);
+                    restored = true;
+                }
+            }
+            if !restored {
+                ui.set_status_text("left click is already assigned".into());
+                return;
+            }
+            ui.set_dirty(true);
+            refresh_lmb_break_warning(&ui);
+            ui.set_status_text("left click restored — saving…".into());
+            ui.invoke_request_save();
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let commands = commands.clone();
+        ui.on_decide_pending_endpoint(move |candidate| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if ui.get_busy() {
+                return;
+            }
+            ui.set_pending_ask_kind(0);
+            ui.set_busy(true);
+            ui.set_status_text("attaching the mouse…".into());
+            queue_command(
+                &ui,
+                &commands,
+                Command::DecidePendingEndpoint {
+                    endpoint: 0,
+                    candidate,
+                },
+            );
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_dismiss_no_click_banner(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.set_warn_no_left_click(false);
+            ui.set_lmb_break_warning(0);
+            ui.set_status_text("left-click warnings off — re-enable in settings".into());
+            persist_gui_preferences(&ui);
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_set_warn_no_left_click(move |enabled| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.set_warn_no_left_click(enabled);
+            refresh_lmb_break_warning(&ui);
+            persist_gui_preferences(&ui);
+        });
+    }
+    {
+        let weak = ui.as_weak();
         let commands = commands.clone();
         ui.on_request_reset(move || {
             let Some(ui) = weak.upgrade() else {
@@ -1497,6 +1578,7 @@ fn current_gui_preferences(ui: &AppWindow) -> app_settings::GuiPreferences {
         baseline_choice_wired: ui.get_baseline_choice_wired(),
         baseline_choice_receiver: ui.get_baseline_choice_receiver(),
         allow_explicit_defaults: ui.get_allow_explicit_defaults(),
+        warn_no_left_click: ui.get_warn_no_left_click(),
     }
 }
 

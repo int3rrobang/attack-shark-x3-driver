@@ -238,6 +238,136 @@ pub struct DiscoveryView {
     /// and never aggregated.
     pub connections: Vec<ResolvedConnection>,
 }
+/// One saved logical mouse offered when an unknown endpoint cannot be
+/// attached silently.
+///
+/// The GUI renders one row per candidate; the disambiguation decision is
+/// persisted as the endpoint→mouse mapping so a later reconnect of the same
+/// endpoint resolves silently.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    /// The saved logical mouse this endpoint might belong to.
+    pub identity: DeviceId,
+    /// Display name of the saved mouse, when one is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Last-seen transport of the saved mouse, when the durable state
+    /// records an endpoint for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_transport: Option<TransportKind>,
+    /// Last-seen wall-clock time of the saved mouse, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_unix_seconds: Option<i64>,
+    /// True when the durable state carries any stored configuration
+    /// evidence for this mouse (desired or observed values).
+    pub has_stored_state: bool,
+}
+
+/// Pure resolution of one connection, from the agreed flowchart.
+///
+/// `candidates` carries the saved mice in stable id order, so `saved_count`
+/// is `candidates.len()`; `has_stored_state` describes the single saved
+/// mouse for the BLE 1-saved branch (callers pass
+/// `candidates[0].has_stored_state` there) and is ignored otherwise.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Resolution {
+    /// Attach silently: known fingerprint (existing reconnect behavior), 1
+    /// saved USB mouse, or 1 saved BLE mouse with stored state. The GUI
+    /// prefers stored settings where present.
+    SilentAttach {
+        /// The saved mouse to attach to.
+        attach_to: DeviceId,
+        /// True when the saved mouse carries stored state, so the quiet
+        /// status line says `kept your saved settings`; false says `took
+        /// the mouse's settings`.
+        keep_stored_settings: bool,
+    },
+    /// Ask whether the BLE endpoint is a new mouse or the single saved one
+    /// (which carries no stored state, so there is no default).
+    AskNewOrMine { candidate: Candidate },
+    /// Ask which saved mouse the endpoint belongs to (USB 2+ saved, BLE 2+
+    /// saved with per-candidate last-seen transport, or any simultaneous
+    /// unknowns, which never auto-attach).
+    AskWhich(Vec<Candidate>),
+    /// Set up as the first mouse (no saved mice at all).
+    SetupFirst,
+}
+
+/// Resolves one connection to its [`Resolution`].
+///
+/// Pure: no I/O. Callers pass the saved mice of this installation as
+/// `candidates` in stable id order.
+///
+/// Decision tree (from the agreed flowchart):
+/// - Known fingerprint → [`Resolution::SilentAttach`] (existing silent
+///   reconnect; `attach_to` is `candidates[0]`, `keep_stored_settings`
+///   mirrors `has_stored_state`).
+/// - 2+ simultaneous unknowns → ask per endpoint, never auto-attach:
+///   [`Resolution::AskNewOrMine`] for a single-candidate BLE endpoint
+///   without stored state, [`Resolution::AskWhich`] otherwise.
+/// - USB/2.4G, 0 saved → [`Resolution::SetupFirst`].
+/// - USB/2.4G, 1 saved → [`Resolution::SilentAttach`], preferring stored
+///   settings (`keep_stored_settings` mirrors that mouse's stored state).
+/// - USB/2.4G, 2+ saved → [`Resolution::AskWhich`].
+/// - BLE, 0 saved → [`Resolution::SetupFirst`].
+/// - BLE, 1 saved with stored state → [`Resolution::SilentAttach`]
+///   (stored-only auto-pair).
+/// - BLE, 1 saved without stored state → [`Resolution::AskNewOrMine`]
+///   (no default).
+/// - BLE, 2+ saved → [`Resolution::AskWhich`].
+#[must_use]
+pub fn resolve_endpoint(
+    fingerprint_known: bool,
+    simultaneous_count: usize,
+    transport: TransportKind,
+    candidates: &[Candidate],
+    has_stored_state: bool,
+) -> Resolution {
+    if fingerprint_known {
+        return match candidates {
+            [only, ..] => Resolution::SilentAttach {
+                attach_to: only.identity.clone(),
+                keep_stored_settings: has_stored_state,
+            },
+            [] => Resolution::SetupFirst,
+        };
+    }
+    if simultaneous_count >= 2 {
+        return match (transport, candidates) {
+            (TransportKind::Ble, [only]) if !has_stored_state && !only.has_stored_state => {
+                Resolution::AskNewOrMine {
+                    candidate: only.clone(),
+                }
+            }
+            (_, []) => Resolution::SetupFirst,
+            _ => Resolution::AskWhich(candidates.to_vec()),
+        };
+    }
+    match transport {
+        TransportKind::Wired | TransportKind::Receiver => match candidates {
+            [] => Resolution::SetupFirst,
+            [only] => Resolution::SilentAttach {
+                attach_to: only.identity.clone(),
+                keep_stored_settings: has_stored_state || only.has_stored_state,
+            },
+            _ => Resolution::AskWhich(candidates.to_vec()),
+        },
+        TransportKind::Ble => match candidates {
+            [] => Resolution::SetupFirst,
+            [only] if has_stored_state || only.has_stored_state => Resolution::SilentAttach {
+                attach_to: only.identity.clone(),
+                keep_stored_settings: true,
+            },
+            [only] => Resolution::AskNewOrMine {
+                candidate: only.clone(),
+            },
+            _ => Resolution::AskWhich(candidates.to_vec()),
+        },
+    }
+}
+
 /// A supported USB device appeared or disappeared from the operating
 /// system's hotplug event stream.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -639,6 +769,124 @@ mod tests {
         assert!(json.contains("42"), "skipped count must appear: {json}");
         let decoded: DeviceEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn resolve_endpoint_covers_the_full_matrix() {
+        use super::{Candidate, Resolution, resolve_endpoint};
+        use crate::device::DeviceId;
+        fn candidate(id: &str, stored: bool, transport: Option<TransportKind>) -> Candidate {
+            Candidate {
+                identity: DeviceId::new(id).unwrap(),
+                display_name: None,
+                last_transport: transport,
+                last_seen_unix_seconds: None,
+                has_stored_state: stored,
+            }
+        }
+        let usb1 = TransportKind::Wired;
+        let usb2 = TransportKind::Receiver;
+        let ble = TransportKind::Ble;
+        // Known fingerprint → silent reconnect regardless of transport.
+        for transport in [usb1, usb2, ble] {
+            let saved = vec![candidate("mouse-1", true, None)];
+            assert_eq!(
+                resolve_endpoint(true, 1, transport, &saved, true),
+                Resolution::SilentAttach {
+                    attach_to: DeviceId::new("mouse-1").unwrap(),
+                    keep_stored_settings: true,
+                },
+                "known fingerprint must reconnect silently on {transport:?}"
+            );
+        }
+        // USB × {0, 1, 2+}.
+        assert_eq!(
+            resolve_endpoint(false, 1, usb1, &[], false),
+            Resolution::SetupFirst
+        );
+        assert_eq!(
+            resolve_endpoint(false, 1, usb2, &[], false),
+            Resolution::SetupFirst
+        );
+        let one_stored = vec![candidate("mouse-1", true, None)];
+        assert_eq!(
+            resolve_endpoint(false, 1, usb1, &one_stored, true),
+            Resolution::SilentAttach {
+                attach_to: DeviceId::new("mouse-1").unwrap(),
+                keep_stored_settings: true,
+            }
+        );
+        let one_bare = vec![candidate("mouse-1", false, None)];
+        assert_eq!(
+            resolve_endpoint(false, 1, usb1, &one_bare, false),
+            Resolution::SilentAttach {
+                attach_to: DeviceId::new("mouse-1").unwrap(),
+                keep_stored_settings: false,
+            },
+            "USB auto-attach takes the mouse's settings when none are stored"
+        );
+        let two = vec![
+            candidate("mouse-1", true, Some(usb1)),
+            candidate("mouse-2", false, Some(usb2)),
+        ];
+        assert_eq!(
+            resolve_endpoint(false, 1, usb1, &two, false),
+            Resolution::AskWhich(two.clone())
+        );
+        // BLE × {0, 1+state, 1-state, 2+}.
+        assert_eq!(
+            resolve_endpoint(false, 1, ble, &[], false),
+            Resolution::SetupFirst
+        );
+        assert_eq!(
+            resolve_endpoint(false, 1, ble, &one_stored, true),
+            Resolution::SilentAttach {
+                attach_to: DeviceId::new("mouse-1").unwrap(),
+                keep_stored_settings: true,
+            }
+        );
+        assert_eq!(
+            resolve_endpoint(false, 1, ble, &one_bare, false),
+            Resolution::AskNewOrMine {
+                candidate: one_bare[0].clone(),
+            }
+        );
+        let ble_two = vec![
+            candidate("mouse-1", true, Some(ble)),
+            candidate("mouse-2", false, Some(usb1)),
+        ];
+        assert_eq!(
+            resolve_endpoint(false, 1, ble, &ble_two, false),
+            Resolution::AskWhich(ble_two.clone()),
+            "BLE candidates carry last-seen transport per mouse"
+        );
+        // Simultaneous unknowns never auto-attach.
+        assert_eq!(
+            resolve_endpoint(false, 2, usb1, &one_stored, true),
+            Resolution::AskWhich(one_stored.clone())
+        );
+        assert_eq!(
+            resolve_endpoint(false, 3, usb1, &two, false),
+            Resolution::AskWhich(two.clone())
+        );
+        assert_eq!(
+            resolve_endpoint(false, 2, ble, &one_bare, false),
+            Resolution::AskNewOrMine {
+                candidate: one_bare[0].clone(),
+            }
+        );
+        assert_eq!(
+            resolve_endpoint(false, 2, ble, &one_stored, true),
+            Resolution::AskWhich(one_stored.clone())
+        );
+        assert_eq!(
+            resolve_endpoint(false, 2, ble, &ble_two, false),
+            Resolution::AskWhich(ble_two.clone())
+        );
+        assert_eq!(
+            resolve_endpoint(false, 2, usb1, &[], false),
+            Resolution::SetupFirst
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ pub mod store;
 
 pub use model::{
     ApplicationVerification, CapturedProfileImage, DesiredSource, DesiredState, DeviceState,
-    IdentityMode, IdentitySetupJournal, IdentitySetupPhase, IdentitySetupStage,
+    EndpointMapping, IdentityMode, IdentitySetupJournal, IdentitySetupPhase, IdentitySetupStage,
     IdentitySetupSubject, IdentityStampProgress, MAX_PROFILE_NAME_CHARS, ObservationSource,
     ObservedState, PersistenceVerification, ProfileState, ResourceState, SCHEMA_VERSION, StateFile,
     Timestamp, Verification,

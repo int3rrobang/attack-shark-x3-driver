@@ -89,6 +89,10 @@ pub struct GuiPreferences {
     /// Allow explicit defaults (captured stock) when no saved/observed baseline exists.
     #[serde(default)]
     pub allow_explicit_defaults: bool,
+    /// Warn when a save would leave no button left-clicking (edge-trigger
+    /// popup + banner). Deliberate clickless setups can switch this off.
+    #[serde(default = "default_true")]
+    pub warn_no_left_click: bool,
 }
 
 impl Default for GuiPreferences {
@@ -106,6 +110,7 @@ impl Default for GuiPreferences {
             baseline_choice_wired: 0,
             baseline_choice_receiver: 1,
             allow_explicit_defaults: false,
+            warn_no_left_click: true,
         }
     }
 }

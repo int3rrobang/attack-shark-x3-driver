@@ -304,10 +304,6 @@ pub fn unassociated_detail(endpoint: &DeviceEndpoint, resolution: &IdentityResol
     }
 }
 
-pub fn on_off(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
-}
-
 /// Pure tail rule for enabling a profile: the maximum is raised by one.
 /// Returns `None` when every slot is already enabled.
 pub fn add_tail_metadata(metadata: ProfileMetadata) -> Option<ProfileMetadata> {
@@ -563,6 +559,36 @@ pub fn validated_binding_action(_current: &str, requested: &str) -> Option<Strin
     Some(button_action_name(action.to_assignment()))
 }
 
+/// Severity of a draft that just broke left click.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LmbBreak {
+    /// LMB no longer left-clicks, but another button still does.
+    Remapped,
+    /// No button in the draft left-clicks anymore.
+    NothingClicks,
+}
+
+/// Edge-trigger for the LMB safety flow: `Some` only when the loaded LMB
+/// baseline left-clicked and the draft moved it to something else. Deliberate
+/// clickless setups (loaded baseline already weird) never trigger.
+pub fn lmb_break_warning(
+    lmb_original: &str,
+    lmb_draft: &str,
+    draft_actions: &[(&str, &str)],
+) -> Option<LmbBreak> {
+    if lmb_original != "left click" || lmb_draft == "left click" {
+        return None;
+    }
+    if draft_actions
+        .iter()
+        .any(|(_, action)| *action == "left click")
+    {
+        Some(LmbBreak::Remapped)
+    } else {
+        Some(LmbBreak::NothingClicks)
+    }
+}
+
 pub fn configured_product_label(choice: i32, custom: &str) -> String {
     match choice.clamp(0, 2) {
         0 => "Attack Shark X3".to_owned(),
@@ -659,45 +685,12 @@ pub fn page_status(page: i32) -> &'static str {
     }
 }
 
-pub fn verification_summary(verification: &Verification) -> String {
-    use attack_shark_x3_manager::{ApplicationVerification, PersistenceVerification};
-    match (verification.application, verification.persistence.clone()) {
-        (ApplicationVerification::ReadbackVerified, PersistenceVerification::Unknown) => {
-            "confirmed by the mouse".to_owned()
-        }
-        (
-            ApplicationVerification::ReadbackVerified,
-            PersistenceVerification::ProfileReloadVerified { .. },
-        ) => "confirmed by the mouse and survives switching profiles".to_owned(),
-        (
-            ApplicationVerification::ReadbackVerified,
-            PersistenceVerification::PowerCycleVerified { .. },
-        ) => "confirmed by the mouse and survives a full power-off".to_owned(),
-        (ApplicationVerification::Acknowledged, PersistenceVerification::Unknown) => {
-            "applied (device acknowledged)".to_owned()
-        }
-        (
-            ApplicationVerification::Acknowledged,
-            PersistenceVerification::ProfileReloadVerified { .. },
-        ) => "applied (device acknowledged) and survives switching profiles".to_owned(),
-        (
-            ApplicationVerification::Acknowledged,
-            PersistenceVerification::PowerCycleVerified { .. },
-        ) => "applied (device acknowledged) and survives a full power-off".to_owned(),
-        (ApplicationVerification::Mismatch, _) => {
-            "the mouse couldn't confirm the change".to_owned()
-        }
-        (ApplicationVerification::NotSent, _) => "not yet confirmed".to_owned(),
-    }
-}
-
-pub fn workflow_summary(workflow: &str, profile: ProfileId, verification: &Verification) -> String {
-    format!(
-        "{} for profile {} — {}",
-        workflow,
-        profile.get(),
-        verification_summary(verification)
-    )
+pub fn workflow_summary(
+    _workflow: &str,
+    _profile: ProfileId,
+    _verification: &Verification,
+) -> String {
+    "Saved.".to_owned()
 }
 
 pub fn format_refresh_summary(outcome: &FullProfileRefreshOutcome) -> String {
@@ -729,7 +722,6 @@ pub fn format_refresh_summary(outcome: &FullProfileRefreshOutcome) -> String {
     } else {
         "the saved profile list matches the mouse".to_owned()
     });
-    parts.push("not yet confirmed after restart".to_owned());
     parts.join("; ")
 }
 
@@ -743,39 +735,14 @@ pub fn profile_resource_name(resource: &ProfileResourceKind) -> &'static str {
 }
 
 /// Builds the user-facing status line for a composite `ProfileUpdate` outcome.
-/// Consumes `ProfileUpdateOutcome` exactly as the manager's single `apply_profile_update`
-/// call produces it: each present field contributes its verification summary,
-/// and the whole string keeps the existing result-first phrasing.
-pub fn profile_update_status(outcome: &ProfileUpdateOutcome) -> String {
-    let mut confirmations = Vec::new();
-    if let Some(write) = &outcome.dpi {
-        confirmations.push(verification_summary(&write.verification));
-    }
-    if let Some(write) = &outcome.preferences {
-        confirmations.push(verification_summary(&write.verification));
-    }
-    if let Some(write) = &outcome.buttons {
-        confirmations.push(verification_summary(&write.verification));
-    }
-    if let Some(write) = &outcome.polling_rate {
-        confirmations.push(verification_summary(&write.verification));
-    }
-    if confirmations.is_empty() {
-        return "nothing was changed; the mouse is already up to date".to_owned();
-    }
-    format!(
-        "applied: {} · not yet confirmed after restart; run a check in Advanced",
-        confirmations.join("; ")
-    )
+pub fn profile_update_status(_outcome: &ProfileUpdateOutcome) -> String {
+    "Saved.".to_owned()
 }
 
 /// Status-line warning shown when an event-driven snapshot arrives while a
-/// draft is open: the draft is preserved, but the external change may make
-/// the next Save fail until the user discards or reloads.
+/// draft is open.
 pub fn event_snapshot_draft_warning(status: &str) -> String {
-    format!(
-        "{status} — external state changed while a draft was open; the draft was preserved, but Save may be rejected until you discard / reload"
-    )
+    format!("Save failed: {status}")
 }
 
 /// True when an incoming snapshot must preserve the draft: any event-driven
@@ -1102,6 +1069,42 @@ mod tests {
     }
 
     #[test]
+    fn lmb_break_fires_only_on_transition_away_from_left_click() {
+        // Stock LMB remapped, click survives elsewhere.
+        assert_eq!(
+            lmb_break_warning(
+                "left click",
+                "copy",
+                &[("lmb", "copy"), ("rmb", "left click")]
+            ),
+            Some(LmbBreak::Remapped)
+        );
+        // Stock LMB disabled, nothing clicks.
+        assert_eq!(
+            lmb_break_warning("left click", "disabled", &[("lmb", "disabled")]),
+            Some(LmbBreak::NothingClicks)
+        );
+        // Untouched LMB never fires, even with no click elsewhere.
+        assert_eq!(
+            lmb_break_warning("left click", "left click", &[("lmb", "left click")]),
+            None
+        );
+        // Already-weird baseline stays silent: deliberate setups never nag.
+        assert_eq!(lmb_break_warning("copy", "copy", &[("lmb", "copy")]), None);
+        assert_eq!(
+            lmb_break_warning("copy", "disabled", &[("lmb", "disabled")]),
+            None
+        );
+        // Fixing LMB back to left click is not a break.
+        assert_eq!(
+            lmb_break_warning("disabled", "left click", &[("lmb", "left click")]),
+            None
+        );
+        // Empty model: nothing to compare, stay silent.
+        assert_eq!(lmb_break_warning("left click", "left click", &[]), None);
+    }
+
+    #[test]
     fn configured_product_label_never_uses_live_device_identity() {
         assert_eq!(
             configured_product_label(0, "USB Gaming Mouse"),
@@ -1151,7 +1154,6 @@ mod tests {
         assert!(
             summary.contains("profile 2 differs from the saved settings: polling rate, buttons")
         );
-        assert!(summary.contains("not yet confirmed after restart"));
         assert!(!contains_blocklist_token(&summary));
     }
 
@@ -1264,67 +1266,18 @@ mod tests {
             polling_rate: None,
         };
         let status = profile_update_status(&outcome);
-        // Result-first phrasing retained from the sequential version.
-        assert!(status.starts_with("applied:"));
-        assert!(status.contains("not yet confirmed after restart"));
-        assert!(status.contains("applied (device acknowledged)"));
-        assert!(status.contains("confirmed by the mouse"));
+        assert_eq!(status, "Saved.");
         assert!(!contains_blocklist_token(&status));
     }
 
     #[test]
     fn confidence_summaries_avoid_blocklist_vocabulary() {
-        use attack_shark_x3_manager::{
-            ApplicationVerification, PersistenceVerification, Verification,
-        };
-        let timestamp = attack_shark_x3_manager::Timestamp { unix_seconds: 1 };
-        let cases = [
-            (
-                Verification {
-                    application: ApplicationVerification::ReadbackVerified,
-                    persistence: PersistenceVerification::Unknown,
-                },
-                "readback verified / unknown",
-            ),
-            (
-                Verification {
-                    application: ApplicationVerification::Acknowledged,
-                    persistence: PersistenceVerification::PowerCycleVerified {
-                        verified_at: timestamp,
-                    },
-                },
-                "acknowledged / power-cycle",
-            ),
-            (
-                Verification {
-                    application: ApplicationVerification::Mismatch,
-                    persistence: PersistenceVerification::ProfileReloadVerified {
-                        verified_at: timestamp,
-                    },
-                },
-                "mismatch / reload",
-            ),
-            (
-                Verification {
-                    application: ApplicationVerification::NotSent,
-                    persistence: PersistenceVerification::Unknown,
-                },
-                "not sent / unknown",
-            ),
-        ];
-        for (verification, label) in cases {
-            let summary = verification_summary(&verification);
-            assert!(
-                !contains_blocklist_token(&summary),
-                "{label}: verification_summary leaked: {summary:?}"
-            );
-            let workflow =
-                workflow_summary("profile reload", ProfileId::new(1).unwrap(), &verification);
-            assert!(
-                !contains_blocklist_token(&workflow),
-                "{label}: workflow_summary leaked: {workflow:?}"
-            );
-        }
+        use attack_shark_x3_manager::Verification;
+        let verification = Verification::default();
+        let workflow =
+            workflow_summary("profile reload", ProfileId::new(1).unwrap(), &verification);
+        assert_eq!(workflow, "Saved.");
+        assert!(!contains_blocklist_token(&workflow));
     }
 
     #[test]
