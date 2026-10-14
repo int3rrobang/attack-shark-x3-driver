@@ -21,7 +21,7 @@ thiserror = "2"
 fs2 = "0.4"
 getrandom = { version = "0.3", features = ["std"] }
 futures-lite = { version = "2", optional = true }
-nusb = { version = "0.2.7", optional = true }
+nusb = { version = "0.2.7", optional = true, features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "sync", "time"], optional = true }
 
 [dev-dependencies]
