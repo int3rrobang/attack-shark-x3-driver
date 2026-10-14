@@ -11,22 +11,22 @@ use crate::presentation::{
     CeremonyPrompt, MAX_DPI_STAGES, SAFE_BUTTON_SLOTS, add_tail_metadata, button_action_name,
     ceremony_detail, ceremony_instruction, ceremony_prompt_label, ceremony_title, format_byte,
     format_error_string, format_refresh_summary, hide_tail_metadata, is_ble_identity,
-    lift_off_choice_value, on_off, product_id_label_for_identity, profile_update_status,
+    lift_off_choice_value, product_id_label_for_identity, profile_update_status,
     reported_profile_switch, round_dpi_step, safe_button_action, transport_label,
     transport_label_for_identity, unassociated_detail, unassociated_name, workflow_summary,
 };
 use crate::projection::apply_event;
 use attack_shark_x3::{DebounceMs, DeepSleepMinutes, SleepTimer};
 use attack_shark_x3_manager::{
-    BaselineSource, ButtonSlotDelta, ConfigurationExport, DesiredSource, DeviceEndpoint,
-    DeviceEvent, DeviceId, DeviceIdentity, DeviceLocator, DeviceManager, DeviceStatus,
-    DeviceTopologyEvent, DiscoveredDevice, DiscoveredEndpoint, DpiDelta, DpiValue,
-    EventSubscriptions, IdentityCeremonyAction, IdentityCeremonyKind, IdentityCeremonyProgress,
-    IdentityCeremonyStage, IdentityMode, IdentityResolution, LiftOffDistance, ManagerError,
-    PersistenceVerification, PollingRate, PreferencesDelta, ProfileId, ProfileMetadata,
-    ProfileUpdate, ProfileUpdateBaseline, ProfileUpdateOutcome, ResolvedConnection, ResourceState,
-    SafeButtonSlot, SensorOptionsDelta, StageIndex, StateFile, StateStore, TransportKind,
-    TransportSelection, UnassociatedReason, UpdatePolicy, VerificationMethod,
+    BaselineSource, ButtonSlotDelta, Candidate, ConfigurationExport, DeviceEndpoint, DeviceEvent,
+    DeviceId, DeviceIdentity, DeviceLocator, DeviceManager, DeviceStatus, DeviceTopologyEvent,
+    DiscoveredDevice, DiscoveredEndpoint, DpiDelta, DpiValue, EventSubscriptions,
+    IdentityCeremonyAction, IdentityCeremonyKind, IdentityCeremonyProgress, IdentityCeremonyStage,
+    IdentityMode, IdentityResolution, LiftOffDistance, ManagerError, PollingRate, PreferencesDelta,
+    ProfileId, ProfileMetadata, ProfileUpdate, ProfileUpdateBaseline, ProfileUpdateOutcome,
+    Resolution, ResolvedConnection, ResourceState, SafeButtonSlot, SensorOptionsDelta, StageIndex,
+    StateFile, StateStore, TransportKind, TransportSelection, UnassociatedReason, UpdatePolicy,
+    VerificationMethod, resolve_endpoint,
 };
 
 type EndpointTopology = BTreeSet<(TransportKind, DeviceLocator, bool)>;
@@ -68,7 +68,205 @@ pub enum Command {
         endpoint: Option<DeviceEndpoint>,
         target: Option<DeviceId>,
     },
+    /// Records the user's disambiguation answer for one pending endpoint:
+    /// attach `endpoint` to `device` (`None` sets it up as a new mouse via
+    /// the existing ceremony machinery). Persists the endpoint→mouse mapping.
+    DecideEndpoint {
+        endpoint: DeviceEndpoint,
+        device: Option<DeviceId>,
+    },
+    /// Index-based answer to the last emitted `AskPerEndpoint` list:
+    /// `candidate` selects into that endpoint's candidate list, `-1` sets up
+    /// as a new mouse. Stale indices (list changed since emit) fail safely
+    /// with a refresh prompt.
+    DecidePendingEndpoint {
+        endpoint: usize,
+        candidate: i32,
+    },
     Shutdown,
+}
+
+/// Which mouse an unknown endpoint was silently attached to, for the quiet
+/// status line.
+pub struct AutoAttachNotice {
+    pub keep_stored: bool,
+}
+
+/// Builds saved-mouse candidates for [`resolve_endpoint`] in stable id
+/// order, from durable state plus durable evidence.
+fn resolution_candidates(manager: &DeviceManager) -> Vec<Candidate> {
+    let state = manager.store().load().unwrap_or_default();
+    let mut ids: Vec<DeviceId> = state.devices.keys().cloned().collect();
+    ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    ids.into_iter()
+        .map(|id| {
+            let device = &state.devices[&id];
+            Candidate {
+                identity: id.clone(),
+                display_name: device.identity.display_name.clone(),
+                last_transport: device.identity.selected_transport(),
+                last_seen_unix_seconds: state
+                    .endpoint_mapping
+                    .last_seen_unix_seconds
+                    .values()
+                    .copied()
+                    .max(),
+                has_stored_state: device_has_evidence(manager, &id),
+            }
+        })
+        .collect()
+}
+
+/// True when the durable state carries any stored configuration evidence
+/// for `device` (desired or observed values anywhere).
+fn device_has_evidence(manager: &DeviceManager, device: &DeviceId) -> bool {
+    manager
+        .store()
+        .load()
+        .map(|state| {
+            state.devices.get(device).is_some_and(|device_state| {
+                device_state.profile_metadata.desired.is_some()
+                    || device_state.profile_metadata.observed.is_some()
+                    || device_state.profiles.values().any(|profile| {
+                        profile.dpi.desired.is_some()
+                            || profile.dpi.observed.is_some()
+                            || profile.preferences.desired.is_some()
+                            || profile.preferences.observed.is_some()
+                            || profile.buttons.desired.is_some()
+                            || profile.buttons.observed.is_some()
+                            || profile.polling_rate.desired.is_some()
+                            || profile.polling_rate.observed.is_some()
+                    })
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Counts this scan's simultaneous unknowns: connected, unassociated USB/BLE
+/// endpoints with an `Absent` or `Unknown` reason.
+fn simultaneous_unknowns(connections: &[ResolvedConnection]) -> usize {
+    connections
+        .iter()
+        .filter(|row| {
+            row.connected
+                && matches!(
+                    row.resolution,
+                    IdentityResolution::Unassociated {
+                        reason: UnassociatedReason::Absent | UnassociatedReason::Unknown,
+                        ..
+                    }
+                )
+        })
+        .count()
+}
+
+/// Resolves every unknown connection of one scan through
+/// [`resolve_endpoint`], partitioning into silent attaches (persisted +
+/// quiet status line) and per-endpoint asks (emitted, never auto-attached).
+/// Setup-first endpoints are left to the existing ceremony flow.
+fn resolve_scan(
+    manager: &DeviceManager,
+    connections: &[ResolvedConnection],
+) -> (
+    Vec<AutoAttachNotice>,
+    Vec<(DeviceEndpoint, PendingEndpoint)>,
+) {
+    let candidates = resolution_candidates(manager);
+    let stored = candidates
+        .iter()
+        .any(|candidate| candidate.has_stored_state);
+    let count = simultaneous_unknowns(connections);
+    let mut silent: Vec<AutoAttachNotice> = Vec::new();
+    let mut pending: Vec<(DeviceEndpoint, PendingEndpoint)> = Vec::new();
+    for row in connections {
+        if !row.connected {
+            continue;
+        }
+        if !matches!(
+            row.resolution,
+            IdentityResolution::Unassociated {
+                reason: UnassociatedReason::Absent | UnassociatedReason::Unknown,
+                ..
+            }
+        ) {
+            continue;
+        }
+        // A remembered endpoint→mouse mapping is the known fingerprint.
+        let fingerprint_known = manager.is_endpoint_remembered(&row.endpoint);
+        // `stored` here is the installation-wide OR; the single-candidate
+        // branches refine it per mouse inside `resolve_endpoint`.
+        match resolve_endpoint(
+            fingerprint_known,
+            count,
+            row.endpoint.transport,
+            &candidates,
+            stored,
+        ) {
+            Resolution::SilentAttach {
+                attach_to,
+                keep_stored_settings,
+            } => {
+                if manager
+                    .remember_resolution(&row.endpoint, &attach_to)
+                    .is_ok()
+                {
+                    silent.push(AutoAttachNotice {
+                        keep_stored: keep_stored_settings,
+                    });
+                }
+            }
+            Resolution::AskWhich(list) => pending.push((
+                row.endpoint.clone(),
+                PendingEndpoint {
+                    endpoint_label: pending_endpoint_label(&row.endpoint),
+                    transport_label: transport_label(row.endpoint.transport).to_owned(),
+                    candidates: list.iter().map(pending_candidate).collect(),
+                    kind: PendingKind::Which,
+                },
+            )),
+            Resolution::AskNewOrMine { candidate } => pending.push((
+                row.endpoint.clone(),
+                PendingEndpoint {
+                    endpoint_label: pending_endpoint_label(&row.endpoint),
+                    transport_label: transport_label(row.endpoint.transport).to_owned(),
+                    candidates: vec![pending_candidate(&candidate)],
+                    kind: PendingKind::NewOrMine,
+                },
+            )),
+            Resolution::SetupFirst => {}
+        }
+    }
+    (silent, pending)
+}
+
+/// Laconic endpoint label for a pending row; never an OS HID path.
+fn pending_endpoint_label(endpoint: &DeviceEndpoint) -> String {
+    match endpoint.transport {
+        TransportKind::Ble => endpoint
+            .display_name
+            .clone()
+            .unwrap_or_else(|| "bluetooth mouse".to_owned()),
+        TransportKind::Wired | TransportKind::Receiver => {
+            let model = endpoint
+                .product_id
+                .map(|pid| format!("{pid:04x}"))
+                .unwrap_or_else(|| "mouse".to_owned());
+            format!("usb mouse {model}")
+        }
+    }
+}
+
+fn pending_candidate(candidate: &Candidate) -> PendingCandidate {
+    PendingCandidate {
+        identity: candidate.identity.to_string(),
+        display_name: candidate.display_name.clone(),
+        last_transport: candidate.last_transport.map(transport_label_owned),
+        last_seen_unix_seconds: candidate.last_seen_unix_seconds,
+    }
+}
+
+fn transport_label_owned(transport: TransportKind) -> String {
+    transport_label(transport).to_owned()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -126,7 +324,6 @@ pub struct LoadedDevice {
     /// True when stored desired/observed preferences exist for the profile.
     pub has_stored_preferences: bool,
     pub profile_names: BTreeMap<ProfileId, String>,
-    pub verification_summary: String,
 }
 
 pub struct LiveProfile {
@@ -162,10 +359,7 @@ pub struct LiveSnapshot {
     pub raw_debounce: String,
     pub preferences_ready: bool,
     pub last_enabled_profile: i32,
-    pub sensor: String,
     pub profile_summary: String,
-    pub metadata_summary: String,
-    pub verification_summary: String,
     pub stages: Vec<(u16, bool)>,
     pub bindings: Vec<(String, String, String)>,
     pub profiles: Vec<LiveProfile>,
@@ -227,8 +421,47 @@ pub struct PreferenceFields {
     pub raw_debounce: String,
 }
 
+/// One unknown endpoint asking per-endpoint disambiguation, with the
+/// candidate mice the user picks from. Laconic by contract: the Slint
+/// surface renders rows from these fields and emits the choice back as a
+/// `Command`; no popups beyond the existing ceremony surface.
+#[derive(Clone, Debug)]
+pub struct PendingEndpoint {
+    pub endpoint_label: String,
+    pub transport_label: String,
+    pub candidates: Vec<PendingCandidate>,
+    pub kind: PendingKind,
+}
+
+/// One saved mouse backing a [`PendingEndpoint`] row.
+#[derive(Clone, Debug)]
+pub struct PendingCandidate {
+    pub identity: String,
+    pub display_name: Option<String>,
+    pub last_transport: Option<String>,
+    pub last_seen_unix_seconds: Option<i64>,
+}
+
+/// Which question a [`PendingEndpoint`] asks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PendingKind {
+    /// Several saved mice could own this endpoint; pick one or set up new.
+    Which,
+    /// One saved mouse exists with no stored state; new mouse or mine.
+    NewOrMine,
+}
+
 pub enum UiEvent {
     Busy(String),
+    /// Unknown endpoint(s) need per-endpoint disambiguation; never
+    /// auto-attached. Carries the pending endpoint list for the UI.
+    AskPerEndpoint(Vec<PendingEndpoint>),
+    /// Silent auto-attach happened; quiet status line only. `keep_stored`
+    /// selects the copy: `kept your saved settings` vs `took the mouse's
+    /// settings`.
+    AutoAttached {
+        keep_stored: bool,
+    },
     Snapshot(Box<LiveSnapshot>),
     /// An event-driven snapshot pushed by the device (battery, active DPI
     /// stage, profile change) while the UI is otherwise idle. Unlike explicit
@@ -303,6 +536,7 @@ pub fn worker_main(
         // restore/associate target, and presented-endpoint hint.
         let mut mode: IdentityMode = IdentityMode::Legacy;
         let mut unassociated: Vec<UnassociatedEntry> = Vec::new();
+        let mut pending_endpoints: Vec<(DeviceEndpoint, PendingEndpoint)> = Vec::new();
         let mut ceremony_kind: Option<IdentityCeremonyKind> = None;
         let mut ceremony_target: Option<DeviceId> = None;
         let mut ceremony_hint: Option<DeviceEndpoint> = None;
@@ -383,6 +617,30 @@ pub fn worker_main(
                                             selected = new_manager.selected_device().ok().flatten();
                                             emit_devices(&weak, &discovered, selected.as_ref());
                                             emit_unassociated(&weak, &unassociated);
+                                            let (silent, pending_pairs) =
+                                                resolve_scan(&new_manager, &view.connections);
+                                            let pending: Vec<PendingEndpoint> = pending_pairs
+                                                .iter()
+                                                .map(|(_, row)| row.clone())
+                                                .collect();
+                                            pending_endpoints = pending_pairs;
+                                            for notice in &silent {
+                                                let line = if notice.keep_stored {
+                                                    "mouse attached; kept your saved settings"
+                                                } else {
+                                                    "mouse attached; took the mouse's settings"
+                                                };
+                                                emit(
+                                                    &weak,
+                                                    UiEvent::AutoAttached {
+                                                        keep_stored: notice.keep_stored,
+                                                    },
+                                                );
+                                                emit(&weak, UiEvent::OperationError(line.into()));
+                                            }
+                                            if !pending.is_empty() {
+                                                emit(&weak, UiEvent::AskPerEndpoint(pending));
+                                            }
                                             // Resume a durable identity ceremony left in flight.
                                             emit_current_ceremony(
                                                 &weak,
@@ -1071,6 +1329,72 @@ pub fn worker_main(
                                 }
                                 Err(error) => {
                                     emit(&weak, UiEvent::CeremonyError(format_error_string("the setup step failed", error)));
+                                }
+                            }
+                        }
+                        Command::DecidePendingEndpoint { endpoint, candidate } => {
+                            let Some((handle, row)) = pending_endpoints.get(endpoint) else {
+                                emit(&weak, UiEvent::OperationError("the mouse list changed; press Refresh and try again".into()));
+                                continue;
+                            };
+                            let handle = handle.clone();
+                            let device = if candidate < 0 {
+                                None
+                            } else {
+                                let Some(pick) = row.candidates.get(candidate as usize) else {
+                                    emit(&weak, UiEvent::OperationError("the mouse list changed; press Refresh and try again".into()));
+                                    continue;
+                                };
+                                let Ok(id) = DeviceId::new(pick.identity.clone()) else {
+                                    emit(&weak, UiEvent::OperationError("the mouse list changed; press Refresh and try again".into()));
+                                    continue;
+                                };
+                                Some(id)
+                            };
+                            pending = Some(Command::DecideEndpoint { endpoint: handle, device });
+                        }
+                        Command::DecideEndpoint { endpoint, device } => {
+                            let Some(manager_ref) = manager.as_ref() else {
+                                emit(&weak, UiEvent::Error("the app isn't ready; press Refresh to try again".into()));
+                                continue;
+                            };
+                            match device {
+                                Some(id) => {
+                                    if let Err(error) = manager_ref.remember_resolution(&endpoint, &id) {
+                                        emit(&weak, UiEvent::OperationError(format_error_string("could not attach the mouse", error)));
+                                        continue;
+                                    }
+                                    emit(
+                                        &weak,
+                                        UiEvent::AutoAttached {
+                                            keep_stored: device_has_evidence(manager_ref, &id),
+                                        },
+                                    );
+                                    pending = Some(Command::Refresh);
+                                }
+                                None => {
+                                    // Set up as new: reuse the existing
+                                    // ceremony machinery via the unassociated
+                                    // row matching this endpoint.
+                                    let subject = unassociated
+                                        .iter()
+                                        .position(|entry| entry.endpoint == endpoint);
+                                    let Some(subject) = subject else {
+                                        emit(&weak, UiEvent::OperationError("the mouse list changed; press Refresh and try again".into()));
+                                        continue;
+                                    };
+                                    let kind = if endpoint.transport == TransportKind::Ble {
+                                        IdentityCeremonyKind::BleAssociation
+                                    } else if mode.is_legacy() {
+                                        IdentityCeremonyKind::InitialEnrollment
+                                    } else {
+                                        IdentityCeremonyKind::AddMouse
+                                    };
+                                    pending = Some(Command::BeginCeremony {
+                                        kind,
+                                        target: None,
+                                        subject: Some(subject),
+                                    });
                                 }
                             }
                         }
@@ -1846,7 +2170,6 @@ async fn read_loaded(
         });
     let all_profiles_observed = has_complete_profile_observations(&state, device);
     let profile_names = manager.profile_names(device).unwrap_or_default();
-    let verification_summary = stored_evidence_summary(&state, device, target, false, false);
     Ok(LoadedDevice {
         device: device.clone(),
         identity: live.identity,
@@ -1862,7 +2185,6 @@ async fn read_loaded(
         all_profiles_observed,
         has_stored_preferences: true,
         profile_names,
-        verification_summary,
     })
 }
 
@@ -1894,15 +2216,6 @@ fn read_ble_loaded(
                 working,
             ))
         });
-    let captured_image = profile_state.is_none()
-        || profile_state.is_some_and(|profile| {
-            profile.dpi.desired.is_none()
-                && profile.dpi.observed.is_none()
-                && profile.preferences.desired.is_none()
-                && profile.preferences.observed.is_none()
-                && profile.buttons.desired.is_none()
-                && profile.buttons.observed.is_none()
-        });
     let has_stored_preferences = profile_state.is_some_and(|profile| {
         profile.preferences.desired.is_some() || profile.preferences.observed.is_some()
     });
@@ -1912,8 +2225,6 @@ fn read_ble_loaded(
     let metadata = ProfileMetadata::new(working, ProfileId::MAX_ID).expect("valid metadata");
     let all_profiles_observed = false;
     let profile_names = manager.profile_names(&identity.id).unwrap_or_default();
-    let verification_summary =
-        stored_evidence_summary(&state, &identity.id, working, true, captured_image);
     Ok(LoadedDevice {
         device: identity.id.clone(),
         identity,
@@ -1929,7 +2240,6 @@ fn read_ble_loaded(
         all_profiles_observed,
         has_stored_preferences,
         profile_names,
-        verification_summary,
     })
 }
 
@@ -1963,77 +2273,6 @@ pub fn has_complete_profile_observations(state: &StateFile, device: &DeviceId) -
                     && state.polling_rate.observed.is_some()
             })
         })
-}
-
-/// Which persistence claims a profile's stored resources carry.
-#[derive(Default)]
-struct SubmissionSummary {
-    power_cycle: bool,
-    reload: bool,
-    submitted: bool,
-    imported_only: bool,
-}
-
-/// Records the persistence claim carried by one stored resource's desired
-/// value, if any. Generic over the resource payload so it works uniformly
-/// for every resource kind without allocation.
-fn record_submission<T>(resource: &ResourceState<T>, summary: &mut SubmissionSummary) {
-    let Some(desired) = resource.desired.as_ref() else {
-        return;
-    };
-    summary.submitted = true;
-    if desired.source != DesiredSource::Imported {
-        summary.imported_only = false;
-    }
-    match desired.verification.persistence {
-        PersistenceVerification::PowerCycleVerified { .. } => summary.power_cycle = true,
-        PersistenceVerification::ProfileReloadVerified { .. } => summary.reload = true,
-        PersistenceVerification::Unknown => {}
-    }
-}
-
-/// Builds the strongest evidence summary for one profile from the durable
-/// store: power-cycle verification beats profile-reload verification, which
-/// beats a plain submission.
-fn stored_evidence_summary(
-    state: &StateFile,
-    device: &DeviceId,
-    profile: ProfileId,
-    is_ble: bool,
-    captured_image: bool,
-) -> String {
-    if captured_image {
-        return "showing the factory image; no saved settings yet (import one or allow defaults)"
-            .to_owned();
-    }
-    let Some(profile_state) = state
-        .devices
-        .get(device)
-        .and_then(|device| device.profiles.get(&profile))
-    else {
-        return if is_ble {
-            "saved settings only; nothing applied yet".to_owned()
-        } else {
-            "read from the mouse; not confirmed after restart".to_owned()
-        };
-    };
-    let mut summary = SubmissionSummary::default();
-    record_submission(&profile_state.dpi, &mut summary);
-    record_submission(&profile_state.preferences, &mut summary);
-    record_submission(&profile_state.buttons, &mut summary);
-    if summary.power_cycle {
-        "confirmed to survive a full power-off".to_owned()
-    } else if summary.reload {
-        "confirmed to survive switching profiles".to_owned()
-    } else if summary.submitted && summary.imported_only {
-        "imported settings saved; nothing sent to the mouse".to_owned()
-    } else if summary.submitted {
-        "applied".to_owned()
-    } else if is_ble {
-        "saved settings only; nothing applied yet".to_owned()
-    } else {
-        "read from the mouse; not confirmed after restart".to_owned()
-    }
 }
 
 async fn select_profile(
@@ -2350,19 +2589,6 @@ pub fn make_live_snapshot(loaded: &LoadedDevice, status: &str) -> LiveSnapshot {
             }
         })
         .collect();
-    let metadata_summary = if is_ble {
-        format!(
-            "current {} / maximum {} · not read from the mouse (ble)",
-            loaded.metadata.current(),
-            loaded.metadata.maximum()
-        )
-    } else {
-        format!(
-            "current {} / maximum {}",
-            loaded.metadata.current(),
-            loaded.metadata.maximum()
-        )
-    };
     let profile_summary = if is_ble {
         format!(
             "profile {} · {} dpi · saved settings (not read from the mouse)",
@@ -2411,20 +2637,7 @@ pub fn make_live_snapshot(loaded: &LoadedDevice, status: &str) -> LiveSnapshot {
         active_stage: loaded.profile.dpi.active_stage.get(),
         stage_count: loaded.profile.dpi.stages.len(),
         polling_rate_hz: loaded.polling_rate.hz(),
-        sensor: format!(
-            "lift-off: {}; ripple: {}; angle snap: {}; motion sync: {}",
-            if sensor.lift_off_distance == LiftOffDistance::OneMillimeter {
-                "1 mm"
-            } else {
-                "2 mm"
-            },
-            on_off(sensor.ripple_control),
-            on_off(sensor.angle_snap),
-            on_off(sensor.motion_sync)
-        ),
         profile_summary,
-        metadata_summary,
-        verification_summary: loaded.verification_summary.clone(),
         stages,
         bindings,
         profiles,
@@ -2492,7 +2705,6 @@ mod tests {
             all_profiles_observed: false,
             has_stored_preferences: true,
             profile_names: BTreeMap::new(),
-            verification_summary: String::new(),
         }
     }
 
@@ -2923,6 +3135,79 @@ mod tests {
             None,
             "later additions must still present an unassociated mouse"
         );
+    }
+
+    #[test]
+    fn resolution_helpers_partition_silent_and_asks() {
+        use attack_shark_x3_manager::Candidate;
+        // USB, 1 saved with stored state → silent, kept settings.
+        let saved = vec![Candidate {
+            identity: DeviceId::new("mouse-1").unwrap(),
+            display_name: None,
+            last_transport: None,
+            last_seen_unix_seconds: None,
+            has_stored_state: true,
+        }];
+        assert_eq!(
+            resolve_endpoint(false, 1, TransportKind::Wired, &saved, true),
+            Resolution::SilentAttach {
+                attach_to: DeviceId::new("mouse-1").unwrap(),
+                keep_stored_settings: true,
+            }
+        );
+        // USB, 1 saved bare → silent, took the mouse's settings.
+        let bare = vec![Candidate {
+            identity: DeviceId::new("mouse-1").unwrap(),
+            display_name: None,
+            last_transport: None,
+            last_seen_unix_seconds: None,
+            has_stored_state: false,
+        }];
+        assert_eq!(
+            resolve_endpoint(false, 1, TransportKind::Wired, &bare, false),
+            Resolution::SilentAttach {
+                attach_to: DeviceId::new("mouse-1").unwrap(),
+                keep_stored_settings: false,
+            }
+        );
+        // BLE, 1 saved bare → new or mine, no default.
+        assert!(matches!(
+            resolve_endpoint(false, 1, TransportKind::Ble, &bare, false),
+            Resolution::AskNewOrMine { .. }
+        ));
+        // Simultaneous unknowns → per-endpoint ask, never silent.
+        let two = vec![
+            Candidate {
+                identity: DeviceId::new("mouse-1").unwrap(),
+                display_name: None,
+                last_transport: None,
+                last_seen_unix_seconds: None,
+                has_stored_state: true,
+            },
+            Candidate {
+                identity: DeviceId::new("mouse-2").unwrap(),
+                display_name: None,
+                last_transport: None,
+                last_seen_unix_seconds: None,
+                has_stored_state: false,
+            },
+        ];
+        assert!(matches!(
+            resolve_endpoint(false, 2, TransportKind::Wired, &two, true),
+            Resolution::AskWhich(_)
+        ));
+        // Pending rows stay laconic: no OS HID paths leak into labels.
+        let endpoint = DeviceEndpoint::ble("ble-platform-1", None).unwrap();
+        let label = pending_endpoint_label(&endpoint);
+        assert_eq!(label, "bluetooth mouse");
+        let row = PendingEndpoint {
+            endpoint_label: label,
+            transport_label: transport_label(endpoint.transport).to_owned(),
+            candidates: vec![pending_candidate(&bare[0])],
+            kind: PendingKind::NewOrMine,
+        };
+        assert_eq!(row.kind, PendingKind::NewOrMine);
+        assert!(!row.endpoint_label.contains("hid"));
     }
 
     #[test]

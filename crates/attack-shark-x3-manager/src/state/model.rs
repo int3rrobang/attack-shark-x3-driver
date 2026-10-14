@@ -639,6 +639,23 @@ pub struct IdentitySetupJournal {
     pub subjects: Vec<IdentitySetupSubject>,
 }
 
+/// Durable endpoint→mouse mapping: remembers one disambiguation decision so
+/// a later reconnect of the same endpoint resolves silently.
+///
+/// The key is a stable endpoint fingerprint: `ble:<platform-id>` for BLE, or
+/// `usb:<vid>:<pid>:<serial>` (empty serial when the transport reports none)
+/// for USB. It never contains an OS HID path, which changes on replug.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndpointMapping {
+    /// Stable endpoint fingerprints mapped to their resolved logical mouse.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub endpoints: BTreeMap<String, DeviceId>,
+    /// Last-seen wall-clock time per fingerprint, for disambiguation rows.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub last_seen_unix_seconds: BTreeMap<String, i64>,
+}
+
 /// The complete internal manager-state document.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -653,6 +670,9 @@ pub struct StateFile {
     /// The active identity-setup journal, when a ceremony is in flight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_setup: Option<IdentitySetupJournal>,
+    /// Remembered endpoint→mouse disambiguation decisions.
+    #[serde(default)]
+    pub endpoint_mapping: EndpointMapping,
 }
 
 impl Default for StateFile {
@@ -664,6 +684,7 @@ impl Default for StateFile {
             devices: BTreeMap::new(),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         }
     }
 }
@@ -769,6 +790,33 @@ impl StateFile {
         self.validate_identity_mode()?;
         if let Some(journal) = &self.identity_setup {
             self.validate_identity_setup(journal)?;
+        }
+        self.validate_endpoint_mapping()?;
+        Ok(())
+    }
+
+    /// Validates the remembered endpoint→mouse mapping: keys are nonblank,
+    /// every mapped mouse exists, and last-seen entries only reference
+    /// mapped endpoints.
+    fn validate_endpoint_mapping(&self) -> Result<(), StateError> {
+        for (fingerprint, device_id) in &self.endpoint_mapping.endpoints {
+            if fingerprint.trim().is_empty() {
+                return Err(StateError::invalid_state(
+                    "endpoint mapping holds a blank endpoint fingerprint",
+                ));
+            }
+            if !self.devices.contains_key(device_id) {
+                return Err(StateError::invalid_state(format!(
+                    "endpoint mapping points {fingerprint:?} at unknown device {device_id}"
+                )));
+            }
+        }
+        for fingerprint in self.endpoint_mapping.last_seen_unix_seconds.keys() {
+            if !self.endpoint_mapping.endpoints.contains_key(fingerprint) {
+                return Err(StateError::invalid_state(format!(
+                    "endpoint mapping records last-seen for unmapped endpoint {fingerprint:?}"
+                )));
+            }
         }
         Ok(())
     }
@@ -1245,10 +1293,10 @@ fn validate_captured_profile_image(
 mod tests {
     use super::{
         ApplicationVerification, CapturedProfileImage, DesiredSource, DesiredState, DeviceState,
-        IdentityMode, IdentitySetupJournal, IdentitySetupPhase, IdentitySetupStage,
-        IdentitySetupSubject, IdentityStampProgress, MAX_PROFILE_NAME_CHARS, ObservationSource,
-        ObservedState, PersistenceVerification, ProfileState, ResourceState, SCHEMA_VERSION,
-        StateFile, Timestamp, Verification,
+        EndpointMapping, IdentityMode, IdentitySetupJournal, IdentitySetupPhase,
+        IdentitySetupStage, IdentitySetupSubject, IdentityStampProgress, MAX_PROFILE_NAME_CHARS,
+        ObservationSource, ObservedState, PersistenceVerification, ProfileState, ResourceState,
+        SCHEMA_VERSION, StateFile, Timestamp, Verification,
     };
     use crate::device::{DeviceEndpoint, DeviceId, DeviceIdentity};
     use crate::error::StateError;
@@ -1409,6 +1457,7 @@ mod tests {
             )]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state.validate().is_ok());
     }
@@ -1434,6 +1483,7 @@ mod tests {
             )]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state.validate().is_err());
 
@@ -1474,6 +1524,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), overlong)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(matches!(state.validate(), Err(StateError::InvalidState(_))));
 
@@ -1489,6 +1540,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), blank)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(matches!(state.validate(), Err(StateError::InvalidState(_))));
     }
@@ -1603,6 +1655,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state.clone())]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state.validate().is_ok());
 
@@ -1634,6 +1687,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state2)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state2.validate().is_err());
 
@@ -1665,6 +1719,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state3)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state3.validate().is_err());
 
@@ -1696,6 +1751,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state4)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(
             state4.validate().is_ok(),
@@ -1736,6 +1792,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state.validate().is_ok());
 
@@ -1767,6 +1824,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state2)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state2.validate().is_err());
 
@@ -1802,6 +1860,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state3)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state3.validate().is_err());
 
@@ -1834,6 +1893,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state4)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(
             state4.validate().is_ok(),
@@ -1877,6 +1937,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state.validate().is_ok());
 
@@ -1906,6 +1967,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state2)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state2.validate().is_err());
 
@@ -1935,6 +1997,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state3)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state3.validate().is_err());
 
@@ -1968,6 +2031,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state4)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state4.validate().is_err());
 
@@ -2001,6 +2065,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state5)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state5.validate().is_err());
     }
@@ -2039,6 +2104,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state.validate().is_ok());
 
@@ -2070,6 +2136,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state2)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state2.validate().is_err());
     }
@@ -2231,6 +2298,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), device_state)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state.validate().is_ok());
     }
@@ -2361,6 +2429,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ds)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state.validate().is_err());
 
@@ -2393,6 +2462,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ds2)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state2.validate().is_err());
 
@@ -2423,6 +2493,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ds3)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state3.validate().is_err());
 
@@ -2453,6 +2524,7 @@ mod tests {
             devices: BTreeMap::from([(DeviceId::new("mouse-1").unwrap(), ds4)]),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
         assert!(state4.validate().is_err());
     }
@@ -2552,6 +2624,7 @@ mod tests {
             devices: BTreeMap::new(),
             identity_mode: IdentityMode::Legacy,
             identity_setup: None,
+            endpoint_mapping: EndpointMapping::default(),
         };
     }
     fn physical_id(byte: u8) -> PhysicalId {

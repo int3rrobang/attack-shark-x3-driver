@@ -1,8 +1,6 @@
 use slint::{Model, ModelRc, VecModel};
 
-use crate::presentation::{
-    CeremonyPrompt, DPI_LABELS, clamp_dpi_value, dpi_bounds, parse_raw_byte,
-};
+use crate::presentation::{CeremonyPrompt, DPI_LABELS, clamp_dpi_value, dpi_bounds};
 use crate::worker::{LiveProfile, LiveSnapshot, UnassociatedRow as WorkerUnassociatedRow};
 use crate::{AppWindow, BindingRow, DeviceRow, DpiStage, ProfileRow, UnassociatedRow};
 
@@ -51,9 +49,6 @@ pub fn clear_live_state(ui: &AppWindow) {
     ui.set_device_id_text("not available".into());
     ui.set_device_product_text("not available".into());
     ui.set_profile_summary("no live profile".into());
-    ui.set_metadata_summary("not available".into());
-    ui.set_sensor_summary("not available".into());
-    ui.set_verification_text("no confirmation yet".into());
     ui.set_active_dpi_text("not available".into());
     ui.set_active_stage_text("not available".into());
     ui.set_dirty(false);
@@ -67,7 +62,7 @@ pub fn clear_live_state(ui: &AppWindow) {
     );
     replace_binding_model(&ui.get_bindings(), &[]);
     replace_profile_model(&ui.get_profiles(), &[], false);
-    refresh_button_change_summary(ui);
+    refresh_lmb_break_warning(ui);
 }
 
 pub fn replace_dpi_model(
@@ -112,36 +107,49 @@ pub fn replace_binding_model(model: &ModelRc<BindingRow>, bindings: &[(String, S
     model.set_vec(built);
 }
 
-/// Exact per-button change summary: one `button → action` line per physical
-/// button whose draft action differs from its loaded baseline, or the exact
-/// no-change sentence. The summary is recomputed after every binding edit and
-/// every snapshot so the save confirmation always matches the draft.
-pub fn button_change_summary(bindings: &[BindingRow]) -> String {
-    let lines: Vec<String> = bindings
-        .iter()
-        .filter(|item| item.action != item.original_action)
-        .map(|item| format!("{} → {}", item.button, item.action))
-        .collect();
-    if lines.is_empty() {
-        "No physical button changes.".to_owned()
-    } else {
-        lines.join("\n")
-    }
-}
-
-/// Recomputes the save-confirmation button summary from the current binding
-/// model after a binding edit or a snapshot.
-pub fn refresh_button_change_summary(ui: &AppWindow) {
-    let mut rows = Vec::new();
+/// Recomputes the LMB safety state from the live bindings model:
+/// `lmb-break-warning`: 0 = clicking intact, 1 = LMB remapped but click
+/// lives elsewhere, 2 = nothing left-clicks (edge-triggered: only when the
+/// loaded baseline left-clicked). `no-left-click-now`: true whenever nothing
+/// left-clicks right now, even for deliberate setups (drives the banner).
+/// Both forced off while warnings are disabled.
+pub fn refresh_lmb_break_warning(ui: &AppWindow) {
+    use slint::Model;
     let model = ui.get_bindings();
-    if let Some(model) = model.as_any().downcast_ref::<VecModel<BindingRow>>() {
-        for row in 0..model.row_count() {
-            if let Some(item) = model.row_data(row) {
-                rows.push(item);
-            }
-        }
+    let Some(model) = model.as_any().downcast_ref::<VecModel<BindingRow>>() else {
+        return;
+    };
+    if !ui.get_warn_no_left_click() {
+        ui.set_lmb_break_warning(0);
+        ui.set_no_left_click_now(false);
+        return;
     }
-    ui.set_button_change_summary(button_change_summary(&rows).into());
+    let mut lmb_original = String::from("left click");
+    let mut lmb_draft = String::from("left click");
+    let mut owned: Vec<(String, String)> = Vec::new();
+    for row in 0..model.row_count() {
+        let Some(item) = model.row_data(row) else {
+            continue;
+        };
+        if item.button.as_str() == "lmb" {
+            lmb_original = item.original_action.to_string();
+            lmb_draft = item.action.to_string();
+        }
+        owned.push((item.button.to_string(), item.action.to_string()));
+    }
+    let pairs: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(button, action)| (button.as_str(), action.as_str()))
+        .collect();
+    let warning = crate::presentation::lmb_break_warning(&lmb_original, &lmb_draft, &pairs);
+    ui.set_lmb_break_warning(match warning {
+        None => 0,
+        Some(crate::presentation::LmbBreak::Remapped) => 1,
+        Some(crate::presentation::LmbBreak::NothingClicks) => 2,
+    });
+    ui.set_lmb_break_action(lmb_draft.into());
+    let clicking_exists = owned.iter().any(|(_, action)| action == "left click");
+    ui.set_no_left_click_now(!clicking_exists && !owned.is_empty());
 }
 
 pub fn replace_profile_model(model: &ModelRc<ProfileRow>, profiles: &[LiveProfile], is_ble: bool) {
@@ -172,6 +180,25 @@ pub fn replace_profile_model(model: &ModelRc<ProfileRow>, profiles: &[LiveProfil
         })
         .collect();
     model.set_vec(built);
+}
+
+/// Laconic relative time for candidate last-seen stamps (`2h ago`).
+fn relative_seen(seen_unix_seconds: i64) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let delta = (now - seen_unix_seconds).max(0);
+    if delta < 60 {
+        "just now".to_owned()
+    } else if delta < 3_600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h ago", delta / 3_600)
+    } else {
+        format!("{}d ago", delta / 86_400)
+    }
 }
 
 pub fn apply_event(ui: &AppWindow, event: crate::worker::UiEvent) {
@@ -225,6 +252,51 @@ pub fn apply_event(ui: &AppWindow, event: crate::worker::UiEvent) {
                 })
                 .collect();
             model.set_vec(built);
+        }
+        UiEvent::AskPerEndpoint(rows) => {
+            ui.set_busy(false);
+            let Some(first) = rows.first() else {
+                return;
+            };
+            ui.set_pending_ask_kind(match first.kind {
+                crate::worker::PendingKind::NewOrMine => 2,
+                crate::worker::PendingKind::Which => 1,
+            });
+            ui.set_pending_endpoint_label(
+                format!("{} · {}", first.transport_label, first.endpoint_label).into(),
+            );
+            let names: Vec<slint::SharedString> = first
+                .candidates
+                .iter()
+                .map(|entry| {
+                    let name = entry.display_name.as_deref().unwrap_or("saved mouse");
+                    match (
+                        entry.last_transport.as_deref(),
+                        entry.last_seen_unix_seconds,
+                    ) {
+                        (Some(transport), Some(seen)) => {
+                            format!("{name} — last on {transport} {}", relative_seen(seen)).into()
+                        }
+                        _ => name.into(),
+                    }
+                })
+                .collect();
+            ui.set_pending_candidates(slint::ModelRc::from(std::rc::Rc::new(
+                slint::VecModel::from(names),
+            )));
+            ui.set_status_text("which mouse is this?".into());
+            ui.invoke_show_pending_ask();
+        }
+        UiEvent::AutoAttached { keep_stored, .. } => {
+            ui.set_busy(false);
+            ui.set_status_text(
+                if keep_stored {
+                    "kept your saved settings"
+                } else {
+                    "took the mouse's settings"
+                }
+                .into(),
+            );
         }
         UiEvent::CeremonyProgress(view) => {
             ui.set_ceremony_active(true);
@@ -313,9 +385,6 @@ pub fn apply_snapshot_replacing(ui: &AppWindow, snapshot: &LiveSnapshot) {
     ui.set_device_id_text(snapshot.stable_id.clone().into());
     ui.set_device_product_text(snapshot.product_id.clone().into());
     ui.set_profile_summary(snapshot.profile_summary.clone().into());
-    ui.set_metadata_summary(snapshot.metadata_summary.clone().into());
-    ui.set_sensor_summary(snapshot.sensor.clone().into());
-    ui.set_verification_text(snapshot.verification_summary.clone().into());
     ui.set_active_dpi_text(format!("{} dpi", snapshot.active_dpi).into());
     ui.set_active_stage_text(
         format!(
@@ -360,7 +429,7 @@ pub fn apply_snapshot_replacing(ui: &AppWindow, snapshot: &LiveSnapshot) {
     );
     replace_binding_model(&ui.get_bindings(), &snapshot.bindings);
     replace_profile_model(&ui.get_profiles(), &snapshot.profiles, snapshot.is_ble);
-    refresh_button_change_summary(ui);
+    refresh_lmb_break_warning(ui);
 }
 
 /// Applies an event-driven snapshot while a draft is open: the editable
@@ -385,9 +454,6 @@ pub fn apply_snapshot_preserving_draft(ui: &AppWindow, snapshot: &LiveSnapshot) 
     ui.set_device_id_text(snapshot.stable_id.clone().into());
     ui.set_device_product_text(snapshot.product_id.clone().into());
     ui.set_profile_summary(snapshot.profile_summary.clone().into());
-    ui.set_metadata_summary(snapshot.metadata_summary.clone().into());
-    ui.set_sensor_summary(snapshot.sensor.clone().into());
-    ui.set_verification_text(snapshot.verification_summary.clone().into());
     ui.set_active_dpi_text(format!("{} dpi", snapshot.active_dpi).into());
     ui.set_active_stage_text(
         format!(
@@ -401,7 +467,6 @@ pub fn apply_snapshot_preserving_draft(ui: &AppWindow, snapshot: &LiveSnapshot) 
     ui.set_all_profiles_observed(snapshot.all_profiles_observed);
     ui.set_last_enabled_profile(snapshot.last_enabled_profile);
     replace_profile_model(&ui.get_profiles(), &snapshot.profiles, snapshot.is_ble);
-    refresh_button_change_summary(ui);
 }
 
 pub fn dpi_from_ratio(ratio: f32, logarithmic: bool, min: f32, max: f32) -> f32 {
@@ -472,31 +537,6 @@ pub fn binding(button: &str, location: &str, action: &str) -> BindingRow {
         action: action.into(),
         original_action: action.into(),
         editable: true,
-    }
-}
-
-/// Re-decodes the deep-sleep typed fields from the two raw bytes that encode
-/// them (the configuration high nibble and the deep-sleep byte). Invalid raw
-/// text (a rejected edit) reports the typed value as unknown instead of
-/// decoding against a synthesized zero.
-pub fn refresh_deep_sleep_display(ui: &AppWindow) {
-    let (Some(configuration), Some(deep_sleep)) = (
-        parse_raw_byte(ui.get_preference_configuration_raw().as_str()),
-        parse_raw_byte(ui.get_preference_deep_sleep_raw().as_str()),
-    ) else {
-        ui.set_deep_sleep_minutes(0);
-        ui.set_deep_sleep_known(false);
-        return;
-    };
-    match attack_shark_x3::DeepSleepMinutes::from_raw(configuration >> 4, deep_sleep) {
-        Some(deep) => {
-            ui.set_deep_sleep_minutes(deep.get() as i32);
-            ui.set_deep_sleep_known(true);
-        }
-        None => {
-            ui.set_deep_sleep_minutes(0);
-            ui.set_deep_sleep_known(false);
-        }
     }
 }
 
@@ -682,58 +722,6 @@ mod tests {
         let logarithmic = dpi_from_ratio(0.5, true, 200.0, 3_200.0);
         assert!(logarithmic > 200.0);
         assert!(logarithmic < linear);
-    }
-
-    #[test]
-    fn button_change_summary_lists_changed_buttons_as_exact_lines() {
-        let mut rows = vec![
-            binding("lmb", "primary", "left click"),
-            binding("rmb", "secondary", "right click"),
-            binding("forward", "side upper", "forward"),
-        ];
-        rows[2].action = "refresh rate".into();
-        assert_eq!(
-            button_change_summary(&rows).as_str(),
-            "forward → refresh rate"
-        );
-        rows[0].action = "dpi up".into();
-        assert_eq!(
-            button_change_summary(&rows).as_str(),
-            "lmb → dpi up\nforward → refresh rate"
-        );
-    }
-
-    #[test]
-    fn button_change_summary_reports_no_physical_changes_for_a_clean_model() {
-        let rows = vec![
-            binding("lmb", "primary", "left click"),
-            binding("rmb", "secondary", "right click"),
-        ];
-        assert_eq!(
-            button_change_summary(&rows).as_str(),
-            "No physical button changes."
-        );
-        assert_eq!(
-            button_change_summary(&[]).as_str(),
-            "No physical button changes."
-        );
-    }
-
-    #[test]
-    fn button_change_summary_uses_button_labels_and_skips_unmodified_rows() {
-        let mut rows = vec![
-            binding("dpi", "top button", "dpi cycle"),
-            binding("wheel", "middle", "wheel click"),
-        ];
-        rows[0].action = "stage 02".into();
-        assert_eq!(button_change_summary(&rows).as_str(), "dpi → stage 02");
-        rows[0].action = "dpi cycle".into();
-        assert_eq!(
-            button_change_summary(&rows).as_str(),
-            "No physical button changes."
-        );
-        rows[1].action = "scroll".into();
-        assert_eq!(button_change_summary(&rows).as_str(), "wheel → scroll");
     }
 
     #[test]
