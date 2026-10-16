@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 /// Clap-safe button slot for `bind set --slot`.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
@@ -193,6 +194,13 @@ pub struct Cli {
     pub replace_defaults: bool,
     #[arg(long, value_enum, default_value_t = OutputFormat::Human, global = true)]
     pub output: OutputFormat,
+    /// Log level: off/error/warn/info/debug/trace or 0-5 (case-insensitive).
+    /// Overrides X3_LOG; `off` forces logging off even when X3_LOG is set.
+    #[arg(long, global = true)]
+    pub log_level: Option<String>,
+    /// Append logs to this file (managed with rotation by the logger).
+    #[arg(long, global = true)]
+    pub log_file: Option<PathBuf>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -717,6 +725,32 @@ mod tests {
             cli.command,
             Some(Command::Debug(DebugCommand::Dpi(_)))
         ));
+    }
+
+    #[test]
+    fn parses_log_level_and_log_file_flags() {
+        let cli = Cli::try_parse_from(["x3ctl"]).expect("parse");
+        assert_eq!(cli.log_level, None);
+        assert_eq!(cli.log_file, None);
+
+        let cli = Cli::try_parse_from([
+            "x3ctl",
+            "--log-level",
+            "trace",
+            "--log-file",
+            "/tmp/x3.log",
+            "status",
+        ])
+        .expect("parse");
+        assert_eq!(cli.log_level.as_deref(), Some("trace"));
+        assert_eq!(
+            cli.log_file.as_deref(),
+            Some(std::path::Path::new("/tmp/x3.log"))
+        );
+
+        // Global flags also parse after the subcommand.
+        let cli = Cli::try_parse_from(["x3ctl", "status", "--log-level", "off"]).expect("parse");
+        assert_eq!(cli.log_level.as_deref(), Some("off"));
     }
 
     #[test]

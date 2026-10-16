@@ -4,6 +4,7 @@ use attack_shark_x3_manager::{
     IdentityCeremonyProgress, IdentityCeremonyStage, IdentityResolution, LiftOffDistance,
     ManagerError, ProfileId, ProfileMetadata, ProfileResourceKind, ProfileUpdateOutcome,
     SafeButtonAction, SafeButtonSlot, TransportKind, UnassociatedReason, Verification,
+    sim_tag_for_endpoint,
 };
 
 pub const BINDING_ACTIONS: [&str; 49] = [
@@ -95,6 +96,13 @@ pub fn selected_transport(identity: &DeviceIdentity) -> Option<TransportKind> {
     selected_endpoint(identity).map(|endpoint| endpoint.transport)
 }
 
+/// The sim backend tag for a logical mouse, when any of its endpoints is a
+/// simulated endpoint. The tag is the backend's own `tag()` string, carried
+/// verbatim in the sim locator at discovery; hardware identities are `None`.
+pub fn sim_tag_for_identity(identity: &DeviceIdentity) -> Option<&str> {
+    identity.endpoints.values().find_map(sim_tag_for_endpoint)
+}
+
 pub fn is_ble_identity(identity: &DeviceIdentity) -> bool {
     matches!(selected_transport(identity), Some(TransportKind::Ble))
 }
@@ -138,6 +146,10 @@ pub fn format_error_string(prefix: &str, error: ManagerError) -> String {
         }
         ManagerError::MissingBaseline { resource, .. } => {
             format!("saved {resource} settings are needed for this change")
+        }
+        ManagerError::AttachmentNotAuthenticated { .. } => {
+            "that's a different physical mouse than the saved one; adopt it as a new mouse or reconnect the matching unit"
+                .to_owned()
         }
         other => other.to_string(),
     };

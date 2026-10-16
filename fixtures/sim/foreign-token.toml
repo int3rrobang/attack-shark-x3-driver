@@ -1,0 +1,73 @@
+# Sim scenario "foreign-token".
+#
+# Adoption-path identity: profile 1 carries a physical-identity watermark
+# whose token (00112233-4455-6677-8899-aabbccddeeff) belongs to a
+# different physical mouse, so the manager must run adoption rather than
+# treat the image as its own. Stages, active stage, preferences, and
+# buttons are otherwise the stock reset values; profiles 2-5 are the
+# stock reset images. Single wired endpoint.
+
+battery = 42
+
+[[endpoints]]
+transport = "wired"
+
+[profiles.1]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "583349440100112233445566778899aabbccddeeff4314061a"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.2]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.3]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.4]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.5]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"

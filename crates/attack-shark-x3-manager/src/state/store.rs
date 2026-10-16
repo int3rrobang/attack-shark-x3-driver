@@ -126,7 +126,8 @@ fn non_empty_var(name: &str) -> Option<String> {
 #[derive(Debug)]
 enum StoreBackend {
     Disk,
-    Memory(MemoryBackend),
+    // Boxed: the inline mutexes dwarf the unit variant and trip large_enum_variant.
+    Memory(Box<MemoryBackend>),
 }
 
 #[derive(Debug)]
@@ -167,10 +168,10 @@ impl StateStore {
     pub fn memory() -> Self {
         Self {
             paths: StatePaths::new(PathBuf::from("<memory>/state.json")),
-            backend: Arc::new(StoreBackend::Memory(MemoryBackend {
+            backend: Arc::new(StoreBackend::Memory(Box::new(MemoryBackend {
                 state: Mutex::new(StateFile::default()),
                 op_locks: Mutex::new(HashSet::new()),
-            })),
+            }))),
         }
     }
 
@@ -751,11 +752,11 @@ fn atomic_replace(temp: &Path, target: &Path) -> io::Result<()> {
 
 #[cfg(unix)]
 fn sync_parent(path: &Path) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            let dir = fs::File::open(parent)?;
-            dir.sync_all()?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let dir = fs::File::open(parent)?;
+        dir.sync_all()?;
     }
     Ok(())
 }

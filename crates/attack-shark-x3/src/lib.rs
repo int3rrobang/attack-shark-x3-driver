@@ -5,11 +5,12 @@ pub mod driver;
 pub mod error;
 pub mod model;
 pub mod protocol;
+pub mod sim;
 
 #[cfg(feature = "usb")]
 pub use driver::{
-    DeviceInfo, DeviceSelector, DriverError, MouseHandle, ProfileSnapshot, ReadFailure, ReadPolicy,
-    UsbDeviceKind, list_devices, list_devices_for,
+    DeviceInfo, DeviceSelector, DriverError, MouseHandle, ReadFailure, ReadPolicy, UsbDeviceKind,
+    list_devices, list_devices_for,
 };
 
 #[cfg(feature = "ble")]
@@ -18,7 +19,7 @@ pub use driver::ble::{
     BleWriteReceipt, decode_ack, fee0_service, fee3_write, fee4_ack,
 };
 pub use error::ProtocolError;
-pub use model::{DpiValue, ProfileId, StageIndex, TransportKind};
+pub use model::{DpiValue, ProfileId, ProfileSnapshot, StageIndex, TransportKind};
 pub use protocol::buttons::{
     ButtonActionError, ButtonAssignment, ButtonsReport, ButtonsState, HidKeyboardUsage,
     KeyboardModifiers, X3ButtonAction,

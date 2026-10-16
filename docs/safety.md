@@ -63,6 +63,10 @@ step fails:
 
 1. Complete desired DPI, preferences, and buttons must exist for the target
    profile in durable state; a missing section fails with `MissingBaseline`.
+   A live read of a section with no desired value yet stamps the observation
+   as a `capturedBaseline` desired value, so an ordinary first-open read
+   satisfies this step without any user save. The stamp only records what the
+   mouse reported; step 3 still verifies it fresh before every write.
 2. Persistent metadata must have `current == target`; otherwise the write
    would save into a slot the user is not editing (`MissingBaseline`).
 3. The complete profile is freshly read in the same session, and every

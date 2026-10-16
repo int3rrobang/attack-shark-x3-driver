@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use attack_shark_x3::driver::ProfileSnapshot;
+use attack_shark_x3::ProfileSnapshot;
 use attack_shark_x3::{
     PhysicalId, PollingRate, ProfileId, ProfileMetadata, TransportKind, WatermarkDecode,
     decode_watermark,
@@ -580,7 +580,7 @@ fn first_mismatch(
 mod tests {
     use std::sync::Arc;
 
-    use attack_shark_x3::driver::ProfileSnapshot;
+    use attack_shark_x3::ProfileSnapshot;
     use attack_shark_x3::{
         ButtonAssignment, ButtonsState, DpiState, DpiValue, PhysicalId, PollingRate,
         PreferencesState, ProfileId, ProfileMetadata, StageIndex, TransportKind,

@@ -621,8 +621,8 @@ mod tests {
     fn snapshot(
         profile: ProfileId,
         preferences: PreferencesState,
-    ) -> attack_shark_x3::driver::ProfileSnapshot {
-        attack_shark_x3::driver::ProfileSnapshot {
+    ) -> attack_shark_x3::ProfileSnapshot {
+        attack_shark_x3::ProfileSnapshot {
             target_profile: profile,
             persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
             dpi: DpiState::new(
@@ -662,8 +662,8 @@ mod tests {
         dpi: DpiState,
         preferences: PreferencesState,
         buttons: ButtonsState,
-    ) -> attack_shark_x3::driver::ProfileSnapshot {
-        attack_shark_x3::driver::ProfileSnapshot {
+    ) -> attack_shark_x3::ProfileSnapshot {
+        attack_shark_x3::ProfileSnapshot {
             target_profile: profile,
             persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
             dpi,

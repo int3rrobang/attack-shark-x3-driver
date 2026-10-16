@@ -1,0 +1,73 @@
+# Sim scenario "stock".
+#
+# Factory-reset capture: every profile carries the stock reset images
+# (DPI stages [800, 1600, 2400, 3200, 5000, 26000], active stage 2;
+# preferences 0x00/0x03/0xa8, host color [0x00, 0x00, 0xff], sleep 0x01,
+# debounce 0x04; factory-default button table) plus the stock-empty DPI
+# tail. Single wired endpoint. `battery` is the recorded level the backend
+# serves; omitting it means the device reports no battery.
+
+battery = 87
+
+[[endpoints]]
+transport = "wired"
+
+[profiles.1]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.2]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.3]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.4]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.5]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"

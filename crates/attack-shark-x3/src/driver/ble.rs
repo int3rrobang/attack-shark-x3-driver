@@ -771,6 +771,7 @@ impl BleSession {
         }
         debug_assert!(!packet.is_empty(), "typed BleReport is always non-empty");
         let report_id = packet[0];
+        #[cfg(windows)]
         let result = self
             .windows_session
             .write(report_id, packet, self.policy.ack_timeout)

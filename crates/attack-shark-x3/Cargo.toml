@@ -20,6 +20,7 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", 
 crc32fast = "1"
 serde = { version = "1", features = ["derive"], optional = true }
 thiserror = "2"
+toml = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.48", features = [

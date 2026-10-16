@@ -144,7 +144,10 @@ impl<T> ResourceState<T> {
 
     /// Reconciles a fresh observation against the current desired value.
     ///
-    /// * With no desired value, only the observation is stored.
+    /// * With no desired value, the observation is stored *and* promoted to a
+    ///   [`DesiredSource::CapturedBaseline`] desired value: the mouse itself
+    ///   is the most truthful baseline for its own current image, and the
+    ///   polling-rate preflight's fresh-read match still guards every write.
     /// * With a desired value, the observed value is stored and the desired
     ///   verification is updated truthfully: [`ApplicationVerification::ReadbackVerified`]
     ///   only when the observed value equals the desired value and is current
@@ -175,6 +178,15 @@ impl<T> ResourceState<T> {
             desired.verification.persistence = PersistenceVerification::Unknown;
             !is_match
         } else {
+            self.desired = Some(DesiredState {
+                value: value.clone(),
+                source: DesiredSource::CapturedBaseline,
+                verification: Verification {
+                    application: ApplicationVerification::ReadbackVerified,
+                    persistence: PersistenceVerification::Unknown,
+                },
+                updated_at: now,
+            });
             false
         };
         self.observed = Some(observed);
@@ -272,6 +284,11 @@ pub enum DesiredSource {
     UserWrite,
     Imported,
     ExplicitDefaults,
+    /// Stamped from a live readback of this physical mouse when no desired
+    /// value existed yet (see [`ResourceState::reconcile_observation`]). The
+    /// value was observed on-hardware, never invented, so baseline resolvers
+    /// trust it like [`DesiredSource::UserWrite`].
+    CapturedBaseline,
 }
 
 /// Provenance for an observed value.
@@ -2361,10 +2378,21 @@ mod tests {
     }
 
     #[test]
-    fn fresh_read_without_desired_records_observation_only() {
+    fn fresh_read_without_desired_promotes_captured_baseline() {
         let mut resource: ResourceState<u32> = ResourceState::empty();
         resource.reconcile_observation(99, timestamp(20));
-        assert!(resource.desired.is_none());
+        let desired = resource.desired.as_ref().expect("captured baseline");
+        assert_eq!(desired.value, 99);
+        assert_eq!(desired.source, DesiredSource::CapturedBaseline);
+        assert_eq!(
+            desired.verification.application,
+            ApplicationVerification::ReadbackVerified
+        );
+        assert_eq!(
+            desired.verification.persistence,
+            PersistenceVerification::Unknown
+        );
+        assert_eq!(desired.updated_at, timestamp(20));
         let observed = resource.observed.as_ref().unwrap();
         assert_eq!(observed.value, 99);
         assert_eq!(observed.observed_at, timestamp(20));

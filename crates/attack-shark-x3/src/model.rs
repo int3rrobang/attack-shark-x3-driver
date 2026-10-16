@@ -1,4 +1,8 @@
 use crate::error::ProtocolError;
+use crate::protocol::buttons::ButtonsState;
+use crate::protocol::dpi::DpiState;
+use crate::protocol::preferences::PreferencesState;
+use crate::protocol::profile::ProfileMetadata;
 
 /// The transport used to communicate with the mouse.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -131,6 +135,21 @@ impl std::fmt::Display for DpiValue {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(formatter)
     }
+}
+
+/// A complete profile observation from one uninterrupted worker command.
+///
+/// Pure data with no transport dependency, so it lives in the ungated model
+/// module; `driver` re-exports it for its existing users.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct ProfileSnapshot {
+    pub persistent_metadata: ProfileMetadata,
+    pub target_profile: ProfileId,
+    pub dpi: DpiState,
+    pub preferences: PreferencesState,
+    pub buttons: ButtonsState,
 }
 
 #[cfg(feature = "serde")]

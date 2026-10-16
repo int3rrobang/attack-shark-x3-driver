@@ -882,6 +882,8 @@ component AdvancedPage inherits Rectangle {
     in property <string> device-name;
     in property <string> device-id-text;
     in property <string> device-product-text;
+    /// Active sim scenario; empty unless the app runs with `X3_SIM` set.
+    in property <string> sim-scenario: "";
     in property <int> validation-choice;
     in property <bool> all-profiles-observed: false;
     callback request-refresh-all-profiles;
@@ -922,6 +924,7 @@ component AdvancedPage inherits Rectangle {
                 Text { x: 18px; y: 64px; text: root.transport-label; color: Theme.muted; font-size: 10px; }
                 Text { x: 18px; y: 92px; text: "diagnostics (select + Ctrl+C for bug reports)"; color: Theme.muted; font-size: 9px; }
                 TextInput { x: 18px; y: 110px; width: parent.width - 36px; height: 30px; text: root.device-id-text + " · " + root.device-product-text; read-only: true; font-size: 10px; }
+                if !root.sim-scenario.is-empty : Text { x: 18px; y: 150px; width: parent.width - 36px; text: "sim scenario: " + root.sim-scenario; color: Theme.warning; font-size: 10px; overflow: elide; }
             }
             Card {
                 width: parent.width; height: 226px;
@@ -1270,6 +1273,8 @@ export component AppWindow inherits Window {
     in-out property <string> device-name: "No device selected";
     in-out property <string> device-id-text: "not available";
     in-out property <string> device-product-text: "not available";
+    /// Active sim scenario from `X3_SIM`; empty when running on hardware.
+    in-out property <string> sim-scenario: "";
     in-out property <string> profile-summary: "no live profile";
     in-out property <string> active-dpi-text: "not available";
     in-out property <string> active-stage-text: "not available";
@@ -1483,7 +1488,7 @@ export component AppWindow inherits Window {
             set-deep-sleep-text(value) => { root.set-deep-sleep-text(value); }
         }
         AdvancedPage { visible: root.current-page == 4;
-            width: parent.width; height: parent.height; devices: root.devices; transport-label: root.transport-label; device-name: root.device-name; device-id-text: root.device-id-text; device-product-text: root.device-product-text;
+            width: parent.width; height: parent.height; devices: root.devices; transport-label: root.transport-label; device-name: root.device-name; device-id-text: root.device-id-text; device-product-text: root.device-product-text; sim-scenario: root.sim-scenario;
             validation-choice: root.validation-choice; interactive: root.hardware-ready && !root.busy; preferences-ready: root.preferences-ready; ble-device: root.ble-device; all-profiles-observed: root.all-profiles-observed;
             baseline-choice-wired <=> root.baseline-choice-wired; baseline-choice-receiver <=> root.baseline-choice-receiver; allow-explicit-defaults <=> root.allow-explicit-defaults; warn-no-left-click <=> root.warn-no-left-click;
             verification-running: root.verification-running; verification-instruction: root.verification-instruction;

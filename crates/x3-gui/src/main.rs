@@ -1,5 +1,6 @@
 use std::{error::Error, thread};
 
+use attack_shark_x3_manager::diagnostics::{LoggerConfig, init};
 use attack_shark_x3_manager::{DeviceId, IdentityCeremonyAction, IdentityCeremonyKind, ProfileId};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tokio::sync::{mpsc, watch};
@@ -38,6 +39,9 @@ const UNASSOCIATED_ADOPT: i32 = 2;
 const UNASSOCIATED_ASSOCIATE: i32 = 3;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Tiered logging first: with X3_LOG unset this only arms Error gating
+    // and touches no file, so default behavior is unchanged.
+    init(LoggerConfig::from_env_gui());
     let ui = AppWindow::new()?;
     let dpi_stages = std::rc::Rc::new(VecModel::from(Vec::<DpiStage>::new()));
     let bindings = std::rc::Rc::new(VecModel::from(Vec::<BindingRow>::new()));
@@ -102,6 +106,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui.set_preference_deep_sleep_raw("00".into());
     ui.set_preference_sleep_timer_raw("00".into());
     ui.set_preference_debounce_raw("00".into());
+    // Sim runs show the active scenario; on hardware the row stays hidden.
+    ui.set_sim_scenario(std::env::var("X3_SIM").unwrap_or_default().into());
     ui.set_validation_choice(gui_prefs.validation_choice);
     ui.set_baseline_choice_wired(gui_prefs.baseline_choice_wired);
     ui.set_baseline_choice_receiver(gui_prefs.baseline_choice_receiver);
