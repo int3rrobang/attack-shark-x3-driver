@@ -20,6 +20,7 @@ pub mod operation;
 pub(crate) mod refresh;
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub(crate) mod resources;
+pub mod sim_model;
 pub mod state;
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub(crate) mod verification;
@@ -32,6 +33,8 @@ pub use attack_shark_x3::{
     ProfileControlFraming, ProfileId, ProfileMetadata, ReadbackRequest, SensorOptions, StageIndex,
     TransportKind, X3ButtonAction,
 };
+#[cfg(any(feature = "usb", feature = "ble"))]
+pub use backend::sim_tag_for_endpoint;
 pub use device::{DeviceEndpoint, DeviceId, DeviceIdentity, DeviceLocator, TransportSelection};
 pub use error::{ManagerError, StateError};
 #[cfg(any(feature = "usb", feature = "ble"))]

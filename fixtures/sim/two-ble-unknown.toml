@@ -1,0 +1,12 @@
+# Sim scenario "two-ble-unknown".
+#
+# Two BLE endpoints with no stored state: no `battery` (the device
+# reports none) and no `[profiles.*]` captures. Reads refuse — BLE has
+# no readback path, like hardware — and writes fail naming the missing
+# post-write capture instead of guessing resulting state.
+
+[[endpoints]]
+transport = "ble"
+
+[[endpoints]]
+transport = "ble"

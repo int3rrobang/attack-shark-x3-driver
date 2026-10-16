@@ -199,6 +199,610 @@ async fn open_ble_session(
     Ok(Box::new(BleSession { handle }))
 }
 
+/// Sim discovery endpoints registered while `X3_SIM` is set.
+///
+/// Sim endpoints are indistinguishable `DiscoveredEndpoint`s flowing through
+/// the existing discovery/ceremony/resolution/snapshot paths. Env unset
+/// (or blank) means no endpoints: zero behavior change and no special-casing
+/// downstream. A malformed `X3_SIM` value fails discovery loudly via
+/// `ManagerError::InvalidUpdate` naming the variable.
+fn sim_discovered_endpoints(
+    selection: TransportSelection,
+) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+    use attack_shark_x3::sim::sim_spec_from_env;
+    let spec = sim_spec_from_env().map_err(|gap| ManagerError::InvalidUpdate(format!("{gap}")))?;
+    sim_endpoints_for_spec(spec, selection)
+}
+
+/// Registers the endpoints of one parsed `X3_SIM` spec: `None` registers
+/// nothing (env unset = hardware only).
+fn sim_endpoints_for_spec(
+    spec: Option<attack_shark_x3::sim::SimSpec>,
+    selection: TransportSelection,
+) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+    use attack_shark_x3::TransportKind;
+    use attack_shark_x3::sim::{SIM_MODEL_TAG, SIM_REPLAY_TAG, SimReplay, SimSpec};
+    let Some(spec) = spec else {
+        return Ok(Vec::new());
+    };
+    let transports = match &spec {
+        SimSpec::Replay { scenario } => SimReplay::endpoint_transports(scenario)
+            .map_err(|gap| ManagerError::InvalidUpdate(format!("{gap}")))?,
+        SimSpec::Model { preset } => crate::sim_model::SimModel::endpoint_transports(preset)
+            .map_err(|gap| ManagerError::InvalidUpdate(format!("{gap}")))?,
+    };
+    let (tag, name) = match &spec {
+        SimSpec::Replay { scenario } => (SIM_REPLAY_TAG, scenario.clone()),
+        SimSpec::Model { preset } => (SIM_MODEL_TAG, preset.clone()),
+    };
+    let wanted = |transport: TransportKind| match selection {
+        TransportSelection::Auto => true,
+        TransportSelection::Exact(exact) => exact == transport,
+    };
+    let multiple = transports.len() > 1;
+    let mut out = Vec::new();
+    for (index, transport) in transports.into_iter().enumerate() {
+        if !wanted(transport) {
+            continue;
+        }
+        let display = if multiple {
+            format!("{tag} {name} {}", index + 1)
+        } else {
+            format!("{tag} {name}")
+        };
+        // Locator format `sim:{tag}:{index}`; the tag is exactly the backend's
+        // `tag()` string (enforced by both backends' tag tests), so frontends
+        // recover the tag from the same value the backend reports.
+        let locator = format!("sim:{tag}:{index}");
+        let endpoint = match transport {
+            TransportKind::Ble => DeviceEndpoint::ble(&locator, Some(display.as_str())),
+            usb => DeviceEndpoint::usb(
+                usb,
+                0x1d57,
+                if usb == TransportKind::Receiver {
+                    0xfa60
+                } else {
+                    0xfa61
+                },
+                None,
+                locator.as_str(),
+                Some(display.as_str()),
+            ),
+        }?;
+        out.push(DiscoveredEndpoint {
+            endpoint,
+            connected: true,
+        });
+    }
+    Ok(out)
+}
+
+/// The tag a sim locator carries, exactly as the backend's `tag()` reported
+/// it at registration; `None` for hardware locators.
+pub fn sim_tag_for_endpoint(endpoint: &DeviceEndpoint) -> Option<&str> {
+    let locator = match &endpoint.locator {
+        DeviceLocator::UsbPath(path) => path.as_str(),
+        DeviceLocator::BlePlatformId(id) => id.as_str(),
+    };
+    let mut parts = locator.strip_prefix("sim:")?.split(':');
+    let tag = parts.next()?;
+    (!tag.is_empty()).then_some(tag)
+}
+
+fn sim_locator_index(endpoint: &DeviceEndpoint) -> Option<usize> {
+    let locator = match &endpoint.locator {
+        DeviceLocator::UsbPath(path) => path.as_str(),
+        DeviceLocator::BlePlatformId(id) => id.as_str(),
+    };
+    locator
+        .strip_prefix("sim:")?
+        .rsplit(':')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Sim endpoints use reserved `sim:` locators, so hardware paths never
+/// collide and no transport special-casing leaks into the manager's
+/// ceremony/resolution/snapshot paths.
+fn is_sim_endpoint(endpoint: &DeviceEndpoint) -> bool {
+    sim_tag_for_endpoint(endpoint).is_some()
+}
+
+/// Stable synthetic identity for one sim endpoint: `SIM:` + scenario bytes +
+/// endpoint index. Deterministic across restarts (re-enrollment resolves to
+/// the same mouse), distinct per scenario/endpoint (multi-endpoint ambiguity
+/// stays testable), and unmistakable for hardware (real tokens are random).
+fn sim_token_for(name: &str, index: usize) -> attack_shark_x3::PhysicalId {
+    let mut token = [0x53, 0x49, 0x4d, 0x3a, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let bytes = name.as_bytes();
+    let copy = bytes.len().min(11);
+    token[4..4 + copy].copy_from_slice(&bytes[..copy]);
+    token[15] = index as u8;
+    attack_shark_x3::PhysicalId::from_token_bytes(token)
+}
+
+/// Opens a sim endpoint through the backend named by `X3_SIM`. Hardware
+/// locators return `None` and flow on untouched.
+fn open_sim_session(
+    endpoint: &DeviceEndpoint,
+) -> Result<Option<Box<dyn DeviceSession>>, attack_shark_x3::sim::SimGap> {
+    use attack_shark_x3::sim::sim_spec_from_env;
+    let spec = sim_spec_from_env()?;
+    open_sim_session_for_spec(spec, endpoint)
+}
+
+/// Opens a sim endpoint through the backend named by `spec`. Hardware
+/// locators return `None` and flow on untouched.
+fn open_sim_session_for_spec(
+    spec: Option<attack_shark_x3::sim::SimSpec>,
+    endpoint: &DeviceEndpoint,
+) -> Result<Option<Box<dyn DeviceSession>>, attack_shark_x3::sim::SimGap> {
+    use attack_shark_x3::sim::{SimGap, SimSpec};
+    if !is_sim_endpoint(endpoint) {
+        return Ok(None);
+    }
+    let index = sim_locator_index(endpoint)
+        .ok_or_else(|| SimGap("sim: malformed sim locator".to_owned()))?;
+    let spec = spec.ok_or_else(|| SimGap("sim: endpoint needs X3_SIM set".to_owned()))?;
+    // A locator registered by one backend can never be served by the other:
+    // `X3_SIM` changing after discovery means a stale row, reported loudly.
+    let expected = match &spec {
+        SimSpec::Replay { .. } => attack_shark_x3::sim::SIM_REPLAY_TAG,
+        SimSpec::Model { .. } => attack_shark_x3::sim::SIM_MODEL_TAG,
+    };
+    let registered = sim_tag_for_endpoint(endpoint).unwrap_or_default();
+    if registered != expected {
+        return Err(SimGap(format!(
+            "sim: endpoint registered by {registered} doesn't match {expected} from X3_SIM; \
+             refresh discovery"
+        )));
+    }
+    let transport = endpoint.transport;
+    match spec {
+        SimSpec::Replay { scenario } => {
+            use attack_shark_x3::sim::SimBackend;
+            let backend = attack_shark_x3::sim::SimReplay::load_endpoint(&scenario, index)?;
+            debug_assert_eq!(backend.transport(), transport);
+            let token = sim_token_for(&scenario, index);
+            Ok(Some(Box::new(SimReplaySession {
+                backend: std::sync::Mutex::new(backend),
+                token,
+            }) as Box<dyn DeviceSession>))
+        }
+        SimSpec::Model { preset } => {
+            let slot = sim_model_slot(&preset, transport)?;
+            let token = sim_token_for(&preset, index);
+            Ok(Some(Box::new(SimModelSession {
+                slot,
+                transport,
+                token,
+            }) as Box<dyn DeviceSession>))
+        }
+    }
+}
+
+/// Process-wide model state, so a preset keeps its images, battery, and write
+/// count across session opens exactly like a physical mouse keeps its
+/// configuration.
+struct SimModelSlot {
+    model: crate::sim_model::SimModel,
+    /// Host-side images for transports that cannot read (BLE): an entry is
+    /// written whenever the host stores an image, so a BLE write merges
+    /// against the host's knowledge instead of a refused read.
+    host_images: std::collections::BTreeMap<u8, attack_shark_x3::sim::ProfileImage>,
+}
+
+/// One shared slot per `X3_SIM` model preset and transport; a preset
+/// declares a single endpoint, so a given device state is never split.
+type SimModelSlots = std::sync::Mutex<
+    std::collections::BTreeMap<
+        (String, TransportKind),
+        std::sync::Arc<std::sync::Mutex<SimModelSlot>>,
+    >,
+>;
+
+static SIM_MODEL_SLOTS: std::sync::LazyLock<SimModelSlots> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+
+fn sim_model_slot(
+    preset: &str,
+    transport: TransportKind,
+) -> Result<std::sync::Arc<std::sync::Mutex<SimModelSlot>>, attack_shark_x3::sim::SimGap> {
+    use attack_shark_x3::sim::SimBackend;
+    let key = (preset.to_owned(), transport);
+    let mut slots = SIM_MODEL_SLOTS.lock().expect("sim model registry poisoned");
+    if let Some(slot) = slots.get(&key) {
+        return Ok(slot.clone());
+    }
+    let model = crate::sim_model::SimModel::load(preset)?.with_transport(transport);
+    // The preset's own images are the host-side baseline: they are readable
+    // directly from the preset (a wired reference instance), which is what
+    // lets a BLE write merge without a refused readback.
+    let reference = crate::sim_model::SimModel::load(preset)?;
+    let mut host_images = std::collections::BTreeMap::new();
+    if reference.transport() != TransportKind::Ble {
+        for profile in ProfileId::MIN..=ProfileId::MAX {
+            if let Ok(image) = reference.read_profile(profile) {
+                host_images.insert(profile, image);
+            }
+        }
+    }
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(SimModelSlot { model, host_images }));
+    slots.insert(key, slot.clone());
+    Ok(slot)
+}
+
+/// Base image for a write: the model's own image where the transport can
+/// read, the recorded host image otherwise. BLE therefore merges against
+/// what the host last stored (hardware BLE behaves the same way: the host
+/// keeps the baseline, the device never serves a readback).
+fn sim_base_image(
+    slot: &SimModelSlot,
+    profile: ProfileId,
+    transport: TransportKind,
+) -> Result<attack_shark_x3::sim::ProfileImage, ManagerError> {
+    use attack_shark_x3::sim::SimBackend;
+    if let Some(image) = slot.host_images.get(&profile.get()) {
+        return Ok(image.clone());
+    }
+    slot.model
+        .read_profile(profile.get())
+        .map_err(|gap| sim_gap_error(gap, transport))
+}
+
+/// `DeviceSession` over the in-memory model backend.
+///
+/// Transport rules stay real: BLE refuses reads (like hardware) and
+/// acknowledges writes; wired serves and readback-verifies them.
+struct SimModelSession {
+    slot: std::sync::Arc<std::sync::Mutex<SimModelSlot>>,
+    transport: TransportKind,
+    token: attack_shark_x3::PhysicalId,
+}
+
+impl SimModelSession {
+    fn image(
+        &self,
+        profile: ProfileId,
+    ) -> Result<attack_shark_x3::sim::ProfileImage, ManagerError> {
+        use attack_shark_x3::sim::SimBackend;
+        let slot = self.slot.lock().expect("sim model slot poisoned");
+        let mut image = slot
+            .model
+            .read_profile(profile.get())
+            .map_err(|gap| sim_gap_error(gap, self.transport))?;
+        image.0.overlay_physical_id(self.token);
+        Ok(image)
+    }
+
+    /// Merges one resource into the profile image, stores it, and returns the
+    /// accepted image. Gaps (BLE read refusal, invalid write) stay loud.
+    fn store(
+        &self,
+        profile: ProfileId,
+        mutate: impl FnOnce(&mut attack_shark_x3::sim::ProfileImage),
+    ) -> Result<attack_shark_x3::sim::ProfileImage, ManagerError> {
+        use attack_shark_x3::sim::SimBackend;
+        let mut slot = self.slot.lock().expect("sim model slot poisoned");
+        let mut image = sim_base_image(&slot, profile, self.transport)?;
+        mutate(&mut image);
+        slot.model
+            .write_profile(profile.get(), &image)
+            .map_err(|gap| sim_gap_error(gap, self.transport))?;
+        slot.host_images.insert(profile.get(), image.clone());
+        Ok(image)
+    }
+}
+
+#[async_trait(?Send)]
+impl DeviceSession for SimModelSession {
+    fn transport(&self) -> TransportKind {
+        self.transport
+    }
+
+    async fn read_profile_metadata(&self) -> Result<ProfileMetadata, ManagerError> {
+        let slot = self.slot.lock().expect("sim model slot poisoned");
+        let current = ProfileId::try_from(slot.model.active_profile()).unwrap_or(ProfileId::MIN_ID);
+        ProfileMetadata::new(current, ProfileId::MAX_ID).map_err(|error| ManagerError::Protocol {
+            operation: "sim profile metadata",
+            source: error,
+        })
+    }
+
+    async fn read_profile(&self, profile: ProfileId) -> Result<ProfileSnapshot, ManagerError> {
+        let image = self.image(profile)?;
+        Ok(ProfileSnapshot {
+            persistent_metadata: self.read_profile_metadata().await?,
+            target_profile: profile,
+            dpi: image.0,
+            preferences: image.1,
+            buttons: image.2,
+        })
+    }
+
+    async fn read_dpi(&self, profile: ProfileId) -> Result<DpiState, ManagerError> {
+        self.image(profile).map(|image| image.0)
+    }
+
+    async fn read_preferences(&self, profile: ProfileId) -> Result<PreferencesState, ManagerError> {
+        self.image(profile).map(|image| image.1)
+    }
+
+    async fn read_buttons(&self, profile: ProfileId) -> Result<ButtonsState, ManagerError> {
+        self.image(profile).map(|image| image.2)
+    }
+
+    async fn read_live_polling_rate(&self, _alias: ProfileId) -> Result<PollingRate, ManagerError> {
+        Ok(PollingRate::Hz1000)
+    }
+
+    async fn write_dpi(
+        &self,
+        state: DpiState,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<DpiState>, ManagerError> {
+        let stored = self.store(state.profile, |image| image.0 = state)?;
+        Ok(sim_write_outcome(stored.0, verification))
+    }
+
+    async fn write_preferences(
+        &self,
+        state: PreferencesState,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<PreferencesState>, ManagerError> {
+        let stored = self.store(state.profile, |image| image.1 = state)?;
+        Ok(sim_write_outcome(stored.1, verification))
+    }
+
+    async fn write_buttons(
+        &self,
+        state: ButtonsState,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<ButtonsState>, ManagerError> {
+        let stored = self.store(state.profile, |image| image.2 = state)?;
+        Ok(sim_write_outcome(stored.2, verification))
+    }
+
+    async fn write_polling_rate_unchecked(
+        &self,
+        _profile: ProfileId,
+        rate: PollingRate,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<PollingRate>, ManagerError> {
+        Ok(sim_write_outcome(rate, verification))
+    }
+
+    async fn write_profile_metadata(
+        &self,
+        metadata: ProfileMetadata,
+    ) -> Result<SessionWrite<ProfileMetadata>, ManagerError> {
+        let mut slot = self.slot.lock().expect("sim model slot poisoned");
+        slot.model
+            .set_active_profile(metadata.current().get())
+            .map_err(|gap| sim_gap_error(gap, self.transport))?;
+        drop(slot);
+        Ok(sim_write_outcome(metadata, VerificationMethod::Transport))
+    }
+
+    async fn read_battery(&self, _timeout: Duration) -> Result<u8, ManagerError> {
+        use attack_shark_x3::sim::SimBackend;
+        let slot = self.slot.lock().expect("sim model slot poisoned");
+        slot.model
+            .battery()
+            .ok_or(ManagerError::UnsupportedOperation {
+                operation: "read_battery",
+                transport: self.transport,
+            })
+    }
+
+    fn subscribe_events(&self) -> SessionEvents {
+        SessionEvents { input: None }
+    }
+}
+
+/// Readback verification where the transport provides one; BLE acknowledges.
+fn sim_write_outcome<T>(value: T, verification: VerificationMethod) -> SessionWrite<T> {
+    match verification {
+        VerificationMethod::Transport => SessionWrite::Acknowledged,
+        VerificationMethod::Readback => SessionWrite::ReadbackVerified(value),
+    }
+}
+
+/// `DeviceSession` over a [`SimBackend`] replay.
+///
+/// Profile snapshots are rebuilt from the served triple plus metadata that
+/// marks profile 1 current (max 5): ceremony and resolution paths consume
+/// the same types as hardware snapshots, untouched. Transport rules stay
+/// real: BLE refuses reads via gaps exactly like hardware, and writes verify
+/// against the scenario's recorded post-write image or gap loudly naming the
+/// missing capture. The backend is per-session: replay holds no live state.
+struct SimReplaySession {
+    backend: std::sync::Mutex<attack_shark_x3::sim::SimReplay>,
+    token: attack_shark_x3::PhysicalId,
+}
+
+impl SimReplaySession {
+    fn read_image(
+        &self,
+        profile: ProfileId,
+    ) -> Result<attack_shark_x3::sim::ProfileImage, ManagerError> {
+        use attack_shark_x3::sim::SimBackend;
+        // Transport is read before taking the lock: the lock is not reentrant.
+        let transport = self.transport();
+        let token = self.token;
+        let backend = self.backend.lock().expect("sim replay poisoned");
+        let mut image = backend
+            .read_profile(profile.get())
+            .map_err(|gap| sim_gap_error(gap, transport))?;
+        image.0.overlay_physical_id(token);
+        Ok(image)
+    }
+
+    /// Applies one resource change and submits the full image, so the replay
+    /// backend can verify it against the recorded post-write capture.
+    fn store(
+        &self,
+        profile: ProfileId,
+        mutate: impl FnOnce(&mut attack_shark_x3::sim::ProfileImage),
+    ) -> Result<attack_shark_x3::sim::ProfileImage, ManagerError> {
+        use attack_shark_x3::sim::SimBackend;
+        // Transport is read before taking the lock: the lock is not reentrant.
+        let transport = self.transport();
+        let mut backend = self.backend.lock().expect("sim replay poisoned");
+        let mut image = backend
+            .read_profile(profile.get())
+            .map_err(|gap| sim_gap_error(gap, transport))?;
+        mutate(&mut image);
+        backend
+            .write_profile(profile.get(), &image)
+            .map_err(|gap| sim_gap_error(gap, transport))?;
+        Ok(image)
+    }
+
+    /// A behavior this scenario recorded no capture for: never guessed.
+    fn missing_capture(&self, detail: &str) -> ManagerError {
+        sim_gap_error(
+            attack_shark_x3::sim::SimGap(format!("sim-replay: no recorded capture for {detail}")),
+            self.transport(),
+        )
+    }
+}
+
+#[async_trait(?Send)]
+impl DeviceSession for SimReplaySession {
+    fn transport(&self) -> TransportKind {
+        use attack_shark_x3::sim::SimBackend;
+        self.backend
+            .lock()
+            .expect("sim replay poisoned")
+            .transport()
+    }
+
+    async fn read_profile_metadata(&self) -> Result<ProfileMetadata, ManagerError> {
+        ProfileMetadata::new(ProfileId::MIN_ID, ProfileId::MAX_ID).map_err(|error| {
+            ManagerError::Protocol {
+                operation: "sim profile metadata",
+                source: error,
+            }
+        })
+    }
+
+    async fn read_profile(&self, profile: ProfileId) -> Result<ProfileSnapshot, ManagerError> {
+        let image = self.read_image(profile)?;
+        Ok(ProfileSnapshot {
+            persistent_metadata: self.read_profile_metadata().await?,
+            target_profile: profile,
+            dpi: image.0,
+            preferences: image.1,
+            buttons: image.2,
+        })
+    }
+
+    async fn read_dpi(&self, profile: ProfileId) -> Result<DpiState, ManagerError> {
+        self.read_image(profile).map(gap_image_dpi)
+    }
+
+    async fn read_preferences(&self, profile: ProfileId) -> Result<PreferencesState, ManagerError> {
+        self.read_image(profile).map(gap_image_preferences)
+    }
+
+    async fn read_buttons(&self, profile: ProfileId) -> Result<ButtonsState, ManagerError> {
+        self.read_image(profile).map(gap_image_buttons)
+    }
+
+    async fn read_live_polling_rate(&self, _alias: ProfileId) -> Result<PollingRate, ManagerError> {
+        Ok(PollingRate::Hz1000)
+    }
+
+    async fn write_dpi(
+        &self,
+        state: DpiState,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<DpiState>, ManagerError> {
+        let accepted = self.store(state.profile, |image| image.0 = state)?;
+        Ok(sim_write_outcome(accepted.0, verification))
+    }
+
+    async fn write_preferences(
+        &self,
+        state: PreferencesState,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<PreferencesState>, ManagerError> {
+        let accepted = self.store(state.profile, |image| image.1 = state)?;
+        Ok(sim_write_outcome(accepted.1, verification))
+    }
+
+    async fn write_buttons(
+        &self,
+        state: ButtonsState,
+        verification: VerificationMethod,
+    ) -> Result<SessionWrite<ButtonsState>, ManagerError> {
+        let accepted = self.store(state.profile, |image| image.2 = state)?;
+        Ok(sim_write_outcome(accepted.2, verification))
+    }
+
+    async fn write_polling_rate_unchecked(
+        &self,
+        _profile: ProfileId,
+        _rate: PollingRate,
+        _verification: VerificationMethod,
+    ) -> Result<SessionWrite<PollingRate>, ManagerError> {
+        Err(self.missing_capture("polling rate"))
+    }
+
+    async fn write_profile_metadata(
+        &self,
+        _metadata: ProfileMetadata,
+    ) -> Result<SessionWrite<ProfileMetadata>, ManagerError> {
+        Err(self.missing_capture("profile activation"))
+    }
+
+    async fn read_battery(&self, _timeout: Duration) -> Result<u8, ManagerError> {
+        use attack_shark_x3::sim::SimBackend;
+        let transport = self.transport();
+        let level = self.backend.lock().expect("sim replay poisoned").battery();
+        level.ok_or(unsupported_sim_write("read_battery", transport))
+    }
+
+    fn subscribe_events(&self) -> SessionEvents {
+        SessionEvents { input: None }
+    }
+}
+
+/// Maps a [`SimGap`] onto manager errors by the session's transport: a BLE
+/// read refusal becomes `UnsupportedOperation` exactly like hardware, so the
+/// manager's USB/BLE gates treat sim transports as they treat real ones;
+/// every other gap is a loud `InvalidUpdate` naming the missing capture.
+fn sim_gap_error(gap: attack_shark_x3::sim::SimGap, transport: TransportKind) -> ManagerError {
+    match transport {
+        TransportKind::Ble => ManagerError::UnsupportedOperation {
+            operation: "read_profile",
+            transport: TransportKind::Ble,
+        },
+        _ => ManagerError::InvalidUpdate(format!("{gap}")),
+    }
+}
+
+fn gap_image_dpi(image: attack_shark_x3::sim::ProfileImage) -> DpiState {
+    image.0
+}
+
+fn gap_image_preferences(image: attack_shark_x3::sim::ProfileImage) -> PreferencesState {
+    image.1
+}
+
+fn gap_image_buttons(image: attack_shark_x3::sim::ProfileImage) -> ButtonsState {
+    image.2
+}
+
+fn unsupported_sim_write(operation: &'static str, transport: TransportKind) -> ManagerError {
+    ManagerError::UnsupportedOperation {
+        operation,
+        transport,
+    }
+}
+
 #[async_trait(?Send)]
 impl SessionFactory for RealSessionFactory {
     async fn list(
@@ -217,6 +821,7 @@ impl SessionFactory for RealSessionFactory {
                     }
                     #[cfg(feature = "ble")]
                     devices.extend(list_ble_devices().await?);
+                    devices.extend(sim_discovered_endpoints(selection)?);
                     Ok(devices)
                 }
                 #[cfg(not(any(feature = "usb", feature = "ble")))]
@@ -227,40 +832,37 @@ impl SessionFactory for RealSessionFactory {
             TransportSelection::Exact(TransportKind::Wired) => {
                 #[cfg(feature = "usb")]
                 {
-                    list_usb_devices(UsbDeviceKind::Wired)
+                    let mut devices = list_usb_devices(UsbDeviceKind::Wired)?;
+                    devices.extend(sim_discovered_endpoints(selection)?);
+                    Ok(devices)
                 }
                 #[cfg(not(feature = "usb"))]
                 {
-                    Err(ManagerError::UnsupportedOperation {
-                        operation: "list",
-                        transport: TransportKind::Wired,
-                    })
+                    sim_discovered_endpoints(selection)
                 }
             }
             TransportSelection::Exact(TransportKind::Receiver) => {
                 #[cfg(feature = "usb")]
                 {
-                    list_usb_devices(UsbDeviceKind::Receiver)
+                    let mut devices = list_usb_devices(UsbDeviceKind::Receiver)?;
+                    devices.extend(sim_discovered_endpoints(selection)?);
+                    Ok(devices)
                 }
                 #[cfg(not(feature = "usb"))]
                 {
-                    Err(ManagerError::UnsupportedOperation {
-                        operation: "list",
-                        transport: TransportKind::Receiver,
-                    })
+                    sim_discovered_endpoints(selection)
                 }
             }
             TransportSelection::Exact(TransportKind::Ble) => {
                 #[cfg(feature = "ble")]
                 {
-                    list_ble_devices().await
+                    let mut devices = list_ble_devices().await?;
+                    devices.extend(sim_discovered_endpoints(selection)?);
+                    Ok(devices)
                 }
                 #[cfg(not(feature = "ble"))]
                 {
-                    Err(ManagerError::UnsupportedOperation {
-                        operation: "list",
-                        transport: TransportKind::Ble,
-                    })
+                    sim_discovered_endpoints(selection)
                 }
             }
         }
@@ -270,6 +872,14 @@ impl SessionFactory for RealSessionFactory {
         &self,
         endpoint: &DeviceEndpoint,
     ) -> Result<Box<dyn DeviceSession>, ManagerError> {
+        if is_sim_endpoint(endpoint)
+            && let Some(session) =
+                open_sim_session(endpoint).map_err(|gap: attack_shark_x3::sim::SimGap| {
+                    ManagerError::InvalidUpdate(format!("{gap}"))
+                })?
+        {
+            return Ok(session);
+        }
         match endpoint.transport {
             TransportKind::Wired => {
                 #[cfg(feature = "usb")]
@@ -1081,11 +1691,12 @@ impl SessionFactory for ScriptedFakeFactory {
 #[cfg(test)]
 mod tests {
     use super::{DeviceSession, ScriptedFakeSession, SessionWrite};
+    use crate::device::{DeviceEndpoint, TransportSelection};
     use crate::error::ManagerError;
     use crate::operation::VerificationMethod;
     use attack_shark_x3::{
         ButtonAssignment, ButtonsState, DpiState, DpiValue, PollingRate, PreferencesState,
-        ProfileId, StageIndex,
+        ProfileId, StageIndex, TransportKind,
     };
 
     fn profile(value: u8) -> ProfileId {
@@ -1387,5 +1998,246 @@ mod tests {
             .await
             .expect("after metadata activation live is 2");
         assert_eq!(after_meta, PollingRate::Hz500);
+    }
+
+    /// Discovery for one parsed `X3_SIM` spec, without touching the process
+    /// environment (specs are injected, exactly as `sim_spec_from_env` yields
+    /// them for the real variable).
+    fn sim_endpoints(
+        spec: Option<attack_shark_x3::sim::SimSpec>,
+        selection: TransportSelection,
+    ) -> Vec<crate::operation::DiscoveredEndpoint> {
+        super::sim_endpoints_for_spec(spec, selection).expect("sim discovery")
+    }
+
+    fn replay_spec(scenario: &str) -> Option<attack_shark_x3::sim::SimSpec> {
+        Some(attack_shark_x3::sim::SimSpec::Replay {
+            scenario: scenario.to_owned(),
+        })
+    }
+
+    fn model_spec(preset: &str) -> Option<attack_shark_x3::sim::SimSpec> {
+        Some(attack_shark_x3::sim::SimSpec::Model {
+            preset: preset.to_owned(),
+        })
+    }
+
+    #[test]
+    fn sim_env_unset_registers_no_endpoints() {
+        assert!(sim_endpoints(None, TransportSelection::Auto).is_empty());
+    }
+
+    #[test]
+    fn sim_tokens_are_stable_distinct_and_decodable() {
+        use attack_shark_x3::{WatermarkDecode, decode_watermark};
+        let tuned = super::sim_token_for("tuned", 0);
+        let tuned_again = super::sim_token_for("tuned", 0);
+        let stock = super::sim_token_for("stock", 0);
+        let tuned_second = super::sim_token_for("tuned", 1);
+        assert_eq!(tuned, tuned_again, "stable across restarts");
+        assert_ne!(tuned, stock, "distinct per scenario");
+        assert_ne!(tuned, tuned_second, "distinct per endpoint");
+        assert_eq!(
+            decode_watermark(&tuned.to_watermark_bytes()),
+            WatermarkDecode::Valid(tuned),
+            "served tails must authenticate"
+        );
+        assert_ne!(tuned.token_bytes(), [0u8; 16], "never reserved");
+    }
+
+    #[test]
+    fn sim_replay_scenario_registers_one_endpoint_with_backend_tag() {
+        use attack_shark_x3::sim::{SIM_REPLAY_TAG, SimBackend, SimReplay};
+        let endpoints = sim_endpoints(replay_spec("stock"), TransportSelection::Auto);
+        assert_eq!(endpoints.len(), 1, "stock declares one wired endpoint");
+        let endpoint = &endpoints[0].endpoint;
+        assert_eq!(endpoint.transport, TransportKind::Wired);
+        assert!(endpoint.is_coherent());
+        let tag = super::sim_tag_for_endpoint(endpoint).expect("sim endpoint carries its tag");
+        assert_eq!(tag, SIM_REPLAY_TAG);
+        // The registered tag is exactly what the backend reports via tag().
+        let backend = SimReplay::load("stock").expect("stock loads");
+        assert_eq!(tag, backend.tag());
+    }
+
+    #[test]
+    fn sim_model_preset_registers_one_endpoint_with_backend_tag() {
+        use attack_shark_x3::sim::{SIM_MODEL_TAG, SimBackend};
+        let endpoints = sim_endpoints(model_spec("tuned"), TransportSelection::Auto);
+        assert_eq!(
+            endpoints.len(),
+            1,
+            "model presets declare one wired endpoint"
+        );
+        let tag = super::sim_tag_for_endpoint(&endpoints[0].endpoint).expect("tagged");
+        assert_eq!(tag, SIM_MODEL_TAG);
+        assert_eq!(
+            tag,
+            crate::sim_model::SimModel::tuned().tag(),
+            "registered tag equals the backend's tag()"
+        );
+    }
+
+    #[test]
+    fn sim_scenario_endpoints_follow_the_transport_selection() {
+        let endpoints = sim_endpoints(replay_spec("two-ble-unknown"), TransportSelection::Auto);
+        assert_eq!(endpoints.len(), 2, "two BLE endpoints register");
+        assert!(
+            endpoints
+                .iter()
+                .all(|entry| entry.endpoint.transport == TransportKind::Ble)
+        );
+        for entry in &endpoints {
+            assert!(entry.endpoint.is_coherent());
+            assert!(super::is_sim_endpoint(&entry.endpoint));
+        }
+        // A wired-only scan registers nothing from a BLE-only scenario, and
+        // an exact BLE scan registers both.
+        assert!(
+            sim_endpoints(
+                replay_spec("two-ble-unknown"),
+                TransportSelection::Exact(TransportKind::Wired)
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            sim_endpoints(
+                replay_spec("two-ble-unknown"),
+                TransportSelection::Exact(TransportKind::Ble)
+            )
+            .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn sim_garbage_spec_fails_discovery_loudly() {
+        let error =
+            attack_shark_x3::sim::parse_sim_spec("bogus:thing").expect_err("garbage env must fail");
+        let rendered = format!("{error}");
+        assert!(
+            rendered.contains("X3_SIM"),
+            "names the variable: {rendered}"
+        );
+        assert!(rendered.contains("bogus"), "names the value: {rendered}");
+        // The same gap surfaces through manager discovery.
+        let missing =
+            attack_shark_x3::sim::parse_sim_spec("replay:no-such-scenario").expect("parses");
+        let error = super::sim_endpoints_for_spec(missing, TransportSelection::Auto)
+            .expect_err("missing scenario must fail discovery");
+        assert!(
+            format!("{error}").contains("no-such-scenario"),
+            "names the scenario: {error}"
+        );
+    }
+
+    #[test]
+    fn hardware_locators_never_read_as_sim() {
+        let hardware = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            None,
+            r"\\?\hid#vid_1d57&pid_fa61&mi_02&col04",
+            None,
+        )
+        .expect("hardware endpoint");
+        assert!(!super::is_sim_endpoint(&hardware));
+        assert_eq!(super::sim_tag_for_endpoint(&hardware), None);
+        assert!(
+            super::open_sim_session(&hardware)
+                .expect("hardware is not a sim gap")
+                .is_none(),
+            "hardware locators are never sim sessions"
+        );
+    }
+
+    #[test]
+    fn sim_endpoint_without_env_is_a_loud_gap() {
+        let endpoints = sim_endpoints(replay_spec("stock"), TransportSelection::Auto);
+        let error = match super::open_sim_session_for_spec(None, &endpoints[0].endpoint) {
+            Err(error) => error,
+            Ok(_) => panic!("a sim locator without X3_SIM is a gap"),
+        };
+        assert!(format!("{error}").contains("X3_SIM"));
+    }
+
+    #[tokio::test]
+    async fn sim_model_session_roundtrips_a_write() {
+        let endpoints = sim_endpoints(model_spec("tuned"), TransportSelection::Auto);
+        let session = super::open_sim_session_for_spec(model_spec("tuned"), &endpoints[0].endpoint)
+            .expect("open sim session")
+            .expect("sim locator opens a session");
+        assert_eq!(session.transport(), TransportKind::Wired);
+
+        let mut state = session.read_dpi(profile(2)).await.expect("read dpi");
+        state.stages[0] = DpiValue::new(1500).expect("valid dpi stage");
+        let written = session
+            .write_dpi(state.clone(), VerificationMethod::Readback)
+            .await
+            .expect("sim model accepts the write");
+        let SessionWrite::ReadbackVerified(accepted) = written else {
+            panic!("wired sim writes read back");
+        };
+        assert_eq!(accepted, state);
+        assert_eq!(
+            session.read_dpi(profile(2)).await.expect("read back"),
+            state,
+            "write persists in the shared model"
+        );
+    }
+
+    #[tokio::test]
+    async fn sim_model_ble_endpoint_refuses_reads_like_hardware() {
+        let endpoints = sim_endpoints(model_spec("stock"), TransportSelection::Auto);
+        // Same locator, opened as the BLE endpoint the transport says it is.
+        let mut ble = endpoints[0].endpoint.clone();
+        ble.transport = TransportKind::Ble;
+        let session = super::open_sim_session_for_spec(model_spec("stock"), &ble)
+            .expect("open sim session")
+            .expect("sim locator opens a session");
+        assert_eq!(session.transport(), TransportKind::Ble);
+        assert!(matches!(
+            session.read_dpi(profile(1)).await,
+            Err(ManagerError::UnsupportedOperation { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn sim_replay_session_gaps_loudly_on_unrecorded_writes() {
+        let endpoints = sim_endpoints(replay_spec("stock"), TransportSelection::Auto);
+        let session =
+            super::open_sim_session_for_spec(replay_spec("stock"), &endpoints[0].endpoint)
+                .expect("open sim session")
+                .expect("sim locator opens a session");
+        let state = session.read_dpi(profile(1)).await.expect("stock serves");
+        let error = session
+            .write_dpi(state, VerificationMethod::Readback)
+            .await
+            .expect_err("stock ships no post-write capture");
+        let rendered = format!("{error}");
+        assert!(
+            rendered.contains("post-write") || rendered.contains("no recorded capture"),
+            "gap names the missing capture: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sim_ble_replay_endpoint_refuses_reads() {
+        let endpoints = sim_endpoints(
+            replay_spec("two-ble-unknown"),
+            TransportSelection::Exact(TransportKind::Ble),
+        );
+        let session = super::open_sim_session_for_spec(
+            replay_spec("two-ble-unknown"),
+            &endpoints[0].endpoint,
+        )
+        .expect("open sim session")
+        .expect("sim locator opens a session");
+        assert_eq!(session.transport(), TransportKind::Ble);
+        assert!(matches!(
+            session.read_buttons(profile(1)).await,
+            Err(ManagerError::UnsupportedOperation { .. })
+        ));
     }
 }

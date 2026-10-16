@@ -193,6 +193,16 @@ fn resolve_scan(
         }
         // A remembered endpoint→mouse mapping is the known fingerprint.
         let fingerprint_known = manager.is_endpoint_remembered(&row.endpoint);
+        // A valid-but-unknown token is proof of a *different* physical mouse
+        // (foreign adoption case): it must never silent-attach to a saved
+        // mouse by count. Only tokenless rows use count-based resolution.
+        let foreign_token = matches!(
+            row.resolution,
+            IdentityResolution::Unassociated {
+                reason: UnassociatedReason::Unknown,
+                physical_id: Some(_),
+            }
+        ) && !fingerprint_known;
         // `stored` here is the installation-wide OR; the single-candidate
         // branches refine it per mouse inside `resolve_endpoint`.
         match resolve_endpoint(
@@ -202,6 +212,24 @@ fn resolve_scan(
             &candidates,
             stored,
         ) {
+            Resolution::SilentAttach { .. } if foreign_token => {
+                // Demote to an explicit ask: the user picks the mouse (or
+                // sets up new), exactly like the 2+ saved branch.
+                let list = candidates.clone();
+                if list.is_empty() {
+                    // Zero saved: existing ceremony flow handles setup.
+                } else {
+                    pending.push((
+                        row.endpoint.clone(),
+                        PendingEndpoint {
+                            endpoint_label: pending_endpoint_label(&row.endpoint),
+                            transport_label: transport_label(row.endpoint.transport).to_owned(),
+                            candidates: list.iter().map(pending_candidate).collect(),
+                            kind: PendingKind::Which,
+                        },
+                    ));
+                }
+            }
             Resolution::SilentAttach {
                 attach_to,
                 keep_stored_settings,
@@ -1703,13 +1731,20 @@ fn emit_devices(
                 .map(|transport| transport_label(*transport))
                 .collect::<Vec<_>>()
                 .join(" + ");
+            let sim_tag = crate::presentation::sim_tag_for_identity(&device.identity);
+            let name = device
+                .identity
+                .display_name
+                .clone()
+                .unwrap_or_else(|| "X3-compatible device".to_owned());
             DeviceListEntry {
                 id: device.identity.id.to_string(),
-                name: device
-                    .identity
-                    .display_name
-                    .clone()
-                    .unwrap_or_else(|| "X3-compatible device".to_owned()),
+                // Simulated endpoints are tagged with their backend's own
+                // tag so rows are identifiable; hardware rows are unchanged.
+                name: match sim_tag {
+                    Some(tag) if !name.starts_with(tag) => format!("{tag} {name}"),
+                    _ => name,
+                },
                 detail: format!(
                     "{transport} · {}",
                     if device.connected {
@@ -3135,6 +3170,60 @@ mod tests {
             None,
             "later additions must still present an unassociated mouse"
         );
+    }
+
+    #[test]
+    fn foreign_token_never_silent_attaches_by_count() {
+        use attack_shark_x3::PhysicalId;
+        use attack_shark_x3_manager::{DeviceIdentity, DeviceState, StateStore};
+        let store = StateStore::memory();
+        let id = DeviceId::new("mouse-1").unwrap();
+        {
+            let mut txn = store.transaction().unwrap();
+            txn.state_mut().devices.insert(
+                id.clone(),
+                DeviceState::new(DeviceIdentity::new(id.clone(), None)),
+            );
+            txn.state_mut().next_device_number = 2;
+            txn.commit().unwrap();
+        }
+        let manager = DeviceManager::new(store).unwrap();
+        let endpoint = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            None,
+            r"\\?\hid#foreign-sim",
+            None,
+        )
+        .unwrap();
+        // Valid-but-unknown token: a different physical mouse. Must ask,
+        // never silent-attach to the single saved mouse.
+        let foreign = ResolvedConnection {
+            endpoint: endpoint.clone(),
+            connected: true,
+            resolution: IdentityResolution::Unassociated {
+                reason: UnassociatedReason::Unknown,
+                physical_id: Some(PhysicalId::from_token_bytes([0x51; 16])),
+            },
+        };
+        let (silent, pending) = resolve_scan(&manager, std::slice::from_ref(&foreign));
+        assert!(silent.is_empty(), "foreign token must not silent-attach");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1.kind, PendingKind::Which);
+        // Tokenless row with the same single saved mouse: count logic
+        // applies, silent attach proceeds.
+        let bare = ResolvedConnection {
+            endpoint,
+            connected: true,
+            resolution: IdentityResolution::Unassociated {
+                reason: UnassociatedReason::Absent,
+                physical_id: None,
+            },
+        };
+        let (silent, pending) = resolve_scan(&manager, std::slice::from_ref(&bare));
+        assert_eq!(silent.len(), 1);
+        assert!(pending.is_empty());
     }
 
     #[test]

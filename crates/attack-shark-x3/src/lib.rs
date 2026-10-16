@@ -5,6 +5,7 @@ pub mod driver;
 pub mod error;
 pub mod model;
 pub mod protocol;
+pub mod sim;
 
 #[cfg(feature = "usb")]
 pub use driver::{

@@ -1,0 +1,93 @@
+# Sim scenario "tuned".
+#
+# Profile 1 is a non-stock setup: DPI ladder [400, 800, 1600, 3200, 6400]
+# with active stage 3, a zeroed DPI tail (no watermark), stock
+# preferences, and the factory-default button table with slot 3 remapped
+# from dpi-cycle (0x0d) to dpi-minus (0x0f). Profiles 2-5 are the stock
+# reset images, identical to stock.toml. These profile-1 bytes must match
+# `SimModel::tuned()` state-for-state (conformance contract).
+# Single wired endpoint; `battery` is the recorded level served on reads.
+
+battery = 64
+
+[[endpoints]]
+transport = "wired"
+
+[profiles.1]
+dpi_stages = [400, 800, 1600, 3200, 6400]
+active_stage = 3
+dpi_tail = "00000000000000000000000000000000000000000000000000"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = [
+  [0x02, 0x00, 0x00],
+  [0x03, 0x00, 0x00],
+  [0x04, 0x00, 0x00],
+  [0x0f, 0x00, 0x00],
+  [0x3c, 0x00, 0x00],
+  [0x0f, 0x00, 0x00],
+  [0x06, 0x00, 0x00],
+  [0x05, 0x00, 0x00],
+  [0x3c, 0x00, 0x00],
+  [0x01, 0x00, 0x00],
+  [0x01, 0x00, 0x00],
+  [0x01, 0x00, 0x00],
+  [0x01, 0x00, 0x00],
+  [0x01, 0x00, 0x00],
+  [0x01, 0x00, 0x00],
+  [0x01, 0x00, 0x00],
+  [0x0a, 0x00, 0x00],
+  [0x09, 0x00, 0x00],
+]
+
+[profiles.2]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.3]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.4]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
+
+[profiles.5]
+dpi_stages = [800, 1600, 2400, 3200, 5000, 26000]
+active_stage = 2
+dpi_tail = "ff000000ff000000ffffff0000ffffff00ffff4000ffffff01"
+light_mode = 0x00
+configuration = 0x03
+deep_sleep = 0xa8
+host_color = [0x00, 0x00, 0xff]
+sleep_timer = 0x01
+debounce = 0x04
+buttons = "default"
