@@ -28,6 +28,11 @@ slint = { version = "1.17.1", default-features = false, features = [
 ]}
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# rfd's build script requires a Linux backend; xdg-portal is pure Rust (no GTK
+# sysdeps) but needs an async runtime feature, matching the crate's tokio use.
+rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "tokio"] }
+
 [dev-dependencies]
 tempfile = "3"
 

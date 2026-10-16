@@ -459,18 +459,17 @@ mod tests {
         let profile = ProfileId::new(1).expect("profile");
         let device = identity(TransportKind::Wired);
         let source = buttons(profile);
-        let session =
-            ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
-                target_profile: profile,
-                persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
-                dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
-                    vec![DpiValue::new(800).expect("dpi")],
-                    StageIndex::new(1).expect("stage"),
-                )
-                .expect("dpi state"),
-                preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
-                buttons: source,
-            });
+        let session = ScriptedFakeSession::usb().with_profile(attack_shark_x3::ProfileSnapshot {
+            target_profile: profile,
+            persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
+            dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
+                vec![DpiValue::new(800).expect("dpi")],
+                StageIndex::new(1).expect("stage"),
+            )
+            .expect("dpi state"),
+            preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+            buttons: source,
+        });
         let factory = Arc::new(ScriptedFakeFactory::new().with_identity(
             device.clone(),
             true,
@@ -510,18 +509,17 @@ mod tests {
         let profile = ProfileId::new(1).expect("profile");
         let device = identity(TransportKind::Wired);
         let source = buttons(profile);
-        let session =
-            ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
-                target_profile: profile,
-                persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
-                dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
-                    vec![DpiValue::new(800).expect("dpi")],
-                    StageIndex::new(1).expect("stage"),
-                )
-                .expect("dpi state"),
-                preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
-                buttons: source,
-            });
+        let session = ScriptedFakeSession::usb().with_profile(attack_shark_x3::ProfileSnapshot {
+            target_profile: profile,
+            persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
+            dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
+                vec![DpiValue::new(800).expect("dpi")],
+                StageIndex::new(1).expect("stage"),
+            )
+            .expect("dpi state"),
+            preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+            buttons: source,
+        });
         let factory =
             Arc::new(ScriptedFakeFactory::new().with_identity(device.clone(), true, session));
         let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
@@ -561,18 +559,17 @@ mod tests {
         let profile = ProfileId::new(1).expect("profile");
         let device = identity(TransportKind::Wired);
         let source = buttons(profile);
-        let session =
-            ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
-                target_profile: profile,
-                persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
-                dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
-                    vec![DpiValue::new(800).expect("dpi")],
-                    StageIndex::new(1).expect("stage"),
-                )
-                .expect("dpi state"),
-                preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
-                buttons: source,
-            });
+        let session = ScriptedFakeSession::usb().with_profile(attack_shark_x3::ProfileSnapshot {
+            target_profile: profile,
+            persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
+            dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
+                vec![DpiValue::new(800).expect("dpi")],
+                StageIndex::new(1).expect("stage"),
+            )
+            .expect("dpi state"),
+            preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+            buttons: source,
+        });
         let factory =
             Arc::new(ScriptedFakeFactory::new().with_identity(device.clone(), true, session));
         let manager = DeviceManager::with_store_and_factory(store(&dir), factory);
@@ -782,7 +779,7 @@ mod tests {
             ScriptedFakeFactory::new().with_identity(
                 device.clone(),
                 true,
-                ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                ScriptedFakeSession::usb().with_profile(attack_shark_x3::ProfileSnapshot {
                     target_profile: profile,
                     persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
                     dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
@@ -863,7 +860,7 @@ mod tests {
             ScriptedFakeFactory::new().with_identity(
                 device.clone(),
                 true,
-                ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                ScriptedFakeSession::usb().with_profile(attack_shark_x3::ProfileSnapshot {
                     target_profile: profile,
                     persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
                     dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
@@ -897,7 +894,7 @@ mod tests {
             ScriptedFakeFactory::new().with_identity(
                 device.clone(),
                 true,
-                ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
+                ScriptedFakeSession::usb().with_profile(attack_shark_x3::ProfileSnapshot {
                     target_profile: profile,
                     persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
                     dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
@@ -970,18 +967,17 @@ mod tests {
         let device = identity(TransportKind::Wired);
         let id = device.id.clone();
         let source = buttons(profile);
-        let session =
-            ScriptedFakeSession::usb().with_profile(attack_shark_x3::driver::ProfileSnapshot {
-                target_profile: profile,
-                persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
-                dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
-                    vec![DpiValue::new(800).expect("dpi")],
-                    StageIndex::new(1).expect("stage"),
-                )
-                .expect("dpi"),
-                preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
-                buttons: source,
-            });
+        let session = ScriptedFakeSession::usb().with_profile(attack_shark_x3::ProfileSnapshot {
+            target_profile: profile,
+            persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
+            dpi: attack_shark_x3::DpiState::captured_empty_profile_one(
+                vec![DpiValue::new(800).expect("dpi")],
+                StageIndex::new(1).expect("stage"),
+            )
+            .expect("dpi"),
+            preferences: PreferencesState::new(profile, 0, 0, 0, [0; 3], 0, 0),
+            buttons: source,
+        });
         let opens = Arc::new(AtomicUsize::new(0));
         let inner = ScriptedFakeFactory::new().with_identity(device.clone(), true, session);
         let factory = Arc::new(CountingFactory {

@@ -130,17 +130,7 @@ pub enum DriverError {
     },
 }
 
-/// A complete profile observation from one uninterrupted worker command.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-pub struct ProfileSnapshot {
-    pub persistent_metadata: ProfileMetadata,
-    pub target_profile: ProfileId,
-    pub dpi: DpiState,
-    pub preferences: PreferencesState,
-    pub buttons: ButtonsState,
-}
+pub use crate::model::ProfileSnapshot;
 
 /// Cloneable handle for serialized feature-report operations and auxiliary
 /// input-event subscription.

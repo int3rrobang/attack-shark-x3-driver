@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use attack_shark_x3::driver::ProfileSnapshot;
+use attack_shark_x3::ProfileSnapshot;
 use attack_shark_x3::{
     DpiState, PhysicalId, ProfileId, ProfileMetadata, TransportKind, WatermarkDecode,
     decode_watermark,
@@ -344,13 +344,12 @@ impl DeviceManager {
             ) {
                 continue;
             }
-            let fingerprint = endpoint_fingerprint(&row.endpoint);
-            if let Some(remembered) = state.endpoint_mapping.endpoints.get(&fingerprint)
-                && state.devices.contains_key(remembered)
+            if let Some(remembered) = remembered_device_in(&state, &row.endpoint)
+                && remembered_mapping_agrees(&state, &row.endpoint, presented_token(row))
             {
                 let keep = state
                     .devices
-                    .get(remembered)
+                    .get(&remembered)
                     .is_some_and(device_has_evidence);
                 silent.push((row.endpoint.clone(), remembered.clone(), keep));
                 continue;
@@ -406,11 +405,8 @@ impl DeviceManager {
             ) {
                 continue;
             }
-            if let Some(remembered) = state
-                .endpoint_mapping
-                .endpoints
-                .get(&endpoint_fingerprint(&row.endpoint))
-                && state.devices.contains_key(remembered)
+            if let Some(remembered) = remembered_device_in(&state, &row.endpoint)
+                && remembered_mapping_agrees(&state, &row.endpoint, presented_token(row))
             {
                 row.resolution = IdentityResolution::Resolved {
                     identity: remembered.clone(),
@@ -533,18 +529,21 @@ impl DeviceManager {
         connections: &[ResolvedConnection],
     ) -> Result<Resolution, ManagerError> {
         let state = self.store.load()?;
-        let fingerprint = endpoint_fingerprint(endpoint);
-        if let Some(remembered) = state.endpoint_mapping.endpoints.get(&fingerprint)
-            && state.devices.contains_key(remembered)
-        {
-            let keep = state
-                .devices
-                .get(remembered)
-                .is_some_and(device_has_evidence);
-            return Ok(Resolution::SilentAttach {
-                attach_to: remembered.clone(),
-                keep_stored_settings: keep,
-            });
+        if let Some(remembered) = remembered_device_in(&state, endpoint) {
+            let presented = connections
+                .iter()
+                .find(|row| row.endpoint == *endpoint)
+                .and_then(presented_token);
+            if remembered_mapping_agrees(&state, endpoint, presented) {
+                let keep = state
+                    .devices
+                    .get(&remembered)
+                    .is_some_and(device_has_evidence);
+                return Ok(Resolution::SilentAttach {
+                    attach_to: remembered.clone(),
+                    keep_stored_settings: keep,
+                });
+            }
         }
         let unknown_count = connections
             .iter()
@@ -575,14 +574,25 @@ impl DeviceManager {
     /// True when the durable endpoint→mouse mapping remembers `endpoint`
     /// against a mouse that still exists: the known fingerprint.
     pub fn is_endpoint_remembered(&self, endpoint: &DeviceEndpoint) -> bool {
-        let Ok(state) = self.store.load() else {
-            return false;
-        };
-        state
-            .endpoint_mapping
-            .endpoints
-            .get(&endpoint_fingerprint(endpoint))
-            .is_some_and(|remembered| state.devices.contains_key(remembered))
+        self.remembered_device_for(endpoint).is_some()
+    }
+
+    /// The saved mouse a remembered endpoint→mouse mapping points at, when
+    /// the mapping exists and the mouse still exists.
+    pub fn remembered_device_for(&self, endpoint: &DeviceEndpoint) -> Option<DeviceId> {
+        let state = self.store.load().ok()?;
+        remembered_device_in(&state, endpoint)
+    }
+
+    /// The physical token a saved mouse carries, if any.
+    pub fn device_physical_id(&self, device: &DeviceId) -> Option<attack_shark_x3::PhysicalId> {
+        self.store
+            .load()
+            .ok()?
+            .devices
+            .get(device)?
+            .identity
+            .physical_id
     }
 
     /// Persists one endpoint→mouse mapping decision (silent or answered),
@@ -2568,7 +2578,17 @@ fn is_supported_usb_device(device: &nusb::DeviceInfo) -> bool {
 /// Stable endpoint fingerprint for the endpoint→mouse mapping: BLE uses the
 /// platform id; USB uses VID/PID/serial (empty serial when the transport
 /// reports none). Never an OS HID path, which changes on replug.
+/// Sim endpoints fingerprint by reserved locator: VID/PID/serial collide
+/// with hardware by design (the sim mimics a real unit), so they must
+/// never share the hardware fingerprint space.
 fn endpoint_fingerprint(endpoint: &DeviceEndpoint) -> String {
+    if let Some(tag) = crate::backend::sim_tag_for_endpoint(endpoint) {
+        let locator = match &endpoint.locator {
+            DeviceLocator::UsbPath(path) => path.as_str(),
+            DeviceLocator::BlePlatformId(id) => id.as_str(),
+        };
+        return format!("sim:{tag}:{locator}");
+    }
     match endpoint.transport {
         TransportKind::Ble => match &endpoint.locator {
             DeviceLocator::BlePlatformId(id) => format!("ble:{id}"),
@@ -2585,6 +2605,54 @@ fn endpoint_fingerprint(endpoint: &DeviceEndpoint) -> String {
             };
             format!("usb:{kind}:{vid:04x}:{pid:04x}:{serial}")
         }
+    }
+}
+
+/// The saved mouse a remembered endpoint→mouse mapping points at, when the
+/// mapping exists and the mouse still exists. Pure over loaded state for
+/// the scan paths that already hold it.
+fn remembered_device_in(state: &StateFile, endpoint: &DeviceEndpoint) -> Option<DeviceId> {
+    let remembered = state
+        .endpoint_mapping
+        .endpoints
+        .get(&endpoint_fingerprint(endpoint))?;
+    state
+        .devices
+        .contains_key(remembered)
+        .then(|| remembered.clone())
+}
+
+/// True when the remembered mapping for `endpoint` still agrees with the
+/// token the endpoint presented this scan: no token, no remembered mouse,
+/// an untokened remembered mouse, or the same token all pass. A Valid
+/// token the remembered mouse doesn't own (stale/colliding mapping)
+/// fails, so the row asks instead of mis-attaching — and self-heals when
+/// the user answers.
+fn remembered_mapping_agrees(
+    state: &StateFile,
+    endpoint: &DeviceEndpoint,
+    presented: Option<attack_shark_x3::PhysicalId>,
+) -> bool {
+    let Some(token) = presented else {
+        return true;
+    };
+    remembered_device_in(state, endpoint).is_none_or(|remembered| {
+        state
+            .devices
+            .get(&remembered)
+            .and_then(|device| device.identity.physical_id)
+            .is_none_or(|owned| owned == token)
+    })
+}
+
+/// The Valid token a scan row presented, if any.
+fn presented_token(row: &ResolvedConnection) -> Option<attack_shark_x3::PhysicalId> {
+    match &row.resolution {
+        IdentityResolution::Unassociated {
+            reason: UnassociatedReason::Unknown,
+            physical_id: Some(token),
+        } => Some(*token),
+        _ => None,
     }
 }
 
@@ -3166,11 +3234,8 @@ mod tests {
     }
 
     /// Builds a full profile snapshot whose DPI carries `tail` verbatim.
-    fn snapshot_with_tail(
-        profile: ProfileId,
-        tail: [u8; 25],
-    ) -> attack_shark_x3::driver::ProfileSnapshot {
-        attack_shark_x3::driver::ProfileSnapshot {
+    fn snapshot_with_tail(profile: ProfileId, tail: [u8; 25]) -> attack_shark_x3::ProfileSnapshot {
+        attack_shark_x3::ProfileSnapshot {
             target_profile: profile,
             persistent_metadata: ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap(),
             dpi: DpiState::new(
@@ -3229,7 +3294,7 @@ mod tests {
         async fn read_profile(
             &self,
             profile: ProfileId,
-        ) -> Result<attack_shark_x3::driver::ProfileSnapshot, ManagerError> {
+        ) -> Result<attack_shark_x3::ProfileSnapshot, ManagerError> {
             self.inner.read_profile(profile).await
         }
         async fn read_dpi(&self, profile: ProfileId) -> Result<DpiState, ManagerError> {
@@ -3297,7 +3362,7 @@ mod tests {
 
     struct UnsupportedPollSession {
         metadata: ProfileMetadata,
-        snapshot: attack_shark_x3::driver::ProfileSnapshot,
+        snapshot: attack_shark_x3::ProfileSnapshot,
     }
     #[async_trait::async_trait(?Send)]
     impl DeviceSession for UnsupportedPollSession {
@@ -3310,7 +3375,7 @@ mod tests {
         async fn read_profile(
             &self,
             _profile: ProfileId,
-        ) -> Result<attack_shark_x3::driver::ProfileSnapshot, ManagerError> {
+        ) -> Result<attack_shark_x3::ProfileSnapshot, ManagerError> {
             Ok(self.snapshot.clone())
         }
         async fn read_dpi(&self, _p: ProfileId) -> Result<DpiState, ManagerError> {
@@ -3655,7 +3720,7 @@ mod tests {
             attack_shark_x3::ProfileId::new(3).unwrap(),
         )
         .unwrap();
-        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+        let snapshot = attack_shark_x3::ProfileSnapshot {
             target_profile: ProfileId::new(1).unwrap(),
             persistent_metadata: metadata,
             dpi: DpiState::new(
@@ -3727,7 +3792,9 @@ mod tests {
         );
         let meta = status.profile_metadata.as_ref().unwrap();
         assert_eq!(meta.resource.observed.as_ref().unwrap().value, metadata);
-        assert!(meta.resource.desired.is_none());
+        let captured = meta.resource.desired.as_ref().expect("captured baseline");
+        assert_eq!(captured.value, metadata);
+        assert_eq!(captured.source, DesiredSource::CapturedBaseline);
         let persisted = store.load().unwrap();
         let device_state = &persisted.devices[&id];
         let profile_state = &device_state.profiles[&profile];
@@ -4251,7 +4318,7 @@ mod tests {
         let id = insert_device_with_endpoint(&store, endpoint.clone());
         let target = ProfileId::new(2).unwrap();
         let metadata = ProfileMetadata::new(target, ProfileId::new(3).unwrap()).unwrap();
-        let snapshot2 = attack_shark_x3::driver::ProfileSnapshot {
+        let snapshot2 = attack_shark_x3::ProfileSnapshot {
             target_profile: target,
             persistent_metadata: metadata,
             dpi: DpiState::new(
@@ -4323,7 +4390,7 @@ mod tests {
         let id = insert_device_with_endpoint(&store, endpoint.clone());
         let metadata =
             ProfileMetadata::new(ProfileId::new(1).unwrap(), ProfileId::new(3).unwrap()).unwrap();
-        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+        let snapshot = attack_shark_x3::ProfileSnapshot {
             target_profile: ProfileId::new(1).unwrap(),
             persistent_metadata: metadata,
             dpi: DpiState::new(
@@ -4351,7 +4418,7 @@ mod tests {
         struct Factory {
             endpoint: DeviceEndpoint,
             metadata: ProfileMetadata,
-            snapshot: attack_shark_x3::driver::ProfileSnapshot,
+            snapshot: attack_shark_x3::ProfileSnapshot,
         }
         #[async_trait::async_trait(?Send)]
         impl crate::backend::SessionFactory for Factory {
@@ -4663,7 +4730,7 @@ mod tests {
         let id = insert_device_with_endpoint(&store, endpoint.clone());
         let profile = ProfileId::new(1).unwrap();
         let baseline = ButtonsState::default_for_profile(profile);
-        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+        let snapshot = attack_shark_x3::ProfileSnapshot {
             target_profile: profile,
             persistent_metadata: ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap(),
             dpi: DpiState::new(
@@ -4773,7 +4840,7 @@ mod tests {
         .unwrap();
         let prefs = PreferencesState::new(profile, 0, 0, 0, [0, 0, 0], 0, 0);
         let buttons = ButtonsState::default_for_profile(profile);
-        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+        let snapshot = attack_shark_x3::ProfileSnapshot {
             target_profile: profile,
             persistent_metadata: ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap(),
             dpi: dpi.clone(),
@@ -4846,7 +4913,7 @@ mod tests {
         let prefs = PreferencesState::new(profile, 1, 1, 0, [0, 0, 0], 0, 0);
         let buttons = ButtonsState::default_for_profile(profile);
         let metadata = ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap();
-        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+        let snapshot = attack_shark_x3::ProfileSnapshot {
             target_profile: profile,
             persistent_metadata: metadata,
             dpi: dpi.clone(),
@@ -4970,7 +5037,7 @@ mod tests {
             async fn read_profile(
                 &self,
                 p: ProfileId,
-            ) -> Result<attack_shark_x3::driver::ProfileSnapshot, ManagerError> {
+            ) -> Result<attack_shark_x3::ProfileSnapshot, ManagerError> {
                 self.inner.read_profile(p).await
             }
             async fn read_dpi(&self, p: ProfileId) -> Result<DpiState, ManagerError> {
@@ -5045,7 +5112,7 @@ mod tests {
             [0; 25],
         )
         .unwrap();
-        let snapshot = attack_shark_x3::driver::ProfileSnapshot {
+        let snapshot = attack_shark_x3::ProfileSnapshot {
             target_profile: profile,
             persistent_metadata: ProfileMetadata::new(profile, ProfileId::new(5).unwrap()).unwrap(),
             dpi: baseline.clone(),

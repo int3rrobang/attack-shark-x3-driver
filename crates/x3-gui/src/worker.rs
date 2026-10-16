@@ -16,7 +16,7 @@ use crate::presentation::{
     transport_label_for_identity, unassociated_detail, unassociated_name, workflow_summary,
 };
 use crate::projection::apply_event;
-use attack_shark_x3::{DebounceMs, DeepSleepMinutes, SleepTimer};
+use attack_shark_x3::{DebounceMs, DeepSleepMinutes, PhysicalId, SleepTimer};
 use attack_shark_x3_manager::{
     BaselineSource, ButtonSlotDelta, Candidate, ConfigurationExport, DeviceEndpoint, DeviceEvent,
     DeviceId, DeviceIdentity, DeviceLocator, DeviceManager, DeviceStatus, DeviceTopologyEvent,
@@ -191,18 +191,29 @@ fn resolve_scan(
         ) {
             continue;
         }
-        // A remembered endpoint→mouse mapping is the known fingerprint.
-        let fingerprint_known = manager.is_endpoint_remembered(&row.endpoint);
+        // A remembered endpoint→mouse mapping is the known fingerprint —
+        // unless the row presents a Valid token the remembered mouse doesn't
+        // own (stale/colliding mapping, e.g. a sim locator that shared a
+        // hardware fingerprint): then the mapping is ignored and the row is
+        // asked, self-healing instead of mis-attaching forever.
+        let presented_token = match &row.resolution {
+            IdentityResolution::Unassociated {
+                reason: UnassociatedReason::Unknown,
+                physical_id: Some(token),
+            } => Some(*token),
+            _ => None,
+        };
+        let fingerprint_known = manager.is_endpoint_remembered(&row.endpoint)
+            && presented_token.is_none_or(|token| {
+                manager
+                    .remembered_device_for(&row.endpoint)
+                    .and_then(|id| manager.device_physical_id(&id))
+                    .is_none_or(|owned| owned == token)
+            });
         // A valid-but-unknown token is proof of a *different* physical mouse
         // (foreign adoption case): it must never silent-attach to a saved
         // mouse by count. Only tokenless rows use count-based resolution.
-        let foreign_token = matches!(
-            row.resolution,
-            IdentityResolution::Unassociated {
-                reason: UnassociatedReason::Unknown,
-                physical_id: Some(_),
-            }
-        ) && !fingerprint_known;
+        let foreign_token = presented_token.is_some() && !fingerprint_known;
         // `stored` here is the installation-wide OR; the single-candidate
         // branches refine it per mouse inside `resolve_endpoint`.
         match resolve_endpoint(
@@ -226,6 +237,7 @@ fn resolve_scan(
                             transport_label: transport_label(row.endpoint.transport).to_owned(),
                             candidates: list.iter().map(pending_candidate).collect(),
                             kind: PendingKind::Which,
+                            presented_token,
                         },
                     ));
                 }
@@ -250,6 +262,7 @@ fn resolve_scan(
                     transport_label: transport_label(row.endpoint.transport).to_owned(),
                     candidates: list.iter().map(pending_candidate).collect(),
                     kind: PendingKind::Which,
+                    presented_token,
                 },
             )),
             Resolution::AskNewOrMine { candidate } => pending.push((
@@ -259,6 +272,7 @@ fn resolve_scan(
                     transport_label: transport_label(row.endpoint.transport).to_owned(),
                     candidates: vec![pending_candidate(&candidate)],
                     kind: PendingKind::NewOrMine,
+                    presented_token,
                 },
             )),
             Resolution::SetupFirst => {}
@@ -354,12 +368,14 @@ pub struct LoadedDevice {
     pub profile_names: BTreeMap<ProfileId, String>,
 }
 
+#[derive(Debug)]
 pub struct LiveProfile {
     pub enabled: bool,
     pub current: bool,
     pub name: String,
 }
 
+#[derive(Debug)]
 pub struct LiveSnapshot {
     pub device_name: String,
     pub stable_id: String,
@@ -394,6 +410,7 @@ pub struct LiveSnapshot {
     pub status: String,
 }
 
+#[derive(Debug)]
 pub struct DeviceListEntry {
     pub id: String,
     pub name: String,
@@ -412,6 +429,7 @@ pub struct UnassociatedEntry {
 
 /// UI row for an unassociated connection; the capability flags decide which
 /// ceremony actions the row offers.
+#[derive(Debug)]
 pub struct UnassociatedRow {
     pub name: String,
     pub detail: String,
@@ -425,6 +443,7 @@ pub struct UnassociatedRow {
 /// user-facing copy is resolved here (and in `presentation`) so the `Slint`
 /// surface only renders strings; the typed `prompt` (the popup's primary
 /// action) remains available for logic and tests.
+#[derive(Debug)]
 pub struct CeremonyView {
     pub title: String,
     pub instruction: String,
@@ -459,6 +478,11 @@ pub struct PendingEndpoint {
     pub transport_label: String,
     pub candidates: Vec<PendingCandidate>,
     pub kind: PendingKind,
+    /// The Valid watermark token this endpoint presented at scan time, if
+    /// any. Logic-only (the Slint surface never renders it): the answer
+    /// path uses it to detect a pick whose saved mouse doesn't own the
+    /// token and route to foreign adoption instead of a doomed attach.
+    pub presented_token: Option<PhysicalId>,
 }
 
 /// One saved mouse backing a [`PendingEndpoint`] row.
@@ -479,6 +503,7 @@ pub enum PendingKind {
     NewOrMine,
 }
 
+#[derive(Debug)]
 pub enum UiEvent {
     Busy(String),
     /// Unknown endpoint(s) need per-endpoint disambiguation; never
@@ -1386,6 +1411,36 @@ pub fn worker_main(
                                 emit(&weak, UiEvent::Error("the app isn't ready; press Refresh to try again".into()));
                                 continue;
                             };
+                            // A pick whose saved mouse doesn't own the
+                            // endpoint's presented token can never load
+                            // (open_locked refuses it): route to the foreign
+                            // adoption ceremony, which binds the token to a
+                            // mouse, instead of a doomed attach + error.
+                            let presented_token = pending_endpoints
+                                .iter()
+                                .find(|(handle, _)| *handle == endpoint)
+                                .and_then(|(_, row)| row.presented_token);
+                            let adopt_instead = match (&device, presented_token) {
+                                (Some(id), Some(token)) => {
+                                    manager_ref.device_physical_id(id) != Some(token)
+                                }
+                                _ => false,
+                            };
+                            if adopt_instead {
+                                let subject = unassociated
+                                    .iter()
+                                    .position(|entry| entry.endpoint == endpoint);
+                                let Some(subject) = subject else {
+                                    emit(&weak, UiEvent::OperationError("the mouse list changed; press Refresh and try again".into()));
+                                    continue;
+                                };
+                                pending = Some(Command::BeginCeremony {
+                                    kind: IdentityCeremonyKind::ForeignAdoption,
+                                    target: None,
+                                    subject: Some(subject),
+                                });
+                                continue;
+                            }
                             match device {
                                 Some(id) => {
                                     if let Err(error) = manager_ref.remember_resolution(&endpoint, &id) {
@@ -1403,7 +1458,10 @@ pub fn worker_main(
                                 None => {
                                     // Set up as new: reuse the existing
                                     // ceremony machinery via the unassociated
-                                    // row matching this endpoint.
+                                    // row matching this endpoint. A Valid
+                                    // token must adopt (AddMouse capture
+                                    // refuses marked mice); only tokenless
+                                    // endpoints enroll fresh.
                                     let subject = unassociated
                                         .iter()
                                         .position(|entry| entry.endpoint == endpoint);
@@ -1413,6 +1471,8 @@ pub fn worker_main(
                                     };
                                     let kind = if endpoint.transport == TransportKind::Ble {
                                         IdentityCeremonyKind::BleAssociation
+                                    } else if presented_token.is_some() {
+                                        IdentityCeremonyKind::ForeignAdoption
                                     } else if mode.is_legacy() {
                                         IdentityCeremonyKind::InitialEnrollment
                                     } else {
@@ -1693,12 +1753,100 @@ fn handle_disconnect(
 }
 
 fn emit(weak: &slint::Weak<AppWindow>, event: UiEvent) {
+    log_event(&event);
     let weak = weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
             apply_event(&ui, event);
         }
     });
+}
+
+/// Tiered log sink for UI events through the manager's `diagnostics` logger
+/// (target `"worker"`). The level gates live in the logging macros, so with
+/// `X3_LOG` unset this is a no-op and `emit()` behaves exactly as before.
+/// File handling, timestamps, and rotation belong to the diagnostics core;
+/// the GUI only maps events to tiers. Labels at INFO stay laconic (the rows
+/// already carry laconic labels, never OS HID paths); full dumps are DEBUG
+/// and above, full snapshots TRACE-only.
+fn log_event(event: &UiEvent) {
+    use attack_shark_x3_manager::{log_debug, log_error, log_info, log_trace};
+    match event {
+        UiEvent::Error(_)
+        | UiEvent::OperationError(_)
+        | UiEvent::CeremonyError(_)
+        | UiEvent::StateUnreadable(_) => {
+            log_error!("worker", "{event:?}");
+        }
+        UiEvent::AskPerEndpoint(rows) => {
+            for row in rows {
+                log_info!(
+                    "worker",
+                    "ask {} candidates={}",
+                    row.endpoint_label,
+                    row.candidates.len()
+                );
+                log_debug!("worker", "ask-row {row:?}");
+            }
+        }
+        UiEvent::CeremonyProgress(view) => {
+            log_info!("worker", "ceremony {}: {}", view.title, view.instruction);
+        }
+        UiEvent::Devices(entries) => {
+            let summary = entries
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{}:{}",
+                        entry.id,
+                        if entry.connected {
+                            "connected"
+                        } else {
+                            "disconnected"
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            log_info!("worker", "devices {summary}");
+            log_debug!("worker", "devices-full {event:?}");
+        }
+        UiEvent::AutoAttached { keep_stored } => {
+            log_info!(
+                "worker",
+                "auto-attached {}",
+                if *keep_stored {
+                    "kept saved settings"
+                } else {
+                    "took mouse settings"
+                }
+            );
+        }
+        UiEvent::Snapshot(snapshot) => {
+            log_debug!(
+                "worker",
+                "snapshot status={:?} ble={}",
+                snapshot.status,
+                snapshot.is_ble
+            );
+            log_trace!("worker", "snapshot-full {snapshot:?}");
+        }
+        UiEvent::EventSnapshot(snapshot) => {
+            log_debug!(
+                "worker",
+                "event-snapshot status={:?} ble={}",
+                snapshot.status,
+                snapshot.is_ble
+            );
+            log_trace!("worker", "event-snapshot-full {snapshot:?}");
+        }
+        UiEvent::Busy(status) => {
+            log_debug!("worker", "busy {status}");
+        }
+        other => {
+            log_debug!("worker", "{other:?}");
+        }
+    }
 }
 
 fn emit_snapshot(weak: &slint::Weak<AppWindow>, loaded: &LoadedDevice, status: &str) {
@@ -3294,6 +3442,7 @@ mod tests {
             transport_label: transport_label(endpoint.transport).to_owned(),
             candidates: vec![pending_candidate(&bare[0])],
             kind: PendingKind::NewOrMine,
+            presented_token: None,
         };
         assert_eq!(row.kind, PendingKind::NewOrMine);
         assert!(!row.endpoint_label.contains("hid"));

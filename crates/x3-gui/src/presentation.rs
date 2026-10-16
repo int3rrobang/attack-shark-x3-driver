@@ -147,6 +147,10 @@ pub fn format_error_string(prefix: &str, error: ManagerError) -> String {
         ManagerError::MissingBaseline { resource, .. } => {
             format!("saved {resource} settings are needed for this change")
         }
+        ManagerError::AttachmentNotAuthenticated { .. } => {
+            "that's a different physical mouse than the saved one; adopt it as a new mouse or reconnect the matching unit"
+                .to_owned()
+        }
         other => other.to_string(),
     };
     format!("{prefix}: {message}")

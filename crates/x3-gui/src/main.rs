@@ -1,5 +1,6 @@
 use std::{error::Error, thread};
 
+use attack_shark_x3_manager::diagnostics::{LoggerConfig, init};
 use attack_shark_x3_manager::{DeviceId, IdentityCeremonyAction, IdentityCeremonyKind, ProfileId};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tokio::sync::{mpsc, watch};
@@ -38,6 +39,9 @@ const UNASSOCIATED_ADOPT: i32 = 2;
 const UNASSOCIATED_ASSOCIATE: i32 = 3;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Tiered logging first: with X3_LOG unset this only arms Error gating
+    // and touches no file, so default behavior is unchanged.
+    init(LoggerConfig::from_env_gui());
     let ui = AppWindow::new()?;
     let dpi_stages = std::rc::Rc::new(VecModel::from(Vec::<DpiStage>::new()));
     let bindings = std::rc::Rc::new(VecModel::from(Vec::<BindingRow>::new()));

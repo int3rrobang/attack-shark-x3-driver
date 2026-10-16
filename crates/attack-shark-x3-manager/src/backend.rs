@@ -9,7 +9,7 @@ use async_trait::async_trait;
 #[cfg(feature = "usb")]
 use attack_shark_x3::MouseHandle;
 #[cfg(any(feature = "usb", feature = "ble"))]
-use attack_shark_x3::driver::ProfileSnapshot;
+use attack_shark_x3::ProfileSnapshot;
 #[cfg(feature = "ble")]
 use attack_shark_x3::{BleDeviceId, BleHandle, BleSelector};
 use attack_shark_x3::{
@@ -582,7 +582,17 @@ impl DeviceSession for SimModelSession {
             .set_active_profile(metadata.current().get())
             .map_err(|gap| sim_gap_error(gap, self.transport))?;
         drop(slot);
-        Ok(sim_write_outcome(metadata, VerificationMethod::Transport))
+        // Metadata writes carry no verification mode (trait-wide): like the
+        // real USB session, always read back. The model serves the full
+        // slot range, so post-write actual mirrors `read_profile_metadata`.
+        let actual =
+            ProfileMetadata::new(metadata.current(), ProfileId::MAX_ID).map_err(|error| {
+                ManagerError::Protocol {
+                    operation: "sim profile metadata",
+                    source: error,
+                }
+            })?;
+        Ok(SessionWrite::ReadbackVerified(actual))
     }
 
     async fn read_battery(&self, _timeout: Duration) -> Result<u8, ManagerError> {
@@ -1703,7 +1713,7 @@ mod tests {
         ProfileId::try_from(value).expect("test profile must be valid")
     }
 
-    fn snapshot() -> attack_shark_x3::driver::ProfileSnapshot {
+    fn snapshot() -> attack_shark_x3::ProfileSnapshot {
         use attack_shark_x3::ProfileMetadata;
         let dpi = DpiState::new(
             profile(2),
@@ -1713,7 +1723,7 @@ mod tests {
         )
         .expect("valid dpi state");
         let slots = [ButtonAssignment::default(); 18];
-        attack_shark_x3::driver::ProfileSnapshot {
+        attack_shark_x3::ProfileSnapshot {
             persistent_metadata: ProfileMetadata::new(profile(2), profile(5))
                 .expect("valid metadata"),
             target_profile: profile(2),
@@ -1896,7 +1906,7 @@ mod tests {
         // Per-profile rates with live profile 1.
         let session = ScriptedFakeSession::usb()
             .with_profile(snapshot())
-            .with_profile(attack_shark_x3::driver::ProfileSnapshot {
+            .with_profile(attack_shark_x3::ProfileSnapshot {
                 target_profile: profile(1),
                 persistent_metadata: attack_shark_x3::ProfileMetadata::new(profile(1), profile(5))
                     .expect("valid metadata"),
@@ -1941,7 +1951,7 @@ mod tests {
     async fn polling_write_updates_target_slot_and_live_visibility() {
         let session = ScriptedFakeSession::usb()
             .with_profile(snapshot())
-            .with_profile(attack_shark_x3::driver::ProfileSnapshot {
+            .with_profile(attack_shark_x3::ProfileSnapshot {
                 target_profile: profile(1),
                 persistent_metadata: attack_shark_x3::ProfileMetadata::new(profile(1), profile(5))
                     .expect("valid metadata"),

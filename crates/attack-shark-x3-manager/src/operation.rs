@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use attack_shark_x3::driver::ProfileSnapshot;
+use attack_shark_x3::ProfileSnapshot;
 use attack_shark_x3::{
     BatteryEvent, ButtonsState, ConnectionChangedEvent, DpiButtonEvent, DpiIndexChangedEvent,
     DpiState, InputEvent, LedModeChangedEvent, PhysicalId, PollingRate, PreferencesState,
@@ -529,10 +529,12 @@ pub struct PowerCycleVerificationOutcome {
     pub buttons: WriteOutcome<ButtonsState>,
     pub polling_rate: WriteOutcome<PollingRate>,
 }
-#[cfg(any(feature = "usb", feature = "ble"))]
 /// Complete profile images already read through this manager and held by a
 /// frontend while it edits a draft. Supplying this baseline avoids a second
 /// pre-write hardware read; post-write verification remains unchanged.
+///
+/// Pure data (no transport dependency), so it is available in every feature
+/// configuration like the snapshot types it mirrors.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileUpdateBaseline {

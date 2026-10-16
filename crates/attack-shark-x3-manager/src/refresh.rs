@@ -269,7 +269,7 @@ fn observed<T>(value: T, now: Timestamp) -> ResourceState<T> {
 mod tests {
     use std::sync::Arc;
 
-    use attack_shark_x3::driver::ProfileSnapshot;
+    use attack_shark_x3::ProfileSnapshot;
     use attack_shark_x3::{
         ButtonsState, DpiState, PollingRate, PreferencesState, ProfileId, ProfileMetadata,
         TransportKind,

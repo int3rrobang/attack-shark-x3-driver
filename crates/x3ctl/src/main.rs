@@ -5,6 +5,7 @@ mod args;
 #[path = "x3ctl/output.rs"]
 mod output;
 
+use attack_shark_x3_manager::diagnostics;
 use attack_shark_x3_manager::{
     BaselineSource, ButtonAssignment, ButtonSlotDelta, ButtonsState, ConfigurationExport,
     DeviceEndpoint, DeviceId, DeviceLocator, DeviceManager, DeviceStatus, DiscoveryView, DpiDelta,
@@ -126,6 +127,7 @@ enum Action {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    init_logging(&cli);
     let output = Output::new(cli.output);
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -134,7 +136,12 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            let _ = output.error(&format!("failed to create async runtime: {error}"));
+            let failure = CliError::message(format!("failed to create async runtime: {error}"));
+            let _ = output.error_with_context(
+                command_context(cli.command.as_ref()),
+                &failure.display,
+                &failure.debug,
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -142,13 +149,149 @@ fn main() -> ExitCode {
     match runtime.block_on(run(&cli, &output)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            let _ = output.error(&error);
+            let _ = output.error_with_context(
+                command_context(cli.command.as_ref()),
+                &error.display,
+                &error.debug,
+            );
             ExitCode::FAILURE
         }
     }
 }
 
-async fn run(cli: &Cli, output: &Output) -> Result<(), String> {
+/// Resolve the log level (flag wins over `X3_LOG`) and initialize logging.
+///
+/// A garbage `--log-level` falls back to `Error` with a stderr note; no flags
+/// plus unset/empty `X3_LOG` leaves logging off with zero behavior change.
+fn init_logging(cli: &Cli) {
+    let from_flag = cli
+        .log_level
+        .as_deref()
+        .map(|raw| match diagnostics::LogLevel::parse(raw) {
+            Some(level) => level,
+            None => {
+                eprintln!("warning: invalid --log-level '{raw}'; falling back to error");
+                diagnostics::LogLevel::Error
+            }
+        });
+    let level = match from_flag {
+        Some(level) => level,
+        None => diagnostics::LogLevel::from_env(),
+    };
+    if level == diagnostics::LogLevel::Off {
+        return;
+    }
+    diagnostics::init(diagnostics::LoggerConfig::for_cli(
+        level,
+        cli.log_file.clone(),
+    ));
+}
+
+/// Laconic command context for error log lines (no payloads, no secrets).
+fn command_context(command: Option<&Command>) -> &'static str {
+    match command {
+        None => "status",
+        Some(Command::Devices) => "devices",
+        Some(Command::Use { .. }) => "use",
+        Some(Command::Forget { .. }) => "forget",
+        Some(Command::Rename { .. }) => "rename",
+        Some(Command::Identity(command)) => match command {
+            IdentityCommand::Status => "identity status",
+            IdentityCommand::Begin { .. } => "identity begin",
+            IdentityCommand::Restore { .. } => "identity restore",
+            IdentityCommand::Adopt => "identity adopt",
+            IdentityCommand::Associate { .. } => "identity associate",
+            IdentityCommand::Reconnect => "identity reconnect",
+            IdentityCommand::Stamp => "identity stamp",
+            IdentityCommand::Continue => "identity continue",
+            IdentityCommand::AcceptMigration => "identity accept-migration",
+            IdentityCommand::SkipMigration => "identity skip-migration",
+            IdentityCommand::Cancel => "identity cancel",
+        },
+        Some(Command::Status) => "status",
+        Some(Command::Profile(command)) => match command {
+            ProfileCommand::Get => "profile get",
+            ProfileCommand::Set(_) => "profile set",
+            ProfileCommand::RefreshAll => "profile refresh-all",
+        },
+        Some(Command::Dpi(command)) => match command {
+            DpiCommand::Get => "dpi get",
+            DpiCommand::Set(_) => "dpi set",
+        },
+        Some(Command::Rate(command)) => match command {
+            RateCommand::Get => "rate get",
+            RateCommand::Set(_) => "rate set",
+        },
+        Some(Command::Prefs(command)) => match command {
+            PrefsCommand::Get => "prefs get",
+            PrefsCommand::Set(_) => "prefs set",
+        },
+        Some(Command::Bind(command)) => match command {
+            BindCommand::Get => "bind get",
+            BindCommand::Set(_) => "bind set",
+        },
+        Some(Command::Battery) => "battery",
+        Some(Command::Verify { .. }) => "verify",
+        Some(Command::Export) => "export",
+        Some(Command::Import { .. }) => "import",
+        Some(Command::State(command)) => match command {
+            StateCommand::Selected => "state selected",
+            StateCommand::Invalidate => "state invalidate",
+            StateCommand::Reset => "state reset",
+        },
+        Some(Command::Debug(command)) => match command {
+            DebugCommand::Dpi(_) => "debug dpi",
+            DebugCommand::Prefs(_) => "debug prefs",
+            DebugCommand::Buttons(_) => "debug buttons",
+        },
+    }
+}
+
+/// CLI failure carrying both faces: `display` renders to the user (human or
+/// JSON, byte-identical to the old `String` errors), `debug` carries the
+/// full typed `Debug` for the ERROR log line.
+#[derive(Debug)]
+struct CliError {
+    display: String,
+    debug: String,
+}
+
+impl CliError {
+    fn message(message: impl Into<String>) -> Self {
+        let display = message.into();
+        Self {
+            debug: format!("{display:?}"),
+            display,
+        }
+    }
+
+    fn describe(error: impl std::fmt::Display + std::fmt::Debug) -> Self {
+        Self {
+            display: error.to_string(),
+            debug: format!("{error:?}"),
+        }
+    }
+}
+
+impl std::fmt::Display for CliError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display)
+    }
+}
+
+impl From<String> for CliError {
+    fn from(display: String) -> Self {
+        Self::message(display)
+    }
+}
+
+impl From<&str> for CliError {
+    fn from(display: &str) -> Self {
+        Self::message(display)
+    }
+}
+
+async fn run(cli: &Cli, output: &Output) -> Result<(), CliError> {
     let command = cli.command.as_ref().unwrap_or(&Command::Status);
 
     // Debug encoding is entirely offline. Do this before creating a state store
@@ -171,13 +314,13 @@ async fn run(cli: &Cli, output: &Output) -> Result<(), String> {
     let store = if cli.stateless {
         StateStore::memory()
     } else {
-        StateStore::with_default_paths().map_err(|error| error.to_string())?
+        StateStore::with_default_paths().map_err(CliError::describe)?
     };
-    let manager = DeviceManager::new(store).map_err(|error| error.to_string())?;
+    let manager = DeviceManager::new(store).map_err(CliError::describe)?;
     dispatch(cli, &manager, action, output).await
 }
 
-fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
+fn build_action(cli: &Cli, command: &Command) -> Result<Action, CliError> {
     match command {
         Command::Devices => Ok(Action::Devices),
         Command::Use { device } => Ok(Action::Use {
@@ -282,18 +425,18 @@ fn build_action(cli: &Cli, command: &Command) -> Result<Action, String> {
     }
 }
 
-fn build_dpi_action(cli: &Cli, args: &DpiSetArgs) -> Result<Action, String> {
+fn build_dpi_action(cli: &Cli, args: &DpiSetArgs) -> Result<Action, CliError> {
     let profile = parse_profile(cli.profile)?;
     let stages = parse_dpi_stages(&args.stages)?;
     let active_stage = args.active_stage.map(parse_stage).transpose()?;
     if let (Some(stages), Some(active)) = (stages.as_ref(), active_stage)
         && active.get() as usize > stages.len()
     {
-        return Err(format!(
+        return Err(CliError::message(format!(
             "active stage {} exceeds the configured stage count {}",
             active,
             stages.len()
-        ));
+        )));
     }
 
     let sensor = if args.lod.is_some()
@@ -317,12 +460,14 @@ fn build_dpi_action(cli: &Cli, args: &DpiSetArgs) -> Result<Action, String> {
         sensor,
     };
     if delta.is_empty() {
-        return Err("DPI update must contain at least one field".into());
+        return Err(CliError::message(
+            "DPI update must contain at least one field",
+        ));
     }
     Ok(Action::DpiSet { profile, delta })
 }
 
-fn build_prefs_action(cli: &Cli, args: &PrefsSetArgs) -> Result<Action, String> {
+fn build_prefs_action(cli: &Cli, args: &PrefsSetArgs) -> Result<Action, CliError> {
     let profile = parse_profile(cli.profile)?;
     let delta = PreferencesDelta {
         light_mode: args.light_mode,
@@ -333,12 +478,14 @@ fn build_prefs_action(cli: &Cli, args: &PrefsSetArgs) -> Result<Action, String> 
         debounce: args.debounce,
     };
     if delta.is_empty() {
-        return Err("preferences update must contain at least one field".into());
+        return Err(CliError::message(
+            "preferences update must contain at least one field",
+        ));
     }
     Ok(Action::PrefsSet { profile, delta })
 }
 
-fn build_bind_action(cli: &Cli, args: &BindSetArgs) -> Result<Action, String> {
+fn build_bind_action(cli: &Cli, args: &BindSetArgs) -> Result<Action, CliError> {
     let profile = parse_profile(cli.profile)?;
     let slot = match args.slot {
         SlotArg::Left => SafeButtonSlot::Left,
@@ -408,18 +555,18 @@ async fn dispatch(
     manager: &DeviceManager,
     action: Action,
     output: &Output,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     let selection = transport_selection(cli.transport);
     match action {
         Action::Devices => {
             let devices = manager
                 .list_devices(selection)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             for device in &devices {
                 manager
                     .register_device(device.identity.clone())
-                    .map_err(|error| error.to_string())?;
+                    .map_err(CliError::describe)?;
             }
             let human = if devices.is_empty() {
                 "No X3 devices found.".to_owned()
@@ -454,16 +601,16 @@ async fn dispatch(
             let resolved = manager
                 .resolve_device(Some(&device), selection)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             manager
                 .select_device(&resolved)
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format!("Selected device {resolved}"), &resolved)
         }
         Action::IdentityStatus => {
             let progress = manager
                 .identity_ceremony_progress()
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             match progress {
                 Some(progress) => output.print(format_progress_human(&progress), &progress),
                 None => output.print(
@@ -476,7 +623,7 @@ async fn dispatch(
             let progress = manager
                 .begin_identity_ceremony(kind, None)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_progress_human(&progress), &progress)
         }
         Action::IdentityRestore { device } => {
@@ -484,19 +631,19 @@ async fn dispatch(
             let progress = manager
                 .begin_identity_ceremony(IdentityCeremonyKind::Restore, Some(target))
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_progress_human(&progress), &progress)
         }
         Action::IdentityAdopt => {
             let current = manager
                 .identity_ceremony_progress()
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             match current {
                 None => {
                     let progress = manager
                         .begin_identity_ceremony(IdentityCeremonyKind::ForeignAdoption, None)
                         .await
-                        .map_err(|error| error.to_string())?;
+                        .map_err(CliError::describe)?;
                     output.print(format_progress_human(&progress), &progress)
                 }
                 Some(progress) if progress.kind == IdentityCeremonyKind::ForeignAdoption => {
@@ -511,23 +658,23 @@ async fn dispatch(
                         &progress,
                     )
                 }
-                Some(progress) => Err(format!(
+                Some(progress) => Err(CliError::message(format!(
                     "another identity ceremony is in progress ({}); finish or cancel it first",
                     identity_kind_human(progress.kind)
-                )),
+                ))),
             }
         }
         Action::IdentityAssociate { device } => {
             let target = resolve_device_arg(manager, &device)?;
             let current = manager
                 .identity_ceremony_progress()
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             match current {
                 Some(progress) if progress.kind != IdentityCeremonyKind::BleAssociation => {
-                    return Err(format!(
+                    return Err(CliError::message(format!(
                         "another identity ceremony is in progress ({}); finish or cancel it first",
                         identity_kind_human(progress.kind)
-                    ));
+                    )));
                 }
                 None => {
                     manager
@@ -536,14 +683,14 @@ async fn dispatch(
                             Some(target.clone()),
                         )
                         .await
-                        .map_err(|error| error.to_string())?;
+                        .map_err(CliError::describe)?;
                 }
                 Some(_) => {}
             }
             let view = manager
                 .discover(TransportSelection::Exact(TransportKind::Ble))
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             let endpoint = pick_ble_endpoint(&view)?;
             let progress = manager
                 .identity_ceremony_action(
@@ -552,26 +699,28 @@ async fn dispatch(
                     Some(target),
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_progress_human(&progress), &progress)
         }
         Action::IdentityReconnect => {
             let progress = manager
                 .identity_ceremony_progress()
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             let Some(progress) = progress else {
-                return Err("no identity ceremony in progress; begin one first".to_owned());
+                return Err(CliError::message(
+                    "no identity ceremony in progress; begin one first",
+                ));
             };
             if progress.kind == IdentityCeremonyKind::BleAssociation {
-                return Err(
-                    "Bluetooth association uses `x3ctl identity associate <mouse>`".to_owned(),
-                );
+                return Err(CliError::message(
+                    "Bluetooth association uses `x3ctl identity associate <mouse>`",
+                ));
             }
             let target = resolve_ceremony_target(manager, cli)?;
             let view = manager
                 .discover(selection)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             let endpoint = pick_ceremony_endpoint(&view, progress.kind)?;
             let progress = manager
                 .identity_ceremony_action(
@@ -580,22 +729,24 @@ async fn dispatch(
                     target,
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_progress_human(&progress), &progress)
         }
         Action::IdentityStamp => {
             let progress = manager
                 .identity_ceremony_action(IdentityCeremonyAction::Stamp, None, None)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_progress_human(&progress), &progress)
         }
         Action::IdentityContinue => {
             let progress = manager
                 .identity_ceremony_progress()
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             let Some(progress) = progress else {
-                return Err("no identity ceremony in progress; begin one first".to_owned());
+                return Err(CliError::message(
+                    "no identity ceremony in progress; begin one first",
+                ));
             };
             match &progress.stage {
                 IdentityCeremonyStage::AwaitingReconnect => {
@@ -603,15 +754,15 @@ async fn dispatch(
                         let target = match cli.device.as_deref() {
                             Some(raw) => resolve_device_arg(manager, raw)?,
                             None => {
-                                return Err(
-                                    "Bluetooth association needs the saved mouse: `x3ctl identity continue --device <mouse>`".to_owned(),
-                                );
+                                return Err(CliError::message(
+                                    "Bluetooth association needs the saved mouse: `x3ctl identity continue --device <mouse>`",
+                                ));
                             }
                         };
                         let view = manager
                             .discover(TransportSelection::Exact(TransportKind::Ble))
                             .await
-                            .map_err(|error| error.to_string())?;
+                            .map_err(CliError::describe)?;
                         let endpoint = pick_ble_endpoint(&view)?;
                         let progress = manager
                             .identity_ceremony_action(
@@ -620,14 +771,14 @@ async fn dispatch(
                                 Some(target),
                             )
                             .await
-                            .map_err(|error| error.to_string())?;
+                            .map_err(CliError::describe)?;
                         output.print(format_progress_human(&progress), &progress)
                     } else {
                         let target = resolve_ceremony_target(manager, cli)?;
                         let view = manager
                             .discover(selection)
                             .await
-                            .map_err(|error| error.to_string())?;
+                            .map_err(CliError::describe)?;
                         let endpoint = pick_ceremony_endpoint(&view, progress.kind)?;
                         let progress = manager
                             .identity_ceremony_action(
@@ -636,7 +787,7 @@ async fn dispatch(
                                 target,
                             )
                             .await
-                            .map_err(|error| error.to_string())?;
+                            .map_err(CliError::describe)?;
                         output.print(format_progress_human(&progress), &progress)
                     }
                 }
@@ -646,22 +797,20 @@ async fn dispatch(
                     // The enrollment is fully stamped and parked at
                     // `Finalizing`; the migration decision must be an explicit
                     // choice, so continue never finalizes on its own.
-                    Err(
-                        "both mice are stamped; run `x3ctl identity accept-migration` or `x3ctl identity skip-migration` to finish the setup"
-                            .to_owned(),
-                    )
+                    Err(CliError::message(
+                        "both mice are stamped; run `x3ctl identity accept-migration` or `x3ctl identity skip-migration` to finish the setup",
+                    ))
                 }
-                _ => Err(
-                    "cannot continue from this stage; run `x3ctl identity status` to inspect"
-                        .to_owned(),
-                ),
+                _ => Err(CliError::message(
+                    "cannot continue from this stage; run `x3ctl identity status` to inspect",
+                )),
             }
         }
         Action::IdentityAcceptMigration => {
             let progress = manager
                 .identity_ceremony_action(IdentityCeremonyAction::AcceptMigration, None, None)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(
                 "Kept the old single-mouse name and settings where they matched.\nFirst-time setup complete.",
                 &progress,
@@ -671,7 +820,7 @@ async fn dispatch(
             let progress = manager
                 .identity_ceremony_action(IdentityCeremonyAction::SkipMigration, None, None)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(
                 "Used fresh names and default settings.\nFirst-time setup complete.",
                 &progress,
@@ -681,18 +830,18 @@ async fn dispatch(
             let progress = manager
                 .identity_ceremony_action(IdentityCeremonyAction::Cancel, None, None)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print("Identity ceremony cancelled.".to_owned(), &progress)
         }
         Action::Forget { device, force } => {
             let device = resolve_device_arg(manager, &device)?;
             let forgotten = manager
                 .forget_device(&device, force)
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             if !forgotten {
-                return Err(format!(
+                return Err(CliError::message(format!(
                     "{device} carries saved configuration; pass --force to forget it anyway"
-                ));
+                )));
             }
             output.print(format!("Forgot {device}"), &device)
         }
@@ -700,7 +849,7 @@ async fn dispatch(
             let device = resolve_device_arg(manager, &device)?;
             manager
                 .rename_device(&device, &name)
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             let trimmed = name.trim();
             let human = if trimmed.is_empty() {
                 format!("Cleared the name for {device}")
@@ -714,7 +863,7 @@ async fn dispatch(
             let status = manager
                 .read_status(&device)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_status_human(&status), &status)
         }
         Action::ProfileGet { profile } => {
@@ -722,7 +871,7 @@ async fn dispatch(
             let snapshot = manager
                 .read_profile(&device, profile)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format!("Profile {profile}"), &snapshot)
         }
         Action::ProfileSet { profile, maximum } => {
@@ -731,12 +880,12 @@ async fn dispatch(
                 manager
                     .set_profile_metadata(&device, profile, maximum)
                     .await
-                    .map_err(|error| error.to_string())?
+                    .map_err(CliError::describe)?
             } else {
                 manager
                     .activate_profile(&device, profile)
                     .await
-                    .map_err(|error| error.to_string())?
+                    .map_err(CliError::describe)?
             };
             output.print(format_profile_set_human(profile, maximum), &metadata)
         }
@@ -745,7 +894,7 @@ async fn dispatch(
             let outcome = manager
                 .refresh_all_profiles(&device)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_refresh_human(&outcome), &outcome)
         }
         Action::DpiGet { profile } => {
@@ -753,7 +902,7 @@ async fn dispatch(
             let snapshot = manager
                 .read_dpi(&device, profile)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_dpi_human(profile, &snapshot), &snapshot)
         }
         Action::DpiSet { profile, delta } => {
@@ -766,7 +915,7 @@ async fn dispatch(
                     update_policy(cli.replace_defaults, cli.validation, cli.baseline),
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format!("Updated DPI for profile {profile}"), &outcome)
         }
         Action::RateGet { profile } => {
@@ -774,7 +923,7 @@ async fn dispatch(
             let snapshot = manager
                 .read_polling_rate(&device, profile)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_rate_human(profile, &snapshot), &snapshot)
         }
         Action::RateSet { profile, rate } => {
@@ -787,7 +936,7 @@ async fn dispatch(
                     update_policy(cli.replace_defaults, cli.validation, cli.baseline),
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(
                 format!("Set polling rate for profile {profile} to {rate}"),
                 &outcome,
@@ -803,7 +952,7 @@ async fn dispatch(
                     update_policy(cli.replace_defaults, cli.validation, cli.baseline),
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(
                 format!(
                     "Polling rate {rate} sent for profile {profile} over BLE (delivered; not confirmed after restart)"
@@ -816,7 +965,7 @@ async fn dispatch(
             let snapshot = manager
                 .read_preferences(&device, profile)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_prefs_human(profile, &snapshot), &snapshot)
         }
         Action::PrefsSet { profile, delta } => {
@@ -829,7 +978,7 @@ async fn dispatch(
                     update_policy(cli.replace_defaults, cli.validation, cli.baseline),
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(
                 format!("Updated preferences for profile {profile}"),
                 &outcome,
@@ -840,7 +989,7 @@ async fn dispatch(
             let snapshot = manager
                 .read_buttons(&device, profile)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_buttons_human(profile, &snapshot), &snapshot)
         }
         Action::BindSet { profile, delta } => {
@@ -853,7 +1002,7 @@ async fn dispatch(
                     update_policy(cli.replace_defaults, cli.validation, cli.baseline),
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             let mut human = String::new();
             let _ = write!(
                 human,
@@ -868,7 +1017,7 @@ async fn dispatch(
             let level = manager
                 .read_battery(&device)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format!("Battery: {level}%"), &level)
         }
         Action::Verify { profile, method } => match method {
@@ -877,7 +1026,7 @@ async fn dispatch(
                 let outcome = manager
                     .verify_profile_reload(&device, profile)
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(CliError::describe)?;
                 output.print(
                     format!("Profile-reload verification for profile {profile}"),
                     &outcome,
@@ -890,7 +1039,7 @@ async fn dispatch(
                     let outcome = manager
                         .verify_power_cycle(&device, profile)
                         .await
-                        .map_err(|error| error.to_string())?;
+                        .map_err(CliError::describe)?;
                     let payload = serde_json::json!({
                         "instruction": instruction,
                         "outcome": outcome,
@@ -904,7 +1053,7 @@ async fn dispatch(
                     let outcome = manager
                         .verify_power_cycle(&device, profile)
                         .await
-                        .map_err(|error| error.to_string())?;
+                        .map_err(CliError::describe)?;
                     output.print(
                         format!("Power-cycle verification for profile {profile}"),
                         &outcome,
@@ -916,7 +1065,7 @@ async fn dispatch(
             let device = resolve_state_device(manager, cli)?;
             let export = manager
                 .export_configuration(&device)
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print("Portable configuration".to_owned(), &export)
         }
         Action::Import { file } => {
@@ -928,16 +1077,14 @@ async fn dispatch(
             let device = resolve_state_device(manager, cli)?;
             let identity = manager
                 .device_identity(&device)
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             manager
                 .import_configuration(&identity, configuration)
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format_import_human(&device), &device)
         }
         Action::StateSelected => {
-            let selected = manager
-                .selected_device()
-                .map_err(|error| error.to_string())?;
+            let selected = manager.selected_device().map_err(CliError::describe)?;
             output.print(
                 selected
                     .as_ref()
@@ -950,13 +1097,13 @@ async fn dispatch(
             let device = resolve_state_device(manager, cli)?;
             manager
                 .invalidate_state(&device)
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             output.print(format!("Cleared saved confirmation for {device}"), &device)
         }
         Action::StateReset => {
             let reset = manager
                 .discard_unreadable_state()
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::describe)?;
             let backup = reset
                 .backup
                 .as_ref()
@@ -978,23 +1125,21 @@ async fn dispatch(
 /// reports not-found and never falls through to case-insensitive display-name
 /// resolution, so an id can never alias a display name. Non-ID strings still
 /// resolve as unique display names.
-fn resolve_device_arg(manager: &DeviceManager, raw: &str) -> Result<DeviceId, String> {
+fn resolve_device_arg(manager: &DeviceManager, raw: &str) -> Result<DeviceId, CliError> {
     if let Ok(id) = parse_device_id(raw) {
         return manager
             .device_identity(&id)
             .map(|_| id)
-            .map_err(|error| error.to_string());
+            .map_err(CliError::describe);
     }
-    manager
-        .find_device_by_name(raw)
-        .map_err(|error| error.to_string())
+    manager.find_device_by_name(raw).map_err(CliError::describe)
 }
 
 async fn resolve_hardware(
     manager: &DeviceManager,
     cli: &Cli,
     selection: TransportSelection,
-) -> Result<DeviceId, String> {
+) -> Result<DeviceId, CliError> {
     let explicit = match cli.device.as_deref() {
         Some(raw) => Some(resolve_device_arg(manager, raw)?),
         None => None,
@@ -1002,28 +1147,31 @@ async fn resolve_hardware(
     manager
         .resolve_device(explicit.as_ref(), selection)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(CliError::describe)
 }
 
-fn resolve_state_device(manager: &DeviceManager, cli: &Cli) -> Result<DeviceId, String> {
+fn resolve_state_device(manager: &DeviceManager, cli: &Cli) -> Result<DeviceId, CliError> {
     if let Some(device) = cli.device.as_deref() {
         return resolve_device_arg(manager, device);
     }
     manager
         .selected_device()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "no device selected; use `use <device>` first".to_owned())
+        .map_err(CliError::describe)?
+        .ok_or_else(|| CliError::message("no device selected; use `use <device>` first"))
 }
 
 /// The ceremony target from the global `--device` flag, when given.
-fn resolve_ceremony_target(manager: &DeviceManager, cli: &Cli) -> Result<Option<DeviceId>, String> {
+fn resolve_ceremony_target(
+    manager: &DeviceManager,
+    cli: &Cli,
+) -> Result<Option<DeviceId>, CliError> {
     match cli.device.as_deref() {
         Some(raw) => Ok(Some(resolve_device_arg(manager, raw)?)),
         None => Ok(None),
     }
 }
 
-fn run_debug(cli: &Cli, command: &DebugCommand, output: &Output) -> Result<(), String> {
+fn run_debug(cli: &Cli, command: &DebugCommand, output: &Output) -> Result<(), CliError> {
     match command {
         DebugCommand::Dpi(args) => debug_dpi(cli, args, output),
         DebugCommand::Prefs(args) => debug_prefs(args, output),
@@ -1031,7 +1179,7 @@ fn run_debug(cli: &Cli, command: &DebugCommand, output: &Output) -> Result<(), S
     }
 }
 
-fn debug_dpi(cli: &Cli, args: &DebugDpiArgs, output: &Output) -> Result<(), String> {
+fn debug_dpi(cli: &Cli, args: &DebugDpiArgs, output: &Output) -> Result<(), CliError> {
     let profile = parse_profile(args.profile)?;
     let stages = args
         .stages
@@ -1039,19 +1187,19 @@ fn debug_dpi(cli: &Cli, args: &DebugDpiArgs, output: &Output) -> Result<(), Stri
         .copied()
         .map(DpiValue::try_from)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
+        .map_err(CliError::describe)?;
     let active = parse_stage(args.active_stage)?;
     let preserved_tail = parse_tail(&args.preserved_tail)?;
-    let mut state = DpiState::new(profile, stages, active, preserved_tail)
-        .map_err(|error| error.to_string())?;
+    let mut state =
+        DpiState::new(profile, stages, active, preserved_tail).map_err(CliError::describe)?;
     state.sensor = SensorOptions {
         lift_off_distance: lod_value(args.lod),
         ripple_control: args.ripple_control,
         angle_snap: args.angle_snap,
         motion_sync: args.motion_sync,
     };
-    let packet = encode_debug_dpi(&state, transport_kind(cli.transport))
-        .map_err(|error| error.to_string())?;
+    let packet =
+        encode_debug_dpi(&state, transport_kind(cli.transport)).map_err(CliError::describe)?;
     let human = format!(
         "DPI packet: {} bytes\n{}",
         packet.len(),
@@ -1060,7 +1208,7 @@ fn debug_dpi(cli: &Cli, args: &DebugDpiArgs, output: &Output) -> Result<(), Stri
     output.print(human, &packet)
 }
 
-fn debug_prefs(args: &DebugPrefsArgs, output: &Output) -> Result<(), String> {
+fn debug_prefs(args: &DebugPrefsArgs, output: &Output) -> Result<(), CliError> {
     let profile = parse_profile(args.profile)?;
     let state = PreferencesState::new(
         profile,
@@ -1084,10 +1232,12 @@ fn debug_prefs(args: &DebugPrefsArgs, output: &Output) -> Result<(), String> {
     output.print(human, &packet)
 }
 
-fn debug_buttons(args: &args::DebugButtonsArgs, output: &Output) -> Result<(), String> {
+fn debug_buttons(args: &args::DebugButtonsArgs, output: &Output) -> Result<(), CliError> {
     let profile = parse_profile(args.profile)?;
     if args.slots.len() != 54 {
-        return Err("debug buttons requires exactly 54 slot bytes".into());
+        return Err(CliError::message(
+            "debug buttons requires exactly 54 slot bytes",
+        ));
     }
     let mut slots = [ButtonAssignment::default(); 18];
     for (index, bytes) in args.slots.chunks_exact(3).enumerate() {
@@ -1103,9 +1253,9 @@ fn debug_buttons(args: &args::DebugButtonsArgs, output: &Output) -> Result<(), S
     output.print(human, &packet)
 }
 
-fn parse_tail(raw: &[u8]) -> Result<[u8; 25], String> {
+fn parse_tail(raw: &[u8]) -> Result<[u8; 25], CliError> {
     raw.try_into()
-        .map_err(|_| "debug DPI preserved tail must contain exactly 25 bytes".to_owned())
+        .map_err(|_| CliError::message("debug DPI preserved tail must contain exactly 25 bytes"))
 }
 
 fn update_policy(
@@ -1126,22 +1276,22 @@ fn update_policy(
     }
 }
 
-fn parse_device_id(raw: &str) -> Result<DeviceId, String> {
-    DeviceId::new(raw).map_err(|error| error.to_string())
+fn parse_device_id(raw: &str) -> Result<DeviceId, CliError> {
+    DeviceId::new(raw).map_err(CliError::describe)
 }
 
-fn parse_profile(raw: u8) -> Result<ProfileId, String> {
-    ProfileId::try_from(raw).map_err(|error| error.to_string())
+fn parse_profile(raw: u8) -> Result<ProfileId, CliError> {
+    ProfileId::try_from(raw).map_err(CliError::describe)
 }
 
-fn parse_stage(raw: u8) -> Result<StageIndex, String> {
-    StageIndex::try_from(raw).map_err(|error| error.to_string())
+fn parse_stage(raw: u8) -> Result<StageIndex, CliError> {
+    StageIndex::try_from(raw).map_err(CliError::describe)
 }
 
-fn parse_dpi_stages(raw: &Option<String>) -> Result<Option<Vec<DpiValue>>, String> {
+fn parse_dpi_stages(raw: &Option<String>) -> Result<Option<Vec<DpiValue>>, CliError> {
     let Some(raw) = raw else { return Ok(None) };
     if raw.trim().is_empty() {
-        return Err("DPI stages must not be empty".into());
+        return Err(CliError::message("DPI stages must not be empty"));
     }
     let mut values = Vec::new();
     for part in raw.split(',') {
@@ -1154,12 +1304,12 @@ fn parse_dpi_stages(raw: &Option<String>) -> Result<Option<Vec<DpiValue>>, Strin
         let value = trimmed
             .parse::<u16>()
             .map_err(|_| format!("invalid DPI value `{trimmed}`"))?;
-        let dpi = DpiValue::try_from(value).map_err(|error| error.to_string())?;
+        let dpi = DpiValue::try_from(value).map_err(CliError::describe)?;
         values.push(dpi);
     }
     debug_assert!(!values.is_empty(), "empty DPI stages already rejected");
     if values.len() > 8 {
-        return Err("DPI supports at most eight stages".into());
+        return Err(CliError::message("DPI supports at most eight stages"));
     }
     Ok(Some(values))
 }
@@ -1727,7 +1877,7 @@ fn format_progress_human(progress: &IdentityCeremonyProgress) -> String {
 fn pick_ceremony_endpoint(
     view: &DiscoveryView,
     kind: IdentityCeremonyKind,
-) -> Result<DeviceEndpoint, String> {
+) -> Result<DeviceEndpoint, CliError> {
     let connected_usb: Vec<&ResolvedConnection> = view
         .connections
         .iter()
@@ -1740,7 +1890,9 @@ fn pick_ceremony_endpoint(
         })
         .collect();
     if connected_usb.is_empty() {
-        return Err("no connected USB mouse found; reconnect the mouse you're adding".to_owned());
+        return Err(CliError::message(
+            "no connected USB mouse found; reconnect the mouse you're adding",
+        ));
     }
 
     if kind == IdentityCeremonyKind::ForeignAdoption {
@@ -1759,10 +1911,9 @@ fn pick_ceremony_endpoint(
             .collect();
         return match unknown.len() {
             1 => Ok(unknown[0].endpoint.clone()),
-            0 => Err(
-                "no mouse carrying a valid identity from another installation is connected"
-                    .to_owned(),
-            ),
+            0 => Err(CliError::message(
+                "no mouse carrying a valid identity from another installation is connected",
+            )),
             _ => Err(ambiguous_endpoint_error(&unknown)),
         };
     }
@@ -1787,7 +1938,9 @@ fn pick_ceremony_endpoint(
             if kind == IdentityCeremonyKind::InitialEnrollment && connected_usb.len() == 1 {
                 Ok(connected_usb[0].endpoint.clone())
             } else {
-                Err("no unrecognized mouse is connected; the mouse being added must be an unmarked mouse".to_owned())
+                Err(CliError::message(
+                    "no unrecognized mouse is connected; the mouse being added must be an unmarked mouse",
+                ))
             }
         }
         _ => Err(ambiguous_endpoint_error(&unassociated)),
@@ -1795,7 +1948,7 @@ fn pick_ceremony_endpoint(
 }
 
 /// Picks the connected Bluetooth endpoint for a BLE association.
-fn pick_ble_endpoint(view: &DiscoveryView) -> Result<DeviceEndpoint, String> {
+fn pick_ble_endpoint(view: &DiscoveryView) -> Result<DeviceEndpoint, CliError> {
     let connected_ble: Vec<&ResolvedConnection> = view
         .connections
         .iter()
@@ -1804,7 +1957,9 @@ fn pick_ble_endpoint(view: &DiscoveryView) -> Result<DeviceEndpoint, String> {
         })
         .collect();
     match connected_ble.len() {
-        0 => Err("no connected Bluetooth mouse found; connect it and retry".to_owned()),
+        0 => Err(CliError::message(
+            "no connected Bluetooth mouse found; connect it and retry",
+        )),
         1 => Ok(connected_ble[0].endpoint.clone()),
         _ => {
             let list = connected_ble
@@ -1812,22 +1967,22 @@ fn pick_ble_endpoint(view: &DiscoveryView) -> Result<DeviceEndpoint, String> {
                 .map(|connection| format_endpoint_human(&connection.endpoint))
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(format!(
+            Err(CliError::message(format!(
                 "more than one Bluetooth mouse is connected ({list}); disconnect the others and retry"
-            ))
+            )))
         }
     }
 }
 
-fn ambiguous_endpoint_error(candidates: &[&ResolvedConnection]) -> String {
+fn ambiguous_endpoint_error(candidates: &[&ResolvedConnection]) -> CliError {
     let list = candidates
         .iter()
         .map(|connection| format_endpoint_human(&connection.endpoint))
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
+    CliError::message(format!(
         "more than one eligible mouse is connected ({list}); disconnect the others so only the mouse being added stays connected"
-    )
+    ))
 }
 
 fn action_name(action: &Action) -> &'static str {
@@ -2046,7 +2201,7 @@ mod tests {
         let error =
             pick_ceremony_endpoint(&view(vec![disconnected]), IdentityCeremonyKind::AddMouse)
                 .expect_err("no connected mouse");
-        assert!(error.contains("no connected USB mouse"), "{error}");
+        assert!(error.display.contains("no connected USB mouse"), "{error}");
 
         // BLE endpoints never qualify for a physical ceremony.
         let ble = ResolvedConnection {
@@ -2059,7 +2214,7 @@ mod tests {
         };
         let error = pick_ceremony_endpoint(&view(vec![ble]), IdentityCeremonyKind::ForeignAdoption)
             .expect_err("no USB");
-        assert!(error.contains("no connected USB mouse"), "{error}");
+        assert!(error.display.contains("no connected USB mouse"), "{error}");
 
         // Ambiguity is refused rather than guessed.
         let error = pick_ceremony_endpoint(
@@ -2070,7 +2225,10 @@ mod tests {
             IdentityCeremonyKind::AddMouse,
         )
         .expect_err("ambiguous");
-        assert!(error.contains("more than one eligible mouse"), "{error}");
+        assert!(
+            error.display.contains("more than one eligible mouse"),
+            "{error}"
+        );
 
         // Foreign adoption refuses when no unknown-token mouse is present.
         let error = pick_ceremony_endpoint(
@@ -2078,7 +2236,7 @@ mod tests {
             IdentityCeremonyKind::ForeignAdoption,
         )
         .expect_err("no adoptable mouse");
-        assert!(error.contains("another installation"), "{error}");
+        assert!(error.display.contains("another installation"), "{error}");
     }
     #[test]
     fn persistent_ceremony_never_falls_back_to_a_known_connected_mouse() {
@@ -2101,7 +2259,10 @@ mod tests {
         ] {
             let error = pick_ceremony_endpoint(&view(vec![known(TransportKind::Wired)]), kind)
                 .expect_err("a known mouse is never the presented mouse");
-            assert!(error.contains("unrecognized mouse"), "{kind:?}: {error}");
+            assert!(
+                error.display.contains("unrecognized mouse"),
+                "{kind:?}: {error}"
+            );
         }
     }
 
@@ -2126,7 +2287,10 @@ mod tests {
         };
         let error =
             pick_ceremony_endpoint(&view, IdentityCeremonyKind::AddMouse).expect_err("ambiguous");
-        assert!(error.contains("more than one eligible mouse"), "{error}");
+        assert!(
+            error.display.contains("more than one eligible mouse"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2153,7 +2317,10 @@ mod tests {
             connections: vec![ble(false)],
         })
         .expect_err("no connected BLE");
-        assert!(error.contains("no connected Bluetooth mouse"), "{error}");
+        assert!(
+            error.display.contains("no connected Bluetooth mouse"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2410,7 +2577,7 @@ mod tests {
         .expect("parse");
         let command = cli.command.as_ref().unwrap();
         let error = build_action(&cli, command).expect_err("invalid rate must fail");
-        assert!(error.contains("polling rate must be one of"));
+        assert!(error.display.contains("polling rate must be one of"));
     }
 
     #[test]
@@ -2446,8 +2613,8 @@ mod tests {
         // error must win over case-insensitive display-name resolution, so
         // an id can never alias a display name.
         let error = resolve_device_arg(&manager, "mouse-2").expect_err("missing canonical id");
-        assert!(error.contains("device not found"), "{error}");
-        assert!(error.contains("mouse-2"), "{error}");
+        assert!(error.display.contains("device not found"), "{error}");
+        assert!(error.display.contains("mouse-2"), "{error}");
 
         // The real canonical id still resolves.
         assert_eq!(
@@ -2478,7 +2645,7 @@ mod tests {
         ] {
             let err = parse_dpi_stages(&Some(raw.into())).expect_err(raw);
             assert!(
-                err.contains("empty elements") || err.contains("empty"),
+                err.display.contains("empty elements") || err.display.contains("empty"),
                 "{raw}: {err}"
             );
         }
@@ -2648,6 +2815,37 @@ mod tests {
     }
 
     #[test]
+    fn command_context_covers_every_top_level_command() {
+        let cases: &[&[&str]] = &[
+            &["x3ctl", "devices"],
+            &["x3ctl", "use", "mouse-1"],
+            &["x3ctl", "forget", "mouse-1"],
+            &["x3ctl", "rename", "mouse-1", "fresh"],
+            &["x3ctl", "identity", "status"],
+            &["x3ctl", "status"],
+            &["x3ctl", "profile", "get"],
+            &["x3ctl", "dpi", "get"],
+            &["x3ctl", "rate", "get"],
+            &["x3ctl", "prefs", "get"],
+            &["x3ctl", "bind", "get"],
+            &["x3ctl", "battery"],
+            &["x3ctl", "verify", "--method", "profile-reload"],
+            &["x3ctl", "export"],
+            &["x3ctl", "import", "backup.json"],
+            &["x3ctl", "state", "selected"],
+            &["x3ctl", "debug", "dpi"],
+        ];
+        for argv in cases {
+            let cli = args::Cli::try_parse_from(*argv)
+                .unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+            let context = command_context(cli.command.as_ref());
+            assert!(!context.is_empty(), "{argv:?}");
+            assert!(!context.contains("0x"), "{context}");
+        }
+        assert_eq!(command_context(None), "status");
+    }
+
+    #[test]
     fn debug_dpi_uses_global_transport() {
         let cli = args::Cli::try_parse_from([
             "x3ctl",
@@ -2725,8 +2923,8 @@ mod tests {
         )
         .await
         .expect_err("continue must not auto-finalize");
-        assert!(error.contains("accept-migration"), "{error}");
-        assert!(error.contains("skip-migration"), "{error}");
+        assert!(error.display.contains("accept-migration"), "{error}");
+        assert!(error.display.contains("skip-migration"), "{error}");
 
         let progress = manager
             .identity_ceremony_progress()

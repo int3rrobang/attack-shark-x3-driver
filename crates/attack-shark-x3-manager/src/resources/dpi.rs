@@ -411,8 +411,8 @@ mod tests {
         .expect("valid DPI state")
     }
 
-    fn snapshot(profile: ProfileId, dpi: DpiState) -> attack_shark_x3::driver::ProfileSnapshot {
-        attack_shark_x3::driver::ProfileSnapshot {
+    fn snapshot(profile: ProfileId, dpi: DpiState) -> attack_shark_x3::ProfileSnapshot {
+        attack_shark_x3::ProfileSnapshot {
             target_profile: profile,
             persistent_metadata: ProfileMetadata::new(profile, profile).expect("metadata"),
             dpi,

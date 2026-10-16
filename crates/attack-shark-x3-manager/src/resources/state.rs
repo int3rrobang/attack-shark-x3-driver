@@ -384,10 +384,11 @@ pub(crate) fn record_readback<T: PartialEq>(
 
 /// Reconciles a fresh observation for any resource.
 ///
-/// With no desired value, only the observation is stored. With a desired
-/// value, verification is set to ReadbackVerified when equal/current,
-/// otherwise Mismatch, and persistence is always Unknown. Never infers
-/// profile-reload or power-cycle persistence.
+/// With no desired value, the observation is stored and promoted to a
+/// captured-baseline desired value. With a desired value, verification is set
+/// to ReadbackVerified when equal/current, otherwise Mismatch, and
+/// persistence is always Unknown. Never infers profile-reload or power-cycle
+/// persistence.
 pub(crate) fn reconcile_observed<T: Clone + PartialEq>(
     resource: &mut ResourceState<T>,
     value: T,
@@ -1182,9 +1183,19 @@ mod tests {
         ) {
             reconcile_observed(&mut resource, observed_value.clone(), ts(10));
             let historical = resource.observed.clone().expect("observed seeded");
-            assert!(resource.desired.is_none());
+            let captured = resource.desired.as_ref().expect("captured baseline");
+            assert_eq!(captured.value, observed_value);
+            assert_eq!(
+                captured.source,
+                crate::state::DesiredSource::CapturedBaseline
+            );
             record_ack(&mut resource, ack_value.clone(), ts(20));
             assert_eq!(resource.desired.as_ref().unwrap().value, ack_value);
+            assert_eq!(
+                resource.desired.as_ref().unwrap().source,
+                crate::state::DesiredSource::UserWrite,
+                "an explicit write supersedes the captured baseline"
+            );
             assert_eq!(
                 resource.desired.as_ref().unwrap().verification.application,
                 ApplicationVerification::Acknowledged
@@ -1306,7 +1317,12 @@ mod tests {
             assert!(!via_reconcile.try_mark_profile_reload_verified(ts(42)));
             let mut empty: ResourceState<T> = ResourceState::empty();
             reconcile_observed(&mut empty, other_value.clone(), ts(50));
-            assert!(empty.desired.is_none());
+            let promoted = empty.desired.as_ref().expect("captured baseline");
+            assert_eq!(promoted.value, other_value);
+            assert_eq!(
+                promoted.source,
+                crate::state::DesiredSource::CapturedBaseline
+            );
             assert_eq!(empty.observed.as_ref().unwrap().value, other_value);
         }
 

@@ -9,6 +9,7 @@
 #[cfg(any(feature = "usb", feature = "ble"))]
 mod backend;
 pub mod device;
+pub mod diagnostics;
 pub mod error;
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub(crate) mod events;
@@ -36,6 +37,7 @@ pub use attack_shark_x3::{
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use backend::sim_tag_for_endpoint;
 pub use device::{DeviceEndpoint, DeviceId, DeviceIdentity, DeviceLocator, TransportSelection};
+pub use diagnostics::LogLevel;
 pub use error::{ManagerError, StateError};
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub use events::EventSubscriptions;

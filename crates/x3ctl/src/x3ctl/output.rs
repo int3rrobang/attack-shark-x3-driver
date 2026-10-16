@@ -1,3 +1,4 @@
+use crate::CliError;
 use crate::args::OutputFormat;
 use serde::Serialize;
 use std::fmt::{Display, Write as _};
@@ -38,23 +39,32 @@ impl Output {
     ///
     /// Human output is exactly the caller-provided display text. JSON output
     /// is a stable success envelope, rather than a command-specific wrapper.
-    pub fn print<T: Serialize>(&self, human: impl Display, value: &T) -> Result<(), String> {
+    pub fn print<T: Serialize>(&self, human: impl Display, value: &T) -> Result<(), CliError> {
         let rendered = self.render_success(human, value)?;
         println!("{rendered}");
         Ok(())
     }
 
-    /// Render and print a command error.
+    /// Render and print a command error, then log the full failure detail.
     ///
     /// Human errors go to stderr with a useful prefix. JSON errors go to
     /// stdout so a caller consuming JSON does not have to merge streams.
-    pub fn error(&self, message: &str) -> Result<(), String> {
+    /// Afterwards the full typed `Debug` plus the laconic command context
+    /// is emitted at ERROR. The log itself never touches stdout, so
+    /// `--output json` stays pure.
+    pub fn error_with_context(
+        &self,
+        context: &str,
+        message: &str,
+        debug: &str,
+    ) -> Result<(), String> {
         let rendered = self.render_error(message)?;
         if self.fmt == OutputFormat::Json {
             println!("{rendered}");
         } else {
             eprintln!("{rendered}");
         }
+        attack_shark_x3_manager::log_error!("cli", "{context}: {debug}");
         Ok(())
     }
 
@@ -62,13 +72,13 @@ impl Output {
         &self,
         human: impl Display,
         value: &T,
-    ) -> Result<String, String> {
+    ) -> Result<String, CliError> {
         if self.fmt == OutputFormat::Json {
             serde_json::to_string(&SuccessEnvelope {
                 ok: true,
                 data: value,
             })
-            .map_err(|err| format!("failed to serialize output: {err}"))
+            .map_err(|err| CliError::message(format!("failed to serialize output: {err}")))
         } else {
             Ok(human.to_string())
         }
