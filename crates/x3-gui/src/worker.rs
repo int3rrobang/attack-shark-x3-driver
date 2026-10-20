@@ -24,13 +24,36 @@ use attack_shark_x3_manager::{
     IdentityCeremonyAction, IdentityCeremonyKind, IdentityCeremonyProgress, IdentityCeremonyStage,
     IdentityMode, IdentityResolution, LiftOffDistance, ManagerError, PollingRate, PreferencesDelta,
     ProfileId, ProfileMetadata, ProfileUpdate, ProfileUpdateBaseline, ProfileUpdateOutcome,
-    Resolution, ResolvedConnection, ResourceState, SafeButtonSlot, SensorOptionsDelta, StageIndex,
-    StateFile, StateStore, TransportKind, TransportSelection, UnassociatedReason, UpdatePolicy,
-    VerificationMethod, resolve_endpoint,
+    Resolution, ResolvedConnection, ResourceState, SafeButtonSlot, SensorOptionsDelta, ShellColor,
+    SimSpec, StageIndex, StateFile, StateStore, TransportKind, TransportSelection,
+    UnassociatedReason, UpdatePolicy, VerificationMethod, resolve_endpoint,
 };
 
 type EndpointTopology = BTreeSet<(TransportKind, DeviceLocator, bool)>;
 const HOTPLUG_SETTLE_DELAY: Duration = Duration::from_millis(750);
+
+/// Pinned spec auto-demo serves when no hardware is present: the tuned
+/// model preset (profile 1 with a realistic edited ladder + one remapped
+/// button, profiles 2-5 stock), so first-run users see a living UI.
+/// Displayed verbatim in the demo badge, matching `X3_SIM` syntax.
+const DEMO_SIM_SPEC: &str = "model:tuned";
+
+/// True when the process runs an explicit user-chosen sim (`X3_SIM` set
+/// before auto-demo could engage). Explicit sim keeps its existing
+/// disk-store enrollment semantics; auto-demo never activates on top.
+fn explicit_sim_active() -> bool {
+    std::env::var_os("X3_SIM").is_some_and(|value| !value.is_empty())
+}
+
+/// True when any scanned endpoint is real hardware (not a `sim:` locator).
+/// Demo routing calls this on the cheap pre-scan: hardware present means
+/// the arm discovers through the disk manager (exiting demo when active).
+fn scan_has_hardware(endpoints: &[attack_shark_x3_manager::DiscoveredEndpoint]) -> bool {
+    use attack_shark_x3_manager::sim_tag_for_endpoint;
+    endpoints
+        .iter()
+        .any(|row| sim_tag_for_endpoint(&row.endpoint).is_none())
+}
 
 #[derive(Debug)]
 pub enum Command {
@@ -45,6 +68,9 @@ pub enum Command {
     DiscardStateSchema,
     AddProfile,
     RenameProfile(u8, String),
+    RenameDevice(String),
+    /// Presentation-only shell render; nothing is written to the mouse.
+    SetShell(ShellColor),
     HideProfile(u8),
     Import(PathBuf),
     Export(PathBuf),
@@ -366,6 +392,7 @@ pub struct LoadedDevice {
     /// True when stored desired/observed preferences exist for the profile.
     pub has_stored_preferences: bool,
     pub profile_names: BTreeMap<ProfileId, String>,
+    pub shell: ShellColor,
 }
 
 #[derive(Debug)]
@@ -378,6 +405,7 @@ pub struct LiveProfile {
 #[derive(Debug)]
 pub struct LiveSnapshot {
     pub device_name: String,
+    pub shell: ShellColor,
     pub stable_id: String,
     pub product_id: String,
     pub transport: String,
@@ -533,6 +561,14 @@ pub enum UiEvent {
     OperationError(String),
     Error(String),
     StateUnreadable(String),
+    /// Auto-demo boundary crossed: `entering` flips the demo badge on/off,
+    /// `scenario` is the served `X3_SIM` spec (empty when leaving). Emitted
+    /// exactly once per transition so the badge never desyncs from the
+    /// worker's active manager.
+    DemoMode {
+        entering: bool,
+        scenario: String,
+    },
     /// A typed, UI-ready projection of the running identity ceremony.
     CeremonyProgress(Box<CeremonyView>),
     /// A ceremony command failed; the ceremony surface stays open and the
@@ -578,6 +614,10 @@ pub fn worker_main(
         .map_err(|error| format!("could not start Tokio manager runtime: {error}"))?;
     runtime.block_on(async move {
         let mut manager: Option<DeviceManager> = None;
+        // Auto-demo: true while the active manager runs on a memory store
+        // serving the tuned model. Entered on clean-empty scans only;
+        // explicit X3_SIM runs keep demo_mode false on the disk store.
+        let mut demo_mode = false;
         let mut discovered: Vec<DiscoveredDevice> = Vec::new();
         let mut selected: Option<DeviceId> = None;
         let mut loaded: Option<LoadedDevice> = None;
@@ -648,6 +688,47 @@ pub fn worker_main(
                                     emit(&weak, UiEvent::Error(detail));
                                 }
                                 Ok(new_manager) => {
+                                    // Demo routing: the cheap endpoint scan
+                                    // below decides which manager this arm
+                                    // discovers through. Refresh while in
+                                    // demo reuses the live demo manager (RAM
+                                    // enrollment + edits preserved); hardware
+                                    // appearing exits to the disk manager.
+                                    let mut new_manager = new_manager;
+                                    let hardware_present = new_manager
+                                        .scan_endpoints(TransportSelection::Auto)
+                                        .await
+                                        .is_ok_and(|found| scan_has_hardware(&found));
+                                    if hardware_present {
+                                        if demo_mode {
+                                            demo_mode = false;
+                                            emit(
+                                                &weak,
+                                                UiEvent::DemoMode {
+                                                    entering: false,
+                                                    scenario: String::new(),
+                                                },
+                                            );
+                                        }
+                                    } else if !explicit_sim_active() {
+                                        if demo_mode {
+                                            if let Some(live) = manager.take() {
+                                                new_manager = live;
+                                            }
+                                        } else {
+                                            new_manager = DeviceManager::demo(SimSpec::Model {
+                                                preset: "tuned".to_owned(),
+                                            });
+                                            demo_mode = true;
+                                            emit(
+                                                &weak,
+                                                UiEvent::DemoMode {
+                                                    entering: true,
+                                                    scenario: DEMO_SIM_SPEC.into(),
+                                                },
+                                            );
+                                        }
+                                    }
                                     if topology_events.is_none() {
                                         topology_events =
                                             subscribe_topology_events(&new_manager).await;
@@ -977,6 +1058,68 @@ pub fn worker_main(
                                 }
                                 Err(error) => emit(&weak, format_error("profile renamed but reload failed", error)),
                             }
+                        }
+                        Command::RenameDevice(name) => {
+                            let Some(manager_ref) = manager.as_ref() else {
+                                emit(&weak, UiEvent::Error("the app isn't ready; press Refresh to try again".into()));
+                                continue;
+                            };
+                            let Some(current) = loaded.as_ref() else {
+                                emit(&weak, UiEvent::Error("no mouse is ready; press Refresh to try again".into()));
+                                continue;
+                            };
+                            // Blank clears to no display name (manager
+                            // trims); the header falls back to the stable id
+                            // on the reloaded snapshot.
+                            if let Err(error) = manager_ref.rename_device(&current.device, &name) {
+                                emit(&weak, UiEvent::OperationError(format_error_string("mouse rename failed", error)));
+                                continue;
+                            }
+                            match read_loaded(manager_ref, &current.device, Some(current.metadata.current())).await {
+                                Ok(new_loaded) => {
+                                    loaded = Some(new_loaded);
+                                    // The device list caches display names
+                                    // from the last scan; patch the renamed
+                                    // row so list and header agree without a
+                                    // full re-discovery.
+                                    if let Some(ready) = loaded.as_ref() {
+                                        if let Some(row) = discovered.iter_mut().find(|row| {
+                                            row.identity.id == ready.device
+                                        }) {
+                                            row.identity.display_name = ready
+                                                .identity
+                                                .display_name
+                                                .clone();
+                                        }
+                                        emit_devices(&weak, &discovered, selected.as_ref());
+                                        emit_snapshot(&weak, ready, "mouse renamed");
+                                    }
+                                }
+                                Err(error) => emit(&weak, format_error("mouse renamed but reload failed", error)),
+                            }
+                        }
+                        // Presentation-only: no reload, no hardware traffic.
+                        // The in-memory snapshot is updated so the new render
+                        // shows immediately.
+                        Command::SetShell(shell) => {
+                            let Some(manager_ref) = manager.as_ref() else {
+                                emit(&weak, UiEvent::Error("the app isn't ready; press Refresh to try again".into()));
+                                continue;
+                            };
+                            let Some(current) = loaded.as_mut() else {
+                                emit(&weak, UiEvent::Error("no mouse is ready; press Refresh to try again".into()));
+                                continue;
+                            };
+                            if let Err(error) = manager_ref.set_device_shell(&current.device, shell) {
+                                emit(&weak, UiEvent::OperationError(format_error_string("shell change failed", error)));
+                                continue;
+                            }
+                            current.shell = shell;
+                            emit_snapshot(
+                                &weak,
+                                current,
+                                if shell == ShellColor::White { "shell set to white" } else { "shell set to black" },
+                            );
                         }
                         Command::HideProfile(number) => {
                             let Some(manager_ref) = manager.as_ref() else {
@@ -1811,6 +1954,13 @@ fn log_event(event: &UiEvent) {
             log_info!("worker", "devices {summary}");
             log_debug!("worker", "devices-full {event:?}");
         }
+        UiEvent::DemoMode { entering, scenario } => {
+            log_info!(
+                "worker",
+                "demo {} {scenario}",
+                if *entering { "entered" } else { "left" }
+            );
+        }
         UiEvent::AutoAttached { keep_stored } => {
             log_info!(
                 "worker",
@@ -1884,7 +2034,7 @@ fn emit_devices(
                 .identity
                 .display_name
                 .clone()
-                .unwrap_or_else(|| "X3-compatible device".to_owned());
+                .unwrap_or_else(|| device.identity.id.as_str().to_owned());
             DeviceListEntry {
                 id: device.identity.id.to_string(),
                 // Simulated endpoints are tagged with their backend's own
@@ -2353,6 +2503,7 @@ async fn read_loaded(
         });
     let all_profiles_observed = has_complete_profile_observations(&state, device);
     let profile_names = manager.profile_names(device).unwrap_or_default();
+    let shell = manager.device_shell(device).unwrap_or_default();
     Ok(LoadedDevice {
         device: device.clone(),
         identity: live.identity,
@@ -2368,6 +2519,7 @@ async fn read_loaded(
         all_profiles_observed,
         has_stored_preferences: true,
         profile_names,
+        shell,
     })
 }
 
@@ -2408,6 +2560,7 @@ fn read_ble_loaded(
     let metadata = ProfileMetadata::new(working, ProfileId::MAX_ID).expect("valid metadata");
     let all_profiles_observed = false;
     let profile_names = manager.profile_names(&identity.id).unwrap_or_default();
+    let shell = manager.device_shell(&identity.id).unwrap_or_default();
     Ok(LoadedDevice {
         device: identity.id.clone(),
         identity,
@@ -2423,6 +2576,7 @@ fn read_ble_loaded(
         all_profiles_observed,
         has_stored_preferences,
         profile_names,
+        shell,
     })
 }
 
@@ -2747,7 +2901,7 @@ pub fn make_live_snapshot(loaded: &LoadedDevice, status: &str) -> LiveSnapshot {
                 SafeButtonSlot::Left => "primary",
                 SafeButtonSlot::Right => "secondary",
                 SafeButtonSlot::Middle => "middle",
-                SafeButtonSlot::Dpi => "top button",
+                SafeButtonSlot::Dpi => "bottom button",
                 SafeButtonSlot::Forward => "side upper",
                 SafeButtonSlot::Backward => "side lower",
             };
@@ -2787,11 +2941,15 @@ pub fn make_live_snapshot(loaded: &LoadedDevice, status: &str) -> LiveSnapshot {
         )
     };
     LiveSnapshot {
+        shell: loaded.shell,
+        // Enrollment always names, but a blank rename clears back to None:
+        // fall back to the stable id (honest, never clunky prose) since this
+        // now renders as the header title.
         device_name: loaded
             .identity
             .display_name
             .clone()
-            .unwrap_or_else(|| "X3-compatible device".to_owned()),
+            .unwrap_or_else(|| loaded.identity.id.as_str().to_owned()),
         stable_id: loaded.identity.id.to_string(),
         product_id: product_id_label_for_identity(&loaded.identity),
         transport,
@@ -2888,6 +3046,7 @@ mod tests {
             all_profiles_observed: false,
             has_stored_preferences: true,
             profile_names: BTreeMap::new(),
+            shell: ShellColor::default(),
         }
     }
 
@@ -3199,6 +3358,39 @@ mod tests {
             physical_id: None,
             endpoint: None,
         }
+    }
+
+    #[test]
+    fn scan_hardware_detection_separates_sim_from_hardware() {
+        use attack_shark_x3_manager::{DeviceEndpoint, DiscoveredEndpoint};
+        // Demo routing hinges on this: sim locators must never read as
+        // hardware (else entry is impossible), hardware must always.
+        let sim = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            None,
+            "sim:[SIM-MODEL]:0",
+            None,
+        )
+        .expect("sim endpoint");
+        let hardware = DeviceEndpoint::usb(
+            TransportKind::Wired,
+            0x1d57,
+            0xfa61,
+            None,
+            r"\\?\hid#vid_1d57&pid_fa61&mi_02&col04",
+            None,
+        )
+        .expect("hardware endpoint");
+        let row = |endpoint: DeviceEndpoint| DiscoveredEndpoint {
+            endpoint,
+            connected: true,
+        };
+        assert!(!scan_has_hardware(&[row(sim.clone())]));
+        assert!(scan_has_hardware(&[row(hardware.clone())]));
+        assert!(scan_has_hardware(&[row(sim), row(hardware)]));
+        assert!(!scan_has_hardware(&[]));
     }
 
     #[test]

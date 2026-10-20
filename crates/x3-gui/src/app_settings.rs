@@ -24,9 +24,6 @@ use crate::presentation::{
 const GUI_PREFERENCES_FILE_NAME: &str = "gui-preferences.json";
 pub const GUI_PREFERENCES_SCHEMA_VERSION: u32 = 1;
 
-const CUSTOM_NAME_DEFAULT: &str = "custom mouse";
-const MAX_CUSTOM_NAME_CHARS: usize = 64;
-
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Deserialize)]
@@ -47,9 +44,6 @@ fn default_dpi_max() -> f32 {
 fn default_true() -> bool {
     true
 }
-fn default_custom_name() -> String {
-    CUSTOM_NAME_DEFAULT.to_owned()
-}
 
 /// GUI preferences persisted to `gui-preferences.json`.
 ///
@@ -63,11 +57,6 @@ pub struct GuiPreferences {
     /// 0 = follow system, 1 = light, 2 = dark
     #[serde(default)]
     pub appearance: i32,
-    /// 0 = Attack Shark X3, 1 = Kysona M600, 2 = custom
-    #[serde(default)]
-    pub product_name_choice: i32,
-    #[serde(default = "default_custom_name")]
-    pub custom_product_name: String,
     #[serde(default = "default_dpi_min")]
     pub dpi_min: f32,
     #[serde(default = "default_dpi_max")]
@@ -100,8 +89,6 @@ impl Default for GuiPreferences {
         Self {
             schema_version: GUI_PREFERENCES_SCHEMA_VERSION,
             appearance: 0,
-            product_name_choice: 0,
-            custom_product_name: default_custom_name(),
             dpi_min: DEFAULT_DPI_MIN,
             dpi_max: DEFAULT_DPI_MAX,
             dpi_log_scale: true,
@@ -125,19 +112,6 @@ impl GuiPreferences {
             1 | 2 => self.appearance,
             _ => 0,
         };
-
-        self.product_name_choice = match self.product_name_choice {
-            1 | 2 => self.product_name_choice,
-            _ => 0,
-        };
-
-        let trimmed = self.custom_product_name.trim().to_owned();
-        let truncated: String = trimmed.chars().take(MAX_CUSTOM_NAME_CHARS).collect();
-        if truncated.is_empty() {
-            self.custom_product_name = default_custom_name();
-        } else {
-            self.custom_product_name = truncated;
-        }
 
         // DPI min/max: finite and stepped, then bound to global min/max and ensure min < max.
         let min_raw = if self.dpi_min.is_finite() {
@@ -477,8 +451,6 @@ mod tests {
         let path = temp_path(&dir);
         let prefs = GuiPreferences {
             appearance: 2,
-            product_name_choice: 1,
-            custom_product_name: "  hello world  ".to_owned(),
             dpi_min: 400.0,
             dpi_max: 8000.0,
             dpi_log_scale: false,
@@ -558,8 +530,6 @@ mod tests {
         let path = temp_path(&dir);
         let prefs = GuiPreferences {
             appearance: 1,
-            product_name_choice: 2,
-            custom_product_name: "my mouse".to_owned(),
             dpi_min: 200.0,
             dpi_max: 3200.0,
             dpi_log_scale: true,
@@ -584,10 +554,8 @@ mod tests {
 
     #[test]
     fn validation_clamps_conservatively() {
-        let mut prefs = GuiPreferences {
+        let prefs = GuiPreferences {
             appearance: 99,
-            product_name_choice: -5,
-            custom_product_name: "   ".to_owned(),
             dpi_min: 10.0,      // below DPI_MIN
             dpi_max: 100_000.0, // above DPI_MAX
             dpi_log_scale: true,
@@ -596,16 +564,9 @@ mod tests {
         };
         let normalized = prefs.clone().normalized();
         assert_eq!(normalized.appearance, 0);
-        assert_eq!(normalized.product_name_choice, 0);
-        assert_eq!(normalized.custom_product_name, CUSTOM_NAME_DEFAULT);
         assert!(normalized.dpi_min >= DPI_MIN);
         assert!(normalized.dpi_max <= DPI_MAX);
         assert!(normalized.dpi_min < normalized.dpi_max);
         assert_eq!(normalized.last_page, 0);
-
-        // Custom name truncation.
-        prefs.custom_product_name = "a".repeat(200);
-        let n = prefs.normalized();
-        assert_eq!(n.custom_product_name.chars().count(), MAX_CUSTOM_NAME_CHARS);
     }
 }

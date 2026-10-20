@@ -10,6 +10,10 @@
 
 battery = 64
 
+[metadata]
+current = 1
+maximum = 5
+
 [[endpoints]]
 transport = "wired"
 

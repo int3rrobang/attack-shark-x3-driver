@@ -10,7 +10,7 @@
 pub mod fixtures;
 pub mod replay;
 
-use crate::{ButtonsState, DpiState, PreferencesState, TransportKind};
+use crate::{ButtonsState, DpiState, PreferencesState, ProfileMetadata, TransportKind};
 
 pub use fixtures::{Scenario, ScenarioEndpoint, load_scenario, parse_scenario};
 pub use replay::SimReplay;
@@ -40,6 +40,14 @@ pub trait SimBackend {
     fn read_profile(&self, profile: u8) -> Result<ProfileImage, SimGap>;
     /// Stores `image` into `profile`; gaps fail loudly, never guessed.
     fn write_profile(&mut self, profile: u8, image: &ProfileImage) -> Result<(), SimGap>;
+    /// Serves the stored/recorded profile metadata (current + maximum).
+    fn read_profile_metadata(&self) -> Result<ProfileMetadata, SimGap>;
+    /// Stores `metadata` as the current/maximum pair and returns the stored
+    /// truth (the post-write readback); gaps fail loudly, never guessed.
+    fn write_profile_metadata(
+        &mut self,
+        metadata: ProfileMetadata,
+    ) -> Result<ProfileMetadata, SimGap>;
     /// Recorded/configured battery level, or `None` when unavailable.
     fn battery(&self) -> Option<u8>;
     /// The transport this instance behaves as.

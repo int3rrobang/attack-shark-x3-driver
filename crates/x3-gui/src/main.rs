@@ -17,7 +17,7 @@ pub use generated_ui::{
 
 use crate::presentation::{
     BINDING_ACTIONS, MAX_DPI_STAGES, VERIFICATION_INSTRUCTION_POWER_CYCLE,
-    VERIFICATION_INSTRUCTION_PROFILE_RELOAD, configured_product_label, format_dpi_setting,
+    VERIFICATION_INSTRUCTION_PROFILE_RELOAD, filter_binding_actions, format_dpi_setting,
     page_status, parse_dpi_range,
 };
 use crate::presentation::{
@@ -59,7 +59,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map(|action| slint::SharedString::from(*action))
             .collect::<Vec<_>>(),
     ));
+    let binding_actions_filtered = std::rc::Rc::new(VecModel::from(
+        BINDING_ACTIONS
+            .iter()
+            .map(|action| slint::SharedString::from(*action))
+            .collect::<Vec<_>>(),
+    ));
     ui.set_binding_actions(ModelRc::from(binding_actions));
+    ui.set_binding_actions_filtered(ModelRc::from(binding_actions_filtered.clone()));
+    {
+        let filtered = binding_actions_filtered.clone();
+        ui.on_filter_binding_actions(move |query| {
+            let actions: Vec<String> = BINDING_ACTIONS
+                .iter()
+                .map(|action| action.to_string())
+                .collect();
+            let matches = filter_binding_actions(&actions, query.as_str());
+            let rows: Vec<slint::SharedString> =
+                matches.iter().map(slint::SharedString::from).collect();
+            filtered.set_vec(rows);
+        });
+    }
     // Load GUI preferences before initial Slint properties; malformed/
     // unknown configs are backed up and defaults are used with a restrained
     // warning shown in the status text.
@@ -73,11 +93,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         theme.set_appearance(appearance);
     }
-    let custom_name = gui_prefs.custom_product_name.clone();
-    let choice = gui_prefs.product_name_choice;
-    ui.set_product_name_choice(choice);
-    ui.set_custom_product_name(custom_name.clone().into());
-    ui.set_product_name(configured_product_label(choice, custom_name.as_str()).into());
     ui.set_dpi_log_scale(gui_prefs.dpi_log_scale);
     ui.set_dpi_min(gui_prefs.dpi_min);
     ui.set_dpi_max(gui_prefs.dpi_max);
@@ -115,6 +130,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui.set_warn_no_left_click(gui_prefs.warn_no_left_click);
     ui.set_lmb_break_warning(0);
     ui.set_banner_dismissed(false);
+    ui.set_demo_active(false);
+    ui.set_demo_banner_dismissed(false);
     ui.set_ble_device(false);
     ui.set_verification_running(false);
     ui.set_last_enabled_profile(-1);
@@ -278,6 +295,51 @@ fn install_callbacks(
             ui.set_lifecycle_text("renaming profile".into());
             ui.set_status_text(format!("renaming profile {number}…").into());
             queue_command(&ui, &commands, Command::RenameProfile(number, name));
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let commands = commands.clone();
+        ui.on_rename_device(move |name| {
+            let Some(ui) = weak.upgrade() else { return };
+            if !ui.get_hardware_ready() || ui.get_busy() {
+                return;
+            }
+            if let Some(message) = dirty_draft_message(ui.get_dirty(), "renaming the mouse") {
+                ui.set_status_text(message.into());
+                return;
+            }
+            let name = name.trim().to_owned();
+            ui.set_busy(true);
+            ui.set_lifecycle_text("renaming mouse".into());
+            ui.set_status_text("renaming the mouse…".into());
+            queue_command(&ui, &commands, Command::RenameDevice(name));
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let commands = commands.clone();
+        ui.on_select_shell(move |white| {
+            let Some(ui) = weak.upgrade() else { return };
+            if !ui.get_hardware_ready() || ui.get_busy() {
+                return;
+            }
+            // Presentation-only, so no busy state and no draft check: the
+            // worker answers with a fresh snapshot within a frame or two.
+            ui.set_status_text(if white {
+                "shell set to white…".into()
+            } else {
+                "shell set to black…".into()
+            });
+            queue_command(
+                &ui,
+                &commands,
+                Command::SetShell(if white {
+                    attack_shark_x3_manager::ShellColor::White
+                } else {
+                    attack_shark_x3_manager::ShellColor::Black
+                }),
+            );
         });
     }
     {
@@ -1173,34 +1235,6 @@ fn install_callbacks(
     }
     {
         let weak = ui.as_weak();
-        ui.on_select_product_name(move |choice| {
-            if let Some(ui) = weak.upgrade() {
-                let choice = choice.clamp(0, 2);
-                ui.set_product_name_choice(choice);
-                let label = configured_product_label(choice, ui.get_custom_product_name().as_str());
-                ui.set_product_name(label.into());
-                ui.set_status_text("display name updated".into());
-                persist_gui_preferences(&ui);
-            }
-        });
-    }
-    {
-        let weak = ui.as_weak();
-        ui.on_custom_name_changed(move |name| {
-            if let Some(ui) = weak.upgrade() {
-                let name = name.trim();
-                if !name.is_empty() {
-                    ui.set_custom_product_name(name.into());
-                    let label = configured_product_label(ui.get_product_name_choice(), name);
-                    ui.set_product_name(label.into());
-                    ui.set_status_text("display name updated".into());
-                    persist_gui_preferences(&ui);
-                }
-            }
-        });
-    }
-    {
-        let weak = ui.as_weak();
         ui.on_set_validation_choice(move |choice| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_validation_choice(choice.clamp(0, 1));
@@ -1485,8 +1519,6 @@ fn current_gui_preferences(ui: &AppWindow) -> app_settings::GuiPreferences {
     app_settings::GuiPreferences {
         schema_version: app_settings::GUI_PREFERENCES_SCHEMA_VERSION,
         appearance,
-        product_name_choice: ui.get_product_name_choice(),
-        custom_product_name: ui.get_custom_product_name().to_string(),
         dpi_min: ui.get_dpi_min(),
         dpi_max: ui.get_dpi_max(),
         dpi_log_scale: ui.get_dpi_log_scale(),

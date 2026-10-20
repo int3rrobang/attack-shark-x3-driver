@@ -3,8 +3,8 @@ Lucide icons
 
 Icons: https://lucide.dev (ISC License)
 
-`assets/wrench.svg` is from the Lucide icon set (https://lucide.dev/) and is
-distributed under the ISC License below.
+`assets/wrench.svg` and `assets/search.svg` are from the Lucide icon set
+(https://lucide.dev/) and are distributed under the ISC License below.
 
 The remaining icon SVGs in `assets/` (`home.svg`, `settings.svg`, `cursor.svg`,
 `target.svg`, `pulse.svg`) are stylistically

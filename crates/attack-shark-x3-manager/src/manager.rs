@@ -27,7 +27,7 @@ use crate::refresh;
 use crate::state::{
     CapturedProfileImage, DeviceState, IdentityMode, IdentitySetupJournal, IdentitySetupPhase,
     IdentitySetupStage, IdentitySetupSubject, IdentityStampProgress, ProfileState, ResourceState,
-    StateFile, StateStore, Timestamp,
+    ShellColor, StateFile, StateStore, Timestamp,
 };
 
 const BATTERY_READ_TIMEOUT: Duration = Duration::from_secs(20);
@@ -55,9 +55,23 @@ impl DeviceManager {
     pub fn new(store: StateStore) -> Result<Self, ManagerError> {
         Ok(Self {
             store,
-            factory: Arc::new(RealSessionFactory),
+            factory: Arc::new(RealSessionFactory::default()),
             identity_cache: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// Demo manager: real transports plus a pinned sim spec served from a
+    /// memory store, without reading or writing `X3_SIM`. Frontends use this
+    /// for no-hardware auto-demo so the demo device flows through the normal
+    /// discovery/session path while explicit-sim and hardware semantics stay
+    /// untouched. The caller owns pristine reset (fresh manager per launch)
+    /// and the demo badge (it chose the spec, so it knows what to display).
+    pub fn demo(spec: crate::SimSpec) -> Self {
+        Self {
+            store: StateStore::memory(),
+            factory: Arc::new(RealSessionFactory::with_sim_override(spec)),
+            identity_cache: Mutex::new(BTreeMap::new()),
+        }
     }
 
     #[cfg(test)]
@@ -428,9 +442,16 @@ impl DeviceManager {
                     return Ok(());
                 }
                 let new_id = state.allocate_device_id()?;
-                let display_name = discovered
-                    .first()
-                    .and_then(|d| d.endpoint.display_name.clone());
+                // Sim endpoints advertise their own tag ("[SIM-MODEL] tuned")
+                // as the endpoint display name; that tag belongs on device
+                // rows, not enrolled identity. Enrolled sim mice get a fresh
+                // Mouse N name like nameless hardware.
+                let advertised = discovered.first().and_then(|d| {
+                    (!crate::backend::is_sim_endpoint(&d.endpoint))
+                        .then(|| d.endpoint.display_name.clone())
+                        .flatten()
+                });
+                let display_name = advertised.or_else(|| Some(fresh_mouse_name(&new_id)));
                 let mut identity = DeviceIdentity::new(new_id.clone(), display_name);
                 for disc in &discovered {
                     identity.upsert_endpoint(disc.endpoint.clone());
@@ -814,6 +835,36 @@ impl DeviceManager {
             .display_name = display_name;
         txn.commit()?;
         Ok(())
+    }
+
+    /// Sets the shell colour the UI renders for this mouse.
+    ///
+    /// Presentation-only: nothing is written to the mouse, and the protocol
+    /// has no notion of a shell colour.
+    pub fn set_device_shell(
+        &self,
+        device: &DeviceId,
+        shell: ShellColor,
+    ) -> Result<(), ManagerError> {
+        let mut txn = self.store.transaction()?;
+        txn.state_mut()
+            .devices
+            .get_mut(device)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))?
+            .shell = shell;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Reads the shell colour recorded for this mouse; a device that was never
+    /// set reads back as the default (black).
+    pub fn device_shell(&self, device: &DeviceId) -> Result<ShellColor, ManagerError> {
+        let state = self.store.load()?;
+        state
+            .devices
+            .get(device)
+            .map(|entry| entry.shell)
+            .ok_or_else(|| ManagerError::DeviceNotFound(device.clone()))
     }
 
     /// Resolves a case-insensitive unique display name to its logical identity.
@@ -2930,6 +2981,17 @@ fn ceremony_progress_from_journal(journal: &IdentitySetupJournal) -> IdentityCer
     }
 }
 
+/// Fresh display name for a new logical mouse: `Mouse N` from the id's
+/// numeric suffix when the caller has no better name (no endpoint
+/// advertisement, no migrated legacy name). Enrollment always names, so
+/// frontends can show the name as primary identity without a fallback.
+fn fresh_mouse_name(id: &DeviceId) -> String {
+    match id.number() {
+        Some(number) => format!("Mouse {number}"),
+        None => format!("Mouse {}", id.as_str()),
+    }
+}
+
 /// Legacy name migration: the old single-mouse state matches a captured
 /// subject only when the entire durable evidence agrees exactly. Matching is
 /// deliberately not weighted; incomplete or ambiguous comparisons never
@@ -2981,7 +3043,12 @@ fn finalize_ceremony(state: &mut StateFile, skip_migration: bool) -> Result<(), 
                 })?;
             // Fallible steps first: allocate the fresh logical id.
             let id = state.allocate_device_id()?;
-            let mut identity = DeviceIdentity::new(id.clone(), None);
+            let display_name = subject
+                .endpoint
+                .display_name
+                .clone()
+                .or_else(|| Some(fresh_mouse_name(&id)));
+            let mut identity = DeviceIdentity::new(id.clone(), display_name);
             identity.physical_id = Some(token);
             identity
                 .endpoints
@@ -3115,8 +3182,9 @@ fn finalize_initial_enrollment(
                 .as_ref()
                 .and_then(|legacy| legacy.identity.display_name.clone())
         } else {
-            Some(format!("Mouse {}", index + 1))
-        };
+            None
+        }
+        .or_else(|| Some(fresh_mouse_name(&id)));
         let mut identity = DeviceIdentity::new(id.clone(), display_name);
         identity.physical_id = subject.token;
         identity
@@ -4584,6 +4652,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn demo_model_hide_succeeds_through_set_profile_metadata() {
+        use crate::device::TransportSelection;
+        // End to end through the consumer path: a `model:tuned` demo session
+        // with a hide-shaped target (current and maximum both lowered) must
+        // succeed rather than return `VerificationMismatch`.
+        let manager = DeviceManager::demo(crate::SimSpec::Model {
+            preset: "tuned".to_owned(),
+        });
+        let device = manager
+            .resolve_device(None, TransportSelection::Auto)
+            .await
+            .expect("demo resolves");
+        let current = ProfileId::new(4).unwrap();
+        let maximum = ProfileId::new(4).unwrap();
+        let actual = manager
+            .set_profile_metadata(&device, current, maximum)
+            .await
+            .expect("hide-shaped write succeeds");
+        assert_eq!(actual.current(), current);
+        assert_eq!(actual.maximum(), maximum);
+        let status = manager.read_status(&device).await.expect("status reads");
+        let observed = status
+            .profile_metadata
+            .expect("usb metadata observed")
+            .resource
+            .observed
+            .expect("observed value")
+            .value;
+        assert_eq!(observed.current(), current);
+        assert_eq!(observed.maximum(), maximum);
+    }
+
+    #[tokio::test]
     async fn activate_profile_ble_ack_succeeds_without_mismatch_check() {
         let store = StateStore::memory();
         let endpoint = ble_endpoint("ble-activate-ack");
@@ -5687,10 +5788,11 @@ mod tests {
             "a non-matching legacy identity must not migrate to either captured mouse"
         );
         assert!(
-            state.devices.values().all(|device| matches!(
-                device.identity.display_name.as_deref(),
-                Some("Mouse 1") | Some("Mouse 2")
-            )),
+            state.devices.values().all(|device| device
+                .identity
+                .display_name
+                .as_ref()
+                .is_some_and(|name| name.starts_with("Mouse "))),
             "accepted enrollment with no legacy match uses fresh Mouse N names"
         );
         let tokens: Vec<PhysicalId> = state
@@ -5886,10 +5988,11 @@ mod tests {
         let state = manager.store().load().unwrap();
         assert!(state.identity_setup.is_none());
         assert!(
-            state.devices.values().all(|device| matches!(
-                device.identity.display_name.as_deref(),
-                Some("Mouse 1") | Some("Mouse 2")
-            )),
+            state.devices.values().all(|device| device
+                .identity
+                .display_name
+                .as_ref()
+                .is_some_and(|name| name.starts_with("Mouse "))),
             "skip migration must use fresh names even on a unique match"
         );
     }

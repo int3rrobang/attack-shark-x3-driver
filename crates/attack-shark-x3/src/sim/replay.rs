@@ -10,7 +10,8 @@ use std::path::Path;
 use super::fixtures::{Scenario, load_scenario};
 use super::{ProfileImage, SimBackend, SimGap};
 use crate::{
-    ButtonsReport, DpiReport, PreferencesFraming, PreferencesReport, ProfileId, TransportKind,
+    ButtonsReport, DpiReport, PreferencesFraming, PreferencesReport, ProfileId, ProfileMetadata,
+    TransportKind,
 };
 
 /// Byte-exact replay of one scenario endpoint.
@@ -27,6 +28,9 @@ pub struct SimReplay {
     profiles: std::collections::BTreeMap<u8, ProfileImage>,
     /// Recorded post-write images by one-based profile number.
     post_write: std::collections::BTreeMap<u8, ProfileImage>,
+    /// Recorded profile metadata (`None` = no metadata capture; metadata
+    /// reads and writes gap loudly instead of guessing).
+    metadata: Option<ProfileMetadata>,
     /// Recorded battery level (`None` = no battery reporting).
     battery: Option<u8>,
 }
@@ -93,6 +97,7 @@ impl SimReplay {
             transport,
             profiles: loaded.profiles.clone(),
             post_write: loaded.post_write.clone(),
+            metadata: loaded.metadata,
             battery: loaded.battery,
         })
     }
@@ -193,6 +198,36 @@ impl SimBackend for SimReplay {
             )));
         }
         Ok(())
+    }
+
+    fn read_profile_metadata(&self) -> Result<ProfileMetadata, SimGap> {
+        self.metadata.ok_or_else(|| {
+            SimGap(format!(
+                "{}: no recorded metadata capture; \
+                 missing capture (replay serves recorded metadata only)",
+                self.source
+            ))
+        })
+    }
+
+    fn write_profile_metadata(
+        &mut self,
+        metadata: ProfileMetadata,
+    ) -> Result<ProfileMetadata, SimGap> {
+        let recorded = self.read_profile_metadata()?;
+        if metadata != recorded {
+            return Err(SimGap(format!(
+                "{}: metadata write (current {}, maximum {}) doesn't match the recorded \
+                 metadata (current {}, maximum {}); \
+                 missing capture for write verification (replay never guesses)",
+                self.source,
+                metadata.current(),
+                metadata.maximum(),
+                recorded.current(),
+                recorded.maximum(),
+            )));
+        }
+        Ok(recorded)
     }
 
     fn battery(&self) -> Option<u8> {
@@ -373,6 +408,60 @@ mod tests {
         assert_eq!(replay("stock").battery(), Some(87));
         assert_eq!(replay("tuned").battery(), Some(64));
         assert_eq!(replay("foreign-token").battery(), Some(42));
+    }
+
+    #[test]
+    fn metadata_serves_recorded_pair_and_verifies_matching_writes() {
+        let mut backend = replay("stock");
+        let recorded = backend.read_profile_metadata().expect("metadata serves");
+        assert_eq!(
+            recorded.current(),
+            ProfileId::try_from(1u8).expect("profile 1")
+        );
+        assert_eq!(
+            recorded.maximum(),
+            ProfileId::try_from(5u8).expect("profile 5")
+        );
+        // A write matching the recorded pair verifies; anything else gaps.
+        let verified = backend
+            .write_profile_metadata(recorded)
+            .expect("matching metadata write verifies");
+        assert_eq!(verified, recorded);
+        let other = ProfileMetadata::new(
+            ProfileId::try_from(4u8).expect("profile 4"),
+            ProfileId::try_from(4u8).expect("profile 4"),
+        )
+        .expect("hide-shaped metadata");
+        let error = backend
+            .write_profile_metadata(other)
+            .expect_err("mismatched metadata write gaps");
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("recorded"),
+            "gap names the capture: {rendered}"
+        );
+    }
+
+    #[test]
+    fn metadata_without_capture_gaps_loudly() {
+        let backend = SimReplay::load_endpoint("two-ble-unknown", 0).expect("ble loads");
+        let error = backend
+            .read_profile_metadata()
+            .expect_err("no metadata capture gaps");
+        assert!(
+            format!("{error:?}").contains("metadata"),
+            "gap names the capture: {error:?}"
+        );
+        let mut backend = backend;
+        let metadata = ProfileMetadata::new(
+            ProfileId::try_from(1u8).expect("profile 1"),
+            ProfileId::try_from(5u8).expect("profile 5"),
+        )
+        .expect("metadata");
+        assert!(
+            backend.write_profile_metadata(metadata).is_err(),
+            "no metadata capture means no verified write"
+        );
     }
 
     const WATERMARK_LENGTH_TEST: usize = crate::WATERMARK_LENGTH;

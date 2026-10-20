@@ -83,6 +83,8 @@ When a stronger tier is not yet proven, say **"not yet confirmed"** — never
 | adopt / adoption | add as a different mouse |
 | restore (rotate to a fresh token) | set this mouse up again (as `<name>`) |
 | BLE association | connect over Bluetooth |
+| filter (button-action list) | search |
+| empty filter result | no actions match that search |
 
 ## Blocklist
 

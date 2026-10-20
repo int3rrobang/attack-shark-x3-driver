@@ -114,8 +114,34 @@ pub(crate) trait DeviceSession: Send + Sync {
 
 /// The production transport factory. It is crate-visible only so resource
 /// operations can inject it without exposing low-level handles publicly.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct RealSessionFactory;
+///
+/// The sim override pins one factory instance to a fixed sim spec instead of
+/// reading `X3_SIM`: auto-demo frontends inject it so the demo device flows
+/// through the normal discovery/session path without mutating process
+/// environment (which is process-global and `unsafe` to write on Rust 2024).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RealSessionFactory {
+    sim_override: Option<attack_shark_x3::sim::SimSpec>,
+}
+
+impl RealSessionFactory {
+    pub(crate) fn with_sim_override(spec: attack_shark_x3::sim::SimSpec) -> Self {
+        Self {
+            sim_override: Some(spec),
+        }
+    }
+
+    /// The sim spec this factory serves: the pinned override when one is
+    /// set, otherwise whatever `X3_SIM` currently selects. Both discovery
+    /// and session-open funnel through here so they can never disagree.
+    fn sim_spec(&self) -> Result<Option<attack_shark_x3::sim::SimSpec>, ManagerError> {
+        if let Some(spec) = self.sim_override.clone() {
+            return Ok(Some(spec));
+        }
+        attack_shark_x3::sim::sim_spec_from_env()
+            .map_err(|gap| ManagerError::InvalidUpdate(format!("{gap}")))
+    }
+}
 
 #[cfg(feature = "usb")]
 fn list_usb_devices(kind: UsbDeviceKind) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
@@ -199,7 +225,8 @@ async fn open_ble_session(
     Ok(Box::new(BleSession { handle }))
 }
 
-/// Sim discovery endpoints registered while `X3_SIM` is set.
+/// Sim discovery endpoints registered while `X3_SIM` is set (or while this
+/// factory carries a sim override).
 ///
 /// Sim endpoints are indistinguishable `DiscoveredEndpoint`s flowing through
 /// the existing discovery/ceremony/resolution/snapshot paths. Env unset
@@ -208,9 +235,8 @@ async fn open_ble_session(
 /// `ManagerError::InvalidUpdate` naming the variable.
 fn sim_discovered_endpoints(
     selection: TransportSelection,
+    spec: Option<attack_shark_x3::sim::SimSpec>,
 ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
-    use attack_shark_x3::sim::sim_spec_from_env;
-    let spec = sim_spec_from_env().map_err(|gap| ManagerError::InvalidUpdate(format!("{gap}")))?;
     sim_endpoints_for_spec(spec, selection)
 }
 
@@ -305,7 +331,7 @@ fn sim_locator_index(endpoint: &DeviceEndpoint) -> Option<usize> {
 /// Sim endpoints use reserved `sim:` locators, so hardware paths never
 /// collide and no transport special-casing leaks into the manager's
 /// ceremony/resolution/snapshot paths.
-fn is_sim_endpoint(endpoint: &DeviceEndpoint) -> bool {
+pub(crate) fn is_sim_endpoint(endpoint: &DeviceEndpoint) -> bool {
     sim_tag_for_endpoint(endpoint).is_some()
 }
 
@@ -322,13 +348,13 @@ fn sim_token_for(name: &str, index: usize) -> attack_shark_x3::PhysicalId {
     attack_shark_x3::PhysicalId::from_token_bytes(token)
 }
 
-/// Opens a sim endpoint through the backend named by `X3_SIM`. Hardware
-/// locators return `None` and flow on untouched.
+/// Opens a sim endpoint through the backend named by this factory's spec
+/// (override or `X3_SIM`). Hardware locators return `None` and flow on
+/// untouched.
 fn open_sim_session(
     endpoint: &DeviceEndpoint,
+    spec: Option<attack_shark_x3::sim::SimSpec>,
 ) -> Result<Option<Box<dyn DeviceSession>>, attack_shark_x3::sim::SimGap> {
-    use attack_shark_x3::sim::sim_spec_from_env;
-    let spec = sim_spec_from_env()?;
     open_sim_session_for_spec(spec, endpoint)
 }
 
@@ -502,12 +528,11 @@ impl DeviceSession for SimModelSession {
     }
 
     async fn read_profile_metadata(&self) -> Result<ProfileMetadata, ManagerError> {
+        use attack_shark_x3::sim::SimBackend;
         let slot = self.slot.lock().expect("sim model slot poisoned");
-        let current = ProfileId::try_from(slot.model.active_profile()).unwrap_or(ProfileId::MIN_ID);
-        ProfileMetadata::new(current, ProfileId::MAX_ID).map_err(|error| ManagerError::Protocol {
-            operation: "sim profile metadata",
-            source: error,
-        })
+        slot.model
+            .read_profile_metadata()
+            .map_err(|gap| sim_gap_error(gap, self.transport))
     }
 
     async fn read_profile(&self, profile: ProfileId) -> Result<ProfileSnapshot, ManagerError> {
@@ -577,21 +602,15 @@ impl DeviceSession for SimModelSession {
         &self,
         metadata: ProfileMetadata,
     ) -> Result<SessionWrite<ProfileMetadata>, ManagerError> {
+        use attack_shark_x3::sim::SimBackend;
         let mut slot = self.slot.lock().expect("sim model slot poisoned");
-        slot.model
-            .set_active_profile(metadata.current().get())
-            .map_err(|gap| sim_gap_error(gap, self.transport))?;
-        drop(slot);
         // Metadata writes carry no verification mode (trait-wide): like the
-        // real USB session, always read back. The model serves the full
-        // slot range, so post-write actual mirrors `read_profile_metadata`.
-        let actual =
-            ProfileMetadata::new(metadata.current(), ProfileId::MAX_ID).map_err(|error| {
-                ManagerError::Protocol {
-                    operation: "sim profile metadata",
-                    source: error,
-                }
-            })?;
+        // real USB session, always read back. The model stores the requested
+        // pair, so post-write actual mirrors `read_profile_metadata`.
+        let actual = slot
+            .model
+            .write_profile_metadata(metadata)
+            .map_err(|gap| sim_gap_error(gap, self.transport))?;
         Ok(SessionWrite::ReadbackVerified(actual))
     }
 
@@ -690,12 +709,13 @@ impl DeviceSession for SimReplaySession {
     }
 
     async fn read_profile_metadata(&self) -> Result<ProfileMetadata, ManagerError> {
-        ProfileMetadata::new(ProfileId::MIN_ID, ProfileId::MAX_ID).map_err(|error| {
-            ManagerError::Protocol {
-                operation: "sim profile metadata",
-                source: error,
-            }
-        })
+        use attack_shark_x3::sim::SimBackend;
+        // Transport is read before taking the lock: the lock is not reentrant.
+        let transport = self.transport();
+        let backend = self.backend.lock().expect("sim replay poisoned");
+        backend
+            .read_profile_metadata()
+            .map_err(|gap| sim_gap_error(gap, transport))
     }
 
     async fn read_profile(&self, profile: ProfileId) -> Result<ProfileSnapshot, ManagerError> {
@@ -763,9 +783,16 @@ impl DeviceSession for SimReplaySession {
 
     async fn write_profile_metadata(
         &self,
-        _metadata: ProfileMetadata,
+        metadata: ProfileMetadata,
     ) -> Result<SessionWrite<ProfileMetadata>, ManagerError> {
-        Err(self.missing_capture("profile activation"))
+        use attack_shark_x3::sim::SimBackend;
+        // Transport is read before taking the lock: the lock is not reentrant.
+        let transport = self.transport();
+        let mut backend = self.backend.lock().expect("sim replay poisoned");
+        let actual = backend
+            .write_profile_metadata(metadata)
+            .map_err(|gap| sim_gap_error(gap, transport))?;
+        Ok(SessionWrite::ReadbackVerified(actual))
     }
 
     async fn read_battery(&self, _timeout: Duration) -> Result<u8, ManagerError> {
@@ -819,6 +846,10 @@ impl SessionFactory for RealSessionFactory {
         &self,
         selection: TransportSelection,
     ) -> Result<Vec<DiscoveredEndpoint>, ManagerError> {
+        // One spec read per scan: discovery and session-open both funnel
+        // through self.sim_spec(), so an override and X3_SIM can never
+        // disagree mid-scan.
+        let sim_spec = self.sim_spec()?;
         match selection {
             TransportSelection::Auto => {
                 #[cfg(any(feature = "usb", feature = "ble"))]
@@ -831,11 +862,12 @@ impl SessionFactory for RealSessionFactory {
                     }
                     #[cfg(feature = "ble")]
                     devices.extend(list_ble_devices().await?);
-                    devices.extend(sim_discovered_endpoints(selection)?);
+                    devices.extend(sim_discovered_endpoints(selection, sim_spec)?);
                     Ok(devices)
                 }
                 #[cfg(not(any(feature = "usb", feature = "ble")))]
                 {
+                    let _ = sim_spec;
                     Ok(Vec::new())
                 }
             }
@@ -843,36 +875,36 @@ impl SessionFactory for RealSessionFactory {
                 #[cfg(feature = "usb")]
                 {
                     let mut devices = list_usb_devices(UsbDeviceKind::Wired)?;
-                    devices.extend(sim_discovered_endpoints(selection)?);
+                    devices.extend(sim_discovered_endpoints(selection, sim_spec)?);
                     Ok(devices)
                 }
                 #[cfg(not(feature = "usb"))]
                 {
-                    sim_discovered_endpoints(selection)
+                    sim_discovered_endpoints(selection, sim_spec)
                 }
             }
             TransportSelection::Exact(TransportKind::Receiver) => {
                 #[cfg(feature = "usb")]
                 {
                     let mut devices = list_usb_devices(UsbDeviceKind::Receiver)?;
-                    devices.extend(sim_discovered_endpoints(selection)?);
+                    devices.extend(sim_discovered_endpoints(selection, sim_spec)?);
                     Ok(devices)
                 }
                 #[cfg(not(feature = "usb"))]
                 {
-                    sim_discovered_endpoints(selection)
+                    sim_discovered_endpoints(selection, sim_spec)
                 }
             }
             TransportSelection::Exact(TransportKind::Ble) => {
                 #[cfg(feature = "ble")]
                 {
                     let mut devices = list_ble_devices().await?;
-                    devices.extend(sim_discovered_endpoints(selection)?);
+                    devices.extend(sim_discovered_endpoints(selection, sim_spec)?);
                     Ok(devices)
                 }
                 #[cfg(not(feature = "ble"))]
                 {
-                    sim_discovered_endpoints(selection)
+                    sim_discovered_endpoints(selection, sim_spec)
                 }
             }
         }
@@ -883,10 +915,9 @@ impl SessionFactory for RealSessionFactory {
         endpoint: &DeviceEndpoint,
     ) -> Result<Box<dyn DeviceSession>, ManagerError> {
         if is_sim_endpoint(endpoint)
-            && let Some(session) =
-                open_sim_session(endpoint).map_err(|gap: attack_shark_x3::sim::SimGap| {
-                    ManagerError::InvalidUpdate(format!("{gap}"))
-                })?
+            && let Some(session) = open_sim_session(endpoint, self.sim_spec()?).map_err(
+                |gap: attack_shark_x3::sim::SimGap| ManagerError::InvalidUpdate(format!("{gap}")),
+            )?
         {
             return Ok(session);
         }
@@ -2155,7 +2186,7 @@ mod tests {
         assert!(!super::is_sim_endpoint(&hardware));
         assert_eq!(super::sim_tag_for_endpoint(&hardware), None);
         assert!(
-            super::open_sim_session(&hardware)
+            super::open_sim_session(&hardware, None)
                 .expect("hardware is not a sim gap")
                 .is_none(),
             "hardware locators are never sim sessions"
@@ -2230,6 +2261,106 @@ mod tests {
             rendered.contains("post-write") || rendered.contains("no recorded capture"),
             "gap names the missing capture: {rendered}"
         );
+    }
+
+    #[tokio::test]
+    async fn sim_override_serves_without_env() {
+        use super::{RealSessionFactory, SessionFactory};
+        // Pinned spec discovers and opens with X3_SIM unset; the override
+        // is the whole point of DeviceManager::demo (no process-global
+        // mutation), so both list and open must honor it.
+        let factory = RealSessionFactory::with_sim_override(attack_shark_x3::sim::SimSpec::Model {
+            preset: "tuned".to_owned(),
+        });
+        let found = factory
+            .list(TransportSelection::Auto)
+            .await
+            .expect("override lists");
+        assert_eq!(found.len(), 1, "tuned declares one endpoint");
+        let session = factory
+            .open(&found[0].endpoint)
+            .await
+            .expect("override opens");
+        assert_eq!(session.transport(), TransportKind::Wired);
+        assert!(
+            session.read_dpi(profile(1)).await.is_ok(),
+            "tuned serves profile 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_factory_without_env_lists_no_sim() {
+        use super::{RealSessionFactory, SessionFactory};
+        // The no-override factory preserves the old contract: X3_SIM unset
+        // means hardware only. (CI runners have no X3 hardware, so the list
+        // is empty; on a dev machine with hardware it holds only hardware.)
+        // Either way, no sim locator may appear.
+        let factory = RealSessionFactory::default();
+        let found = factory
+            .list(TransportSelection::Auto)
+            .await
+            .expect("default lists");
+        assert!(
+            found
+                .iter()
+                .all(|row| super::sim_tag_for_endpoint(&row.endpoint).is_none()),
+            "no sim endpoints without override or env"
+        );
+    }
+
+    #[tokio::test]
+    async fn sim_model_session_metadata_write_reads_back_the_stored_pair() {
+        use attack_shark_x3::ProfileMetadata;
+        let endpoints = sim_endpoints(model_spec("tuned"), TransportSelection::Auto);
+        let session = super::open_sim_session_for_spec(model_spec("tuned"), &endpoints[0].endpoint)
+            .expect("open sim session")
+            .expect("sim locator opens a session");
+        // Baseline serves today's five enabled slots.
+        let baseline = session
+            .read_profile_metadata()
+            .await
+            .expect("baseline metadata");
+        assert_eq!(baseline.current(), profile(1));
+        assert_eq!(baseline.maximum(), profile(5));
+        // A hide-shaped write (current and maximum both lowered) reads back
+        // exactly that pair through the session, not the fabricated maximum.
+        let target = ProfileMetadata::new(profile(4), profile(4)).expect("hide-shaped metadata");
+        let outcome = session
+            .write_profile_metadata(target)
+            .await
+            .expect("hide-shaped write");
+        let SessionWrite::ReadbackVerified(actual) = outcome else {
+            panic!("wired sim metadata writes read back");
+        };
+        assert_eq!(actual, target);
+        assert_eq!(
+            session
+                .read_profile_metadata()
+                .await
+                .expect("post-write read"),
+            target,
+            "write persists in the shared model"
+        );
+    }
+
+    #[tokio::test]
+    async fn sim_model_session_rejects_invalid_metadata() {
+        use attack_shark_x3::ProfileMetadata;
+        let endpoints = sim_endpoints(model_spec("stock"), TransportSelection::Auto);
+        let session = super::open_sim_session_for_spec(model_spec("stock"), &endpoints[0].endpoint)
+            .expect("open sim session")
+            .expect("sim locator opens a session");
+        // `current <= maximum` is enforced at the wire type: no invalid pair
+        // can even be spelled, so the constructor is the rejection point and
+        // the session never sees one.
+        assert!(ProfileMetadata::new(profile(5), profile(4)).is_err());
+        assert!(ProfileMetadata::new(profile(2), profile(1)).is_err());
+        // The stored pair is untouched by the failed spellings.
+        let baseline = session
+            .read_profile_metadata()
+            .await
+            .expect("baseline metadata");
+        assert_eq!(baseline.maximum(), profile(5));
     }
 
     #[tokio::test]
