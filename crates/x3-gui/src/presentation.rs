@@ -535,6 +535,22 @@ pub fn validated_binding_action(_current: &str, requested: &str) -> Option<Strin
     Some(button_action_name(action.to_assignment()))
 }
 
+/// Filters the button-action list by a free-text query, case-insensitively:
+/// an empty or whitespace-only query returns every action in its original
+/// order, otherwise the actions whose label contains the trimmed query.
+/// Never panics; a query with no matches yields an empty list.
+pub fn filter_binding_actions(actions: &[String], query: &str) -> Vec<String> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return actions.to_vec();
+    }
+    actions
+        .iter()
+        .filter(|action| action.to_lowercase().contains(&needle))
+        .cloned()
+        .collect()
+}
+
 /// Severity of a draft that just broke left click.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LmbBreak {
@@ -562,21 +578,6 @@ pub fn lmb_break_warning(
         Some(LmbBreak::Remapped)
     } else {
         Some(LmbBreak::NothingClicks)
-    }
-}
-
-pub fn configured_product_label(choice: i32, custom: &str) -> String {
-    match choice.clamp(0, 2) {
-        0 => "Attack Shark X3".to_owned(),
-        1 => "Kysona M600".to_owned(),
-        _ => {
-            let custom = custom.trim();
-            if custom.is_empty() {
-                "Attack Shark X3".to_owned()
-            } else {
-                custom.to_owned()
-            }
-        }
     }
 }
 
@@ -1004,6 +1005,64 @@ mod tests {
     }
 
     #[test]
+    fn binding_action_filter_accepts_empty_and_whitespace_queries_unchanged() {
+        let actions = vec![
+            "left click".to_owned(),
+            "right click".to_owned(),
+            "dpi cycle".to_owned(),
+        ];
+        assert_eq!(filter_binding_actions(&actions, ""), actions);
+        assert_eq!(filter_binding_actions(&actions, "   "), actions);
+        assert!(filter_binding_actions(&[], "click").is_empty());
+        assert!(filter_binding_actions(&[], "").is_empty());
+    }
+
+    #[test]
+    fn binding_action_filter_matches_case_insensitively_in_the_middle() {
+        let actions = vec![
+            "left click".to_owned(),
+            "right click".to_owned(),
+            "dpi cycle".to_owned(),
+        ];
+        assert_eq!(
+            filter_binding_actions(&actions, "CLICK"),
+            vec!["left click".to_owned(), "right click".to_owned()]
+        );
+        assert_eq!(
+            filter_binding_actions(&actions, "  cyc "),
+            vec!["dpi cycle".to_owned()]
+        );
+        assert_eq!(
+            filter_binding_actions(&actions, "eft cl"),
+            vec!["left click".to_owned()]
+        );
+    }
+
+    #[test]
+    fn binding_action_filter_reports_no_match_as_an_empty_list() {
+        let actions = vec!["left click".to_owned(), "right click".to_owned()];
+        assert!(filter_binding_actions(&actions, "browser").is_empty());
+    }
+
+    #[test]
+    fn binding_action_filter_preserves_the_original_action_order() {
+        let actions = vec![
+            "dpi plus".to_owned(),
+            "copy".to_owned(),
+            "dpi cycle".to_owned(),
+            "dpi minus".to_owned(),
+        ];
+        assert_eq!(
+            filter_binding_actions(&actions, "dpi"),
+            vec![
+                "dpi plus".to_owned(),
+                "dpi cycle".to_owned(),
+                "dpi minus".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
     fn dropdown_selection_overrides_an_unsupported_current_assignment_with_a_safe_action() {
         let forward = crate::projection::binding("forward", "side upper", "unsupported assignment");
         assert!(forward.editable);
@@ -1048,23 +1107,6 @@ mod tests {
         );
         // Empty model: nothing to compare, stay silent.
         assert_eq!(lmb_break_warning("left click", "left click", &[]), None);
-    }
-
-    #[test]
-    fn configured_product_label_never_uses_live_device_identity() {
-        assert_eq!(
-            configured_product_label(0, "USB Gaming Mouse"),
-            "Attack Shark X3"
-        );
-        assert_eq!(
-            configured_product_label(1, "USB Gaming Mouse"),
-            "Kysona M600"
-        );
-        assert_eq!(
-            configured_product_label(2, " USB Gaming Mouse "),
-            "USB Gaming Mouse"
-        );
-        assert_eq!(configured_product_label(2, " "), "Attack Shark X3");
     }
 
     #[test]

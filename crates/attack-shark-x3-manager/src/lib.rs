@@ -26,6 +26,9 @@ pub mod state;
 #[cfg(any(feature = "usb", feature = "ble"))]
 pub(crate) mod verification;
 
+/// Pinned sim spec for [`DeviceManager::demo`]: frontends build the demo
+/// device without touching `X3_SIM`.
+pub use attack_shark_x3::sim::SimSpec;
 pub use attack_shark_x3::{
     BatteryEvent, ButtonActionError, ButtonAssignment, ButtonsState, ConnectionChangedEvent,
     DpiButtonEvent, DpiFraming, DpiIndex, DpiIndexChangedEvent, DpiState, DpiValue,
@@ -72,6 +75,6 @@ pub use state::{
     DeviceOperationGuard, DeviceState, EndpointMapping, IdentityMode, IdentitySetupJournal,
     IdentitySetupPhase, IdentitySetupStage, IdentitySetupSubject, IdentityStampProgress,
     MAX_PROFILE_NAME_CHARS, ObservationSource, ObservedState, PersistenceVerification,
-    ProfileState, ResourceState, SCHEMA_VERSION, StateFile, StatePaths, StateReset, StateStore,
-    StateTransaction, Timestamp, Verification,
+    ProfileState, ResourceState, SCHEMA_VERSION, ShellColor, StateFile, StatePaths, StateReset,
+    StateStore, StateTransaction, Timestamp, Verification,
 };

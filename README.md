@@ -7,6 +7,21 @@ This project began as a fork of
 and now deliberately targets the X3/M600 protocol family. The original Git history, MIT
 license, and attribution are preserved, but X11 is no longer a production target.
 
+## Status and provenance
+
+Read this before judging anything here.
+
+- **Most of this codebase is AI-generated.** A human reviewed, ran and tested it, but agents
+  wrote it. The parts worth trusting are the tests and the protocol notes, not the prose.
+- **The X3/M600 protocol is nailed down.** `protocols/`, `docs/` and
+  `reverse-engineering-notes.md` carry the captures and the packet-level evidence.
+  **The GUI is under active development** and its layout still moves.
+- **The mouse image assets are AI-generated from real photographs** of the author's own
+  hardware — nothing is copied from a manufacturer, a retailer or a stock library, so no
+  third-party image license is involved. The Lucide icons are the exception and keep their
+  own license: see `crates/x3-gui/assets/LICENSE-LUCIDE.txt`.
+- Not affiliated with Attack Shark or Kysona. Lawyers, shoo.
+
 ## Transports
 
 | Transport | Host identity | CLI value | Status |

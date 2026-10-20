@@ -45,7 +45,9 @@ pub fn clear_live_state(ui: &AppWindow) {
     ui.set_verification_instruction("".into());
     ui.set_last_enabled_profile(-1);
     ui.set_battery_text("".into());
-    ui.set_device_name("device not loaded".into());
+    ui.set_device_name("Attack Shark X3".into());
+    ui.set_device_subtitle("no device selected".into());
+    ui.set_header_editing_name(false);
     ui.set_device_id_text("not available".into());
     ui.set_device_product_text("not available".into());
     ui.set_profile_summary("no live profile".into());
@@ -287,6 +289,20 @@ pub fn apply_event(ui: &AppWindow, event: crate::worker::UiEvent) {
             ui.set_status_text("which mouse is this?".into());
             ui.invoke_show_pending_ask();
         }
+        UiEvent::DemoMode { entering, scenario } => {
+            ui.set_demo_active(entering);
+            if entering {
+                ui.set_sim_scenario(scenario.clone().into());
+                // A re-entry after dismiss must re-raise the strip: each
+                // demo session starts undisguised, collapsing only by click.
+                ui.set_demo_banner_dismissed(false);
+                ui.set_status_text(
+                    "no compatible mouse found — showing a simulated mouse; connect yours".into(),
+                );
+            } else {
+                ui.set_sim_scenario("".into());
+            }
+        }
         UiEvent::AutoAttached { keep_stored, .. } => {
             ui.set_busy(false);
             ui.set_status_text(
@@ -382,8 +398,10 @@ pub fn apply_snapshot_replacing(ui: &AppWindow, snapshot: &LiveSnapshot) {
     ui.set_transport_label(snapshot.transport.clone().into());
     ui.set_battery_text(snapshot.battery.clone().into());
     ui.set_device_name(snapshot.device_name.clone().into());
+    ui.set_device_subtitle(format!("{} · {}", snapshot.stable_id, snapshot.transport).into());
     ui.set_device_id_text(snapshot.stable_id.clone().into());
     ui.set_device_product_text(snapshot.product_id.clone().into());
+    ui.set_white_shell(snapshot.shell == attack_shark_x3_manager::ShellColor::White);
     ui.set_profile_summary(snapshot.profile_summary.clone().into());
     ui.set_active_dpi_text(format!("{} dpi", snapshot.active_dpi).into());
     ui.set_active_stage_text(
@@ -451,8 +469,10 @@ pub fn apply_snapshot_preserving_draft(ui: &AppWindow, snapshot: &LiveSnapshot) 
     ui.set_transport_label(snapshot.transport.clone().into());
     ui.set_battery_text(snapshot.battery.clone().into());
     ui.set_device_name(snapshot.device_name.clone().into());
+    ui.set_device_subtitle(format!("{} · {}", snapshot.stable_id, snapshot.transport).into());
     ui.set_device_id_text(snapshot.stable_id.clone().into());
     ui.set_device_product_text(snapshot.product_id.clone().into());
+    ui.set_white_shell(snapshot.shell == attack_shark_x3_manager::ShellColor::White);
     ui.set_profile_summary(snapshot.profile_summary.clone().into());
     ui.set_active_dpi_text(format!("{} dpi", snapshot.active_dpi).into());
     ui.set_active_stage_text(

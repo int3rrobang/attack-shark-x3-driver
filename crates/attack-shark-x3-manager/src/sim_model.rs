@@ -11,8 +11,8 @@
 use attack_shark_x3::sim::{ProfileImage, SimBackend, SimGap};
 use attack_shark_x3::{
     ButtonAssignment, ButtonsReport, ButtonsState, DpiReport, DpiState, DpiValue,
-    PreferencesFraming, PreferencesReport, PreferencesState, ProfileId, StageIndex, TransportKind,
-    WATERMARK_LENGTH,
+    PreferencesFraming, PreferencesReport, PreferencesState, ProfileId, ProfileMetadata,
+    StageIndex, TransportKind, WATERMARK_LENGTH,
 };
 
 /// Tuned profile-1 DPI ladder, shared byte-for-byte with the replay
@@ -29,6 +29,7 @@ const TUNED_REMAPPED_SLOT: usize = 3;
 pub struct SimModel {
     profiles: [ProfileImage; 5],
     active_profile: ProfileId,
+    maximum_profile: ProfileId,
     transport: TransportKind,
     battery: Option<u8>,
     writes_per_percent: u32,
@@ -111,6 +112,39 @@ impl SimModel {
         self.active_profile.get()
     }
 
+    /// Highest enabled profile slot (one-based).
+    #[must_use]
+    pub fn maximum_profile(&self) -> u8 {
+        self.maximum_profile.get()
+    }
+
+    /// Stores a current/maximum metadata pair, validating `current <= maximum`
+    /// exactly like the wire type, and returns the stored truth.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SimGap`] when `current > maximum`.
+    pub fn set_profile_metadata(
+        &mut self,
+        metadata: ProfileMetadata,
+    ) -> Result<ProfileMetadata, SimGap> {
+        self.active_profile = metadata.current();
+        self.maximum_profile = metadata.maximum();
+        self.record_write();
+        self.profile_metadata()
+    }
+
+    /// Serves the stored current/maximum metadata pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SimGap`] only when the stored pair violates
+    /// `current <= maximum` (unreachable through the public setters).
+    pub fn profile_metadata(&self) -> Result<ProfileMetadata, SimGap> {
+        ProfileMetadata::new(self.active_profile, self.maximum_profile)
+            .map_err(|error| SimGap(format!("sim-model: stored metadata is invalid: {error}")))
+    }
+
     /// Selects the active profile.
     ///
     /// # Errors
@@ -136,6 +170,7 @@ impl SimModel {
         Self {
             profiles,
             active_profile: ProfileId::MIN_ID,
+            maximum_profile: ProfileId::MAX_ID,
             transport,
             battery: Some(Self::DEFAULT_BATTERY),
             writes_per_percent: Self::DEFAULT_WRITES_PER_PERCENT,
@@ -185,6 +220,17 @@ impl SimBackend for SimModel {
         self.profiles[usize::from(profile) - 1] = image.clone();
         self.record_write();
         Ok(())
+    }
+
+    fn read_profile_metadata(&self) -> Result<ProfileMetadata, SimGap> {
+        self.profile_metadata()
+    }
+
+    fn write_profile_metadata(
+        &mut self,
+        metadata: ProfileMetadata,
+    ) -> Result<ProfileMetadata, SimGap> {
+        self.set_profile_metadata(metadata)
     }
 
     fn battery(&self) -> Option<u8> {
@@ -440,5 +486,57 @@ mod tests {
         assert!(model.set_active_profile(0).is_err());
         assert!(model.set_active_profile(6).is_err());
         assert_eq!(model.active_profile(), 4);
+    }
+
+    #[test]
+    fn metadata_defaults_to_five_enabled_slots() {
+        let model = SimModel::stock();
+        assert_eq!(model.maximum_profile(), 5);
+        let metadata = model.profile_metadata().expect("stored metadata");
+        assert_eq!(metadata.current(), profile(1));
+        assert_eq!(metadata.maximum(), profile(5));
+        assert_eq!(SimModel::tuned().maximum_profile(), 5);
+    }
+
+    #[test]
+    fn metadata_roundtrip_honours_a_lowered_maximum() {
+        use attack_shark_x3::sim::SimBackend;
+        let mut model = SimModel::tuned();
+        let hide = ProfileMetadata::new(profile(4), profile(4)).expect("hide-shaped metadata");
+        let stored = model
+            .write_profile_metadata(hide)
+            .expect("hide-shaped write");
+        assert_eq!(stored, hide);
+        assert_eq!(model.read_profile_metadata().expect("read back"), hide);
+        assert_eq!(model.active_profile(), 4);
+        assert_eq!(model.maximum_profile(), 4);
+        // Activation still works for the contracted range.
+        model
+            .set_active_profile(2)
+            .expect("activation within range");
+        assert_eq!(
+            model.profile_metadata().expect("metadata").current(),
+            profile(2)
+        );
+    }
+
+    #[test]
+    fn invalid_metadata_write_is_rejected() {
+        use attack_shark_x3::sim::SimBackend;
+        // `ProfileMetadata::new` enforces `current <= maximum` at the wire
+        // type, so an invalid pair cannot even be constructed here; the
+        // backend rejects a stale current above a lowered maximum instead by
+        // keeping `set_active_profile` for the activation path.
+        let mut model = SimModel::stock();
+        model.set_active_profile(5).expect("activate tail");
+        let hide_tail = ProfileMetadata::new(profile(4), profile(4)).expect("metadata");
+        // A current above the target maximum has no valid spelling: the
+        // constructor is the rejection point.
+        assert!(ProfileMetadata::new(profile(5), profile(4)).is_err());
+        // And a well-formed hide still lands exactly.
+        let stored = model
+            .write_profile_metadata(hide_tail)
+            .expect("well-formed hide");
+        assert_eq!(stored, hide_tail);
     }
 }

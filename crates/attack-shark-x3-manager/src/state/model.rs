@@ -15,9 +15,9 @@ use crate::error::StateError;
 /// endpoints, next-device allocation, and strengthened evidence invariants.
 /// Schema 5 adds installation-level physical-identity mode, optional
 /// per-device physical watermark ids, and a durable resumable identity-setup
-/// journal. No migration from schema 4 exists; schema 4 documents are
-/// rejected.
-pub const SCHEMA_VERSION: u32 = 5;
+/// journal. Schema 6 adds the per-device presentation-only shell colour. No
+/// migration from an earlier schema exists; older documents are rejected.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Maximum length of a local profile display name, in Unicode scalar values.
 ///
@@ -355,6 +355,19 @@ impl PersistenceVerification {
     }
 }
 
+/// Shell colour the UI renders for a mouse.
+///
+/// Presentation metadata only: the protocol never reports a colour, so this is
+/// whatever the user picked. It is per device because a unit's shell is a
+/// property of that unit, not of the installation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ShellColor {
+    #[default]
+    Black,
+    White,
+}
+
 /// Durable state for one logical mouse.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -370,6 +383,9 @@ pub struct DeviceState {
     /// metadata.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profile_names: BTreeMap<ProfileId, String>,
+    /// Shell the UI renders for this mouse; presentation-only.
+    #[serde(default)]
+    pub shell: ShellColor,
 }
 
 impl DeviceState {
@@ -381,6 +397,7 @@ impl DeviceState {
             profile_metadata: ResourceState::empty(),
             profiles: BTreeMap::new(),
             profile_names: BTreeMap::new(),
+            shell: ShellColor::default(),
         }
     }
 
@@ -1372,7 +1389,7 @@ mod tests {
     fn default_state_file_starts_at_schema_five_with_legacy_identity() {
         let state = StateFile::default();
         assert_eq!(state.schema_version, SCHEMA_VERSION);
-        assert_eq!(state.schema_version, 5);
+        assert_eq!(state.schema_version, 6);
         assert_eq!(state.next_device_number, 1);
         assert!(state.selected_device.is_none());
         assert!(state.devices.is_empty());
@@ -2161,7 +2178,7 @@ mod tests {
     #[test]
     fn older_schemas_rejected_without_migration() {
         let identity = device_identity("mouse-1", vec![ble_endpoint("test")]);
-        for old_schema in [3, 4] {
+        for old_schema in [3, 4, 5] {
             let json = serde_json::json!({
                 "schemaVersion": old_schema,
                 "nextDeviceNumber": 2,
@@ -2199,9 +2216,9 @@ mod tests {
             let header: serde_json::Value = serde_json::from_str(&json_str).unwrap();
             assert_eq!(header["schemaVersion"], old_schema);
         }
-        // No migration shim exists: the current schema is 5 and nothing below
+        // No migration shim exists: the current schema is 6 and nothing below
         // it is accepted.
-        assert_eq!(SCHEMA_VERSION, 5);
+        assert_eq!(SCHEMA_VERSION, 6);
     }
 
     #[test]

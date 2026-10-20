@@ -11,8 +11,8 @@ use std::path::Path;
 use super::{ProfileImage, SimGap};
 use crate::protocol::buttons::BUTTON_SLOT_COUNT;
 use crate::{
-    ButtonAssignment, ButtonsState, DpiState, DpiValue, PreferencesState, ProfileId, StageIndex,
-    TransportKind, WATERMARK_LENGTH,
+    ButtonAssignment, ButtonsState, DpiState, DpiValue, PreferencesState, ProfileId,
+    ProfileMetadata, StageIndex, TransportKind, WATERMARK_LENGTH,
 };
 
 /// One discovery endpoint declared by a scenario file.
@@ -37,6 +37,10 @@ pub struct Scenario {
     /// verified against the entry here when present; otherwise the backend
     /// reports a gap naming the missing capture.
     pub post_write: BTreeMap<u8, ProfileImage>,
+    /// Recorded profile metadata (`None` when the scenario omits
+    /// `[metadata]`; the backend then reports a gap naming the missing
+    /// capture instead of guessing).
+    pub metadata: Option<ProfileMetadata>,
     /// Recorded battery level (`None` when the scenario omits it).
     pub battery: Option<u8>,
 }
@@ -155,11 +159,40 @@ pub fn parse_scenario(text: &str, name: &str) -> Result<Scenario, SimGap> {
         }
     }
 
+    let metadata = match table.get("metadata") {
+        None => None,
+        Some(value) => {
+            let metadata_table = value
+                .as_table()
+                .ok_or_else(|| SimGap(format!("{name}: `[metadata]` must be a table")))?;
+            let number = |key: &str| -> Result<ProfileId, SimGap> {
+                let raw = metadata_table
+                    .get(key)
+                    .and_then(toml::Value::as_integer)
+                    .and_then(|value| u8::try_from(value).ok())
+                    .and_then(ProfileId::new)
+                    .ok_or_else(|| {
+                        SimGap(format!(
+                            "{name}: [metadata]: `{key}` must be an integer in 1..={max}",
+                            max = ProfileId::MAX
+                        ))
+                    })?;
+                Ok(raw)
+            };
+            let current = number("current")?;
+            let maximum = number("maximum")?;
+            Some(ProfileMetadata::new(current, maximum).map_err(|error| {
+                SimGap(format!("{name}: [metadata]: invalid metadata: {error}"))
+            })?)
+        }
+    };
+
     Ok(Scenario {
         name: name.to_owned(),
         endpoints,
         profiles,
         post_write,
+        metadata,
         battery,
     })
 }
@@ -377,6 +410,51 @@ mod tests {
         );
         assert!(ble.profiles.is_empty());
         assert_eq!(ble.battery, None);
+    }
+
+    #[test]
+    fn metadata_section_parses_and_defaults_to_absent() {
+        let text = "[[endpoints]]\ntransport = \"wired\"\n[metadata]\ncurrent = 4\nmaximum = 4\n";
+        let scenario = parse_scenario(text, "scenario hide").expect("metadata parses");
+        let metadata = scenario.metadata.expect("metadata present");
+        assert_eq!(metadata.current(), ProfileId::new(4).unwrap());
+        assert_eq!(metadata.maximum(), ProfileId::new(4).unwrap());
+        let bare = parse_scenario("[[endpoints]]\ntransport = \"wired\"\n", "scenario bare")
+            .expect("bare parses");
+        assert_eq!(bare.metadata, None);
+    }
+
+    #[test]
+    fn bad_metadata_names_section() {
+        let text = "[[endpoints]]\ntransport = \"wired\"\n[metadata]\ncurrent = 5\nmaximum = 4\n";
+        let error = parse_scenario(text, "scenario bad-metadata").expect_err("current > maximum");
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("scenario bad-metadata"),
+            "names source: {rendered}"
+        );
+        assert!(rendered.contains("metadata"), "names section: {rendered}");
+    }
+
+    #[test]
+    fn shipped_fixtures_carry_five_slot_metadata() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sim");
+        for name in ["stock", "tuned", "foreign-token"] {
+            let scenario = load_scenario(&dir.join(format!("{name}.toml"))).expect("loads");
+            let metadata = scenario.metadata.expect("shipped metadata");
+            assert_eq!(
+                metadata.current(),
+                ProfileId::new(1).unwrap(),
+                "{name}: current"
+            );
+            assert_eq!(
+                metadata.maximum(),
+                ProfileId::new(5).unwrap(),
+                "{name}: maximum"
+            );
+        }
+        let ble = load_scenario(&dir.join("two-ble-unknown.toml")).expect("ble loads");
+        assert_eq!(ble.metadata, None, "BLE fixture stays loud");
     }
 
     #[test]

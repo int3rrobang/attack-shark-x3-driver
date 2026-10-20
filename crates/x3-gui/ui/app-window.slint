@@ -16,6 +16,7 @@ export global Theme {
     out property <color> accent-soft: dark-mode ? #303640 : #e9edf5;
     out property <color> success: dark-mode ? #a8d0bb : #397452;
     out property <color> warning: dark-mode ? #e3bd85 : #986325;
+    out property <color> warning-soft: dark-mode ? #3d3427 : #f6ecdc;
     out property <color> danger: dark-mode ? #edb0ae : #a34f4b;
     out property <color> danger-soft: dark-mode ? #432d32 : #f8e9e8;
     out property <color> on-accent: #f8f9fb;
@@ -79,6 +80,37 @@ component Card inherits Rectangle {
     border-color: Theme.border;
     border-width: 1px;
     border-radius: Theme.radius;
+}
+
+/// Small square button showing an SVG icon instead of a text label. Used
+/// where Unicode glyphs (pencil, close) would render as tofu on systems
+/// whose fallback fonts lack those codepoints.
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> accessible-name: "action";
+    in property <bool> enabled: true;
+    /// Shows this button as the chosen one of a small set.
+    in property <bool> selected: false;
+    in property <color> icon-tint: transparent;
+    callback clicked;
+    accessible-role: button;
+    accessible-label: root.accessible-name;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: root.selected || button-area.has-hover ? Theme.accent : Theme.border;
+    background: root.selected ? Theme.accent-soft : (button-area.has-hover ? Theme.surface-raised : Theme.surface);
+    opacity: root.enabled ? 1.0 : 0.48;
+
+    Image {
+        x: (parent.width - 14px) / 2; y: (parent.height - 14px) / 2; width: 14px; height: 14px;
+        source: root.icon; image-fit: contain; colorize: root.icon-tint;
+    }
+    button-area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
 }
 
 component ActionButton inherits Rectangle {
@@ -337,6 +369,7 @@ component DeviceSelectorPanel inherits Card {
 
     ScrollView {
         x: Theme.space-2; y: root.device-count == 1 ? 28px : 44px; width: parent.width - Theme.space-4; height: parent.height - (root.device-count == 1 ? 34px : 50px);
+        horizontal-scrollbar-policy: always-off;
         VerticalLayout {
             width: parent.width;
             spacing: 3px;
@@ -394,7 +427,7 @@ component ProfileListItem inherits Rectangle {
         x: parent.width - (root.item-index == root.last-enabled-index && root.last-enabled-index > 0 ? 68px : 36px);
         y: 5px; width: 30px; height: 30px; border-radius: Theme.radius;
         background: edit-area.has-hover ? Theme.surface-raised : transparent;
-        Text { text: "✎"; color: Theme.muted; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+        Image { x: (parent.width - 15px) / 2; y: (parent.height - 15px) / 2; width: 15px; height: 15px; source: @image-url("../assets/pencil.svg"); image-fit: contain; }
         edit-area := TouchArea {
             enabled: root.interactive;
             accessible-role: button; accessible-label: "rename " + root.profile.name;
@@ -406,7 +439,7 @@ component ProfileListItem inherits Rectangle {
     if root.profile.enabled && root.item-index == root.last-enabled-index && root.last-enabled-index > 0 : Rectangle {
         x: parent.width - 34px; y: 5px; width: 30px; height: 30px; border-radius: Theme.radius;
         background: hide-area.has-hover ? Theme.danger-soft : transparent;
-        Text { text: "⊘"; color: Theme.danger; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+        Image { x: (parent.width - 15px) / 2; y: (parent.height - 15px) / 2; width: 15px; height: 15px; source: @image-url("../assets/hide.svg"); image-fit: contain; colorize: Theme.danger; }
         hide-area := TouchArea {
             enabled: root.interactive;
             accessible-role: button; accessible-label: "hide " + root.profile.name;
@@ -430,6 +463,7 @@ component ProfilePanel inherits Card {
     Text { x: 12px; y: 9px; text: "profiles"; color: Theme.text; font-size: 12px; font-weight: 700; }
     ScrollView {
         x: Theme.space-2; y: 28px; width: parent.width - Theme.space-4; height: parent.height - 64px;
+        horizontal-scrollbar-policy: always-off;
         VerticalLayout {
             width: parent.width;
             spacing: Theme.space-1;
@@ -454,9 +488,12 @@ component ProfilePanel inherits Card {
 component BindingActionDropdown inherits Rectangle {
     in property <string> current-value;
     in property <[string]> actions;
+    in property <[string]> filtered-actions;
     in property <bool> interactive: true;
     in property <bool> popup-above: false;
     callback selected(string);
+    callback query-changed(string);
+    in-out property <string> query: "";
     height: 38px;
     border-radius: Theme.radius;
     border-width: 1px;
@@ -465,26 +502,28 @@ component BindingActionDropdown inherits Rectangle {
     opacity: root.interactive ? 1.0 : 0.48;
     accessible-role: combobox;
     accessible-label: "button action, " + root.current-value;
-    accessible-action-default => { if (root.interactive) { action-popup.show(); } }
+    accessible-action-default => { if (root.interactive) { root.query = ""; root.query-changed(""); action-popup.show(); } }
 
     Text {
         x: Theme.space-3; y: 0px; width: parent.width - 34px; height: parent.height;
         text: root.current-value; color: Theme.text; font-size: 11px; font-weight: 600;
         vertical-alignment: center; overflow: elide;
     }
-    Text {
-        x: parent.width - 26px; y: 0px; width: 16px; height: parent.height;
-        text: "⌄"; color: Theme.muted; font-size: 14px;
-        horizontal-alignment: center; vertical-alignment: center;
+    Image {
+        x: parent.width - 26px; y: (parent.height - 16px) / 2; width: 16px; height: 16px;
+        source: @image-url("../assets/chevron-down.svg"); image-fit: contain;
+        colorize: Theme.muted;
     }
     action-area := TouchArea {
         enabled: root.interactive;
         mouse-cursor: root.interactive ? pointer : default;
-        clicked => { action-popup.show(); }
+        clicked => { root.query = ""; root.query-changed(""); action-popup.show(); }
     }
     action-popup := PopupWindow {
         x: 0px; y: root.popup-above ? -self.height - Theme.space-1 : root.height + Theme.space-1;
-        width: root.width; height: 264px;
+        width: root.width; height: 312px;
+        close-policy: close-on-click-outside;
+        forward-focus: search-text;
         Rectangle {
             background: Theme.surface;
             border-width: 1px;
@@ -492,14 +531,44 @@ component BindingActionDropdown inherits Rectangle {
             border-radius: Theme.radius;
             drop-shadow-blur: 16px;
             drop-shadow-color: Theme.shadow;
-            ScrollView {
+            // Sticky search header: sits above the scrolling list, so the
+            // query stays visible while the actions scroll underneath.
+            search-bar := Rectangle {
                 x: Theme.space-1; y: Theme.space-1;
+                width: parent.width - 2 * Theme.space-1; height: 40px;
+                background: Theme.surface-raised;
+                border-width: 1px;
+                border-color: search-text.has-focus ? Theme.accent : Theme.border;
+                border-radius: Theme.radius;
+                Image {
+                    x: Theme.space-2; y: (parent.height - 14px) / 2; width: 14px; height: 14px;
+                    source: @image-url("../assets/search.svg"); image-fit: contain;
+                    colorize: Theme.muted;
+                }
+                if root.query.is-empty : Text {
+                    x: 30px; y: 0px; width: parent.width - 40px; height: parent.height;
+                    text: "search actions"; color: Theme.muted; font-size: 11px;
+                    vertical-alignment: center; overflow: elide;
+                }
+                search-text := TextInput {
+                    x: 30px; y: 0px; width: parent.width - 40px; height: parent.height;
+                    color: Theme.text; font-size: 11px;
+                    selection-foreground-color: Theme.text; selection-background-color: Theme.accent-soft;
+                    vertical-alignment: center; single-line: true;
+                    accessible-label: "search button actions";
+                    text <=> root.query;
+                    edited => { root.query-changed(self.text); }
+                }
+            }
+            options-scroll := ScrollView {
+                x: Theme.space-1; y: 48px;
                 width: parent.width - 2 * Theme.space-1;
-                height: parent.height - 2 * Theme.space-1;
+                height: parent.height - 48px - Theme.space-1;
+                horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
                     width: parent.width;
                     spacing: 0px;
-                    for action[index] in root.actions : Rectangle {
+                    for action[index] in root.filtered-actions : Rectangle {
                         height: 32px;
                         border-radius: Theme.radius;
                         background: action == root.current-value ? Theme.accent-soft : option-area.has-hover ? Theme.surface-raised : Theme.surface;
@@ -517,63 +586,94 @@ component BindingActionDropdown inherits Rectangle {
                             clicked => { root.selected(action); action-popup.close(); }
                         }
                     }
+                    if root.filtered-actions.length == 0 : Rectangle {
+                        height: 32px;
+                        Text {
+                            x: Theme.space-2; y: 0px; width: parent.width - 2 * Theme.space-2; height: parent.height;
+                            text: "no actions match that search"; color: Theme.muted; font-size: 11px;
+                            vertical-alignment: center; overflow: elide;
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-component MouseConnector inherits Rectangle {
-    in property <length> from-x;
-    in property <length> from-y;
-    in property <length> to-x;
-    in property <length> to-y;
-    x: root.from-x;
-    y: min(root.from-y, root.to-y);
-    width: root.to-x - root.from-x;
-    height: max(root.from-y, root.to-y) - root.y + 1px;
-    background: transparent;
+/// Where one numbered marker sits, as fractions of the shell render.
+struct Spot {
+    fx: float,
+    fy: float,
+}
+
+/// Numbered badge pairing a spot on the mouse photo with its binding row. Two
+/// surfaces, two lit styles: over the photo (black in both themes) it stays a
+/// light disc with a glow, while beside a row it inverts to the theme's text
+/// colour, so on the light theme it darkens instead of washing out to white.
+component ButtonBadge inherits Rectangle {
+    in property <int> number;
+    /// Lit while its row or its marker is hovered.
+    in property <bool> hot;
+    /// Set on the markers that sit over the photo.
+    in property <bool> on-photo: false;
+    property <color> lit-fill: root.on-photo ? #ffffff : Theme.text;
+    /// A photo marker sits on whatever the photo shows there — a black wheel in
+    /// one place, a white shell in another — so it carries its own dark ring and
+    /// never relies on the background for contrast. The ring thickens when lit.
+    property <color> ring: root.on-photo ? #20232b : (root.hot ? root.lit-fill : Theme.border);
+    width: 20px; height: 20px; border-radius: 10px;
+    background: root.hot ? root.lit-fill : #dfe3ea;
+    border-width: root.hot && root.on-photo ? 2px : 1px;
+    border-color: root.ring;
     Rectangle {
-        x: 0px; y: root.from-y - root.y;
-        width: parent.width - Theme.space-4; height: 1px;
-        background: Theme.border;
+        x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px;
+        border-radius: self.height / 2;
+        background: root.hot ? root.lit-fill.transparentize(0.78) : transparent;
+        animate background { duration: 120ms; }
     }
-    Rectangle {
-        x: parent.width - Theme.space-4; y: min(root.from-y, root.to-y) - root.y;
-        width: 1px; height: max(1px, max(root.from-y, root.to-y) - min(root.from-y, root.to-y));
-        background: Theme.border;
+    Text {
+        text: root.number;
+        // The number rides the fill: dark on the idle grey and on the photo's
+        // white disc, but the surface colour when the badge inverts to text.
+        color: root.hot && !root.on-photo ? Theme.surface : #20232b;
+        font-size: 10px; font-weight: 700;
+        horizontal-alignment: center; vertical-alignment: center;
     }
-    Rectangle {
-        x: parent.width - Theme.space-4; y: root.to-y - root.y;
-        width: Theme.space-4; height: 1px;
-        background: Theme.border;
-    }
-    Rectangle {
-        x: -4px; y: root.from-y - root.y - 4px;
-        width: 8px; height: 8px; border-radius: 4px;
-        background: Theme.accent;
-    }
+    animate background { duration: 120ms; }
 }
 
 component BindingCard inherits Rectangle {
     in property <BindingRow> item;
     in property <int> item-index;
     in property <[string]> actions;
+    in property <[string]> filtered-actions;
     in property <bool> interactive: true;
+    in property <bool> hot;
+    in property <length> row-height: 54px;
     callback action-selected(int, string);
-    height: 54px;
+    callback filter-query-changed(string);
+    /// Reports pointer enter/leave so the page can light this row's marker.
+    callback hover-changed(int, bool);
+    height: root.row-height;
     background: transparent;
-    Text { x: 0px; y: 3px; width: 116px; text: root.item.button; color: Theme.text; font-size: 11px; font-weight: 700; overflow: elide; }
-    Text { x: 0px; y: 24px; width: 116px; text: root.item.location; color: Theme.muted; font-size: 9px; overflow: elide; }
     accessible-role: groupbox;
     accessible-label: root.item.button + " assignment";
-    BindingActionDropdown {
-        x: 124px; y: 7px; width: parent.width - 124px;
-        actions: root.actions;
-        current-value: root.item.action;
-        popup-above: root.item-index >= 4;
-        interactive: root.interactive && root.item.editable;
-        selected(value) => { root.action-selected(root.item-index, value); }
+    // Wraps the whole row so hover survives the pointer moving onto the dropdown.
+    TouchArea {
+        changed has-hover => { root.hover-changed(root.item-index, self.has-hover); }
+        ButtonBadge { x: 0px; y: 4px; number: root.item-index + 1; hot: root.hot; }
+        Text { x: 30px; y: 3px; width: 86px; text: root.item.button; color: Theme.text; font-size: 11px; font-weight: 700; overflow: elide; }
+        Text { x: 30px; y: 24px; width: 86px; text: root.item.location; color: Theme.muted; font-size: 9px; overflow: elide; }
+        BindingActionDropdown {
+            x: 124px; y: 7px; width: parent.width - 124px;
+            actions: root.actions;
+            filtered-actions: root.filtered-actions;
+            current-value: root.item.action;
+            popup-above: root.item-index >= 4;
+            interactive: root.interactive && root.item.editable;
+            selected(value) => { root.action-selected(root.item-index, value); }
+            query-changed(query) => { root.filter-query-changed(query); }
+        }
     }
 }
 
@@ -658,61 +758,120 @@ component OverviewPage inherits Rectangle {
 component ButtonsPage inherits Rectangle {
     in property <[BindingRow]> bindings;
     in property <[string]> binding-actions;
+    in property <[string]> binding-actions-filtered;
     in property <bool> interactive: false;
+    /// Renders the white shell render instead of the black one.
+    in property <bool> white-shell: false;
     callback set-binding-action(int, string);
+    callback filter-binding-actions(string);
+    callback select-shell(bool);
     background: transparent;
 
     SectionTitle { x: 24px; y: 20px; title: "buttons"; subtitle: "Choose what each physical button does."; }
     assignments-card := Card {
         x: 24px; y: 88px; width: parent.width - 48px; height: parent.height - 106px;
-        property <length> mouse-box-height: self.height - 76px;
-        property <length> mouse-render-height: min(self.mouse-box-height, 280px * 1104.0 / 606.0);
-        property <length> mouse-render-width: self.mouse-render-height * 606.0 / 1104.0;
-        property <length> mouse-left: 34px + (280px - self.mouse-render-width) / 2;
-        property <length> mouse-top: 52px + (self.mouse-box-height - self.mouse-render-height) / 2;
-        Text { x: 18px; y: 14px; text: root.interactive ? "Button assignments" : "Connect your mouse to change button assignments."; color: root.interactive ? Theme.muted : Theme.warning; font-size: 10px; }
+        // Layout: one grid for the whole card. The photo is sized and placed
+        // from the rows, and the markers are fractions of the photo, so nothing
+        // here is repeated as a literal and nothing depends on the window size.
+        property <length> row-height: 54px;
+        property <length> rows-y: 25px;
+        property <length> rows-gap: 60px;
+        property <length> mouse-column-x: 34px;
+        property <length> mouse-column-width: 280px;
+        property <length> rows-x: self.mouse-column-x + self.mouse-column-width + self.rows-gap;
+        property <length> mouse-bottom-gap: 34px;
+        /// Binding row (or marker) under the pointer, -1 for none.
+        property <int> hot-index: -1;
+        // The photo keeps its aspect; it shrinks only when the card cannot hold it.
+        // Both shells are 1173x628 (the white one is normalised to it), so the
+        // render box is identical either way — see the spot table below.
+        property <float> mouse-aspect: 1173.0 / 628.0;
+        property <length> mouse-box-height: self.height - self.rows-y - self.mouse-bottom-gap;
+        property <length> mouse-render-height: min(self.mouse-box-height, self.mouse-column-width * self.mouse-aspect);
+        property <length> mouse-render-width: self.mouse-render-height / self.mouse-aspect;
+        property <length> mouse-left: self.mouse-column-x + (self.mouse-column-width - self.mouse-render-width) / 2;
+        property <length> mouse-top: self.rows-y;
+        // One spot table for both shells, deliberately: the two renders measure
+        // within half a percent of each other at every height, so each fraction
+        // is the midpoint of the two shells' matching feature. Switching shell
+        // therefore moves nothing — a marker that jumped would read as a glitch,
+        // and two tables is how that happens. Re-measure here only when an asset
+        // changes shape by more than about a percent.
+        // lmb/rmb sit on their buttons' centres level with the wheel's marker,
+        // forward/back share a column inboard of the side buttons (a centred
+        // badge would hang off the silhouette), and dpi sits on the palm below
+        // the button seam, where the underside button is.
+        property <[Spot]> spots: [
+            { fx: 0.286, fy: 0.18 },
+            { fx: 0.718, fy: 0.18 },
+            { fx: 0.500, fy: 0.18 },
+            { fx: 0.718, fy: 0.46 },
+            { fx: 0.095, fy: 0.355 },
+            { fx: 0.095, fy: 0.50 },
+        ];
         Image {
             x: assignments-card.mouse-left; y: assignments-card.mouse-top;
             width: assignments-card.mouse-render-width; height: assignments-card.mouse-render-height;
-            source: @image-url("../assets/mouse-top.png"); image-fit: contain;
+            source: root.white-shell ? @image-url("../assets/mouse-top-white.png") : @image-url("../assets/mouse-top.png");
+            image-fit: contain;
         }
 
-        left-click-connector := MouseConnector {
-            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.36;
-            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.15;
-            to-x: 366px; to-y: 77px;
+        // Shell picker. The photo *is* the shell, so the switch sits under it,
+        // and it flips the render in place so the difference is immediate.
+        // Icons rather than ☀/🌙: this font stack renders those as tofu.
+        IconButton {
+            x: assignments-card.mouse-column-x + assignments-card.mouse-column-width / 2 - 24px;
+            y: assignments-card.mouse-top + assignments-card.mouse-render-height + 6px;
+            width: 22px; height: 22px;
+            icon: @image-url("../assets/sun.svg");
+            icon-tint: root.white-shell ? Theme.text : Theme.muted;
+            accessible-name: "white shell";
+            enabled: root.interactive;
+            selected: root.white-shell;
+            clicked => { root.select-shell(true); }
         }
-        right-click-connector := MouseConnector {
-            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.68;
-            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.15;
-            to-x: 366px; to-y: 131px;
+        IconButton {
+            x: assignments-card.mouse-column-x + assignments-card.mouse-column-width / 2 + 2px;
+            y: assignments-card.mouse-top + assignments-card.mouse-render-height + 6px;
+            width: 22px; height: 22px;
+            icon: @image-url("../assets/moon.svg");
+            icon-tint: root.white-shell ? Theme.muted : Theme.text;
+            accessible-name: "black shell";
+            enabled: root.interactive;
+            selected: !root.white-shell;
+            clicked => { root.select-shell(false); }
         }
-        wheel-connector := MouseConnector {
-            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.51;
-            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.19;
-            to-x: 366px; to-y: 185px;
-        }
-        dpi-connector := MouseConnector {
-            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.515;
-            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.36;
-            to-x: 366px; to-y: 239px;
-        }
-        forward-side-connector := MouseConnector {
-            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.085;
-            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.35;
-            to-x: 366px; to-y: 293px;
-        }
-        back-side-connector := MouseConnector {
-            from-x: assignments-card.mouse-left + assignments-card.mouse-render-width * 0.085;
-            from-y: assignments-card.mouse-top + assignments-card.mouse-render-height * 0.51;
-            to-x: 366px; to-y: 347px;
+
+        // Markers in model order (lmb, rmb, wheel, dpi, forward, back), from the
+        // selected shell's table above.
+        for spot[index] in assignments-card.spots : ButtonBadge {
+            x: assignments-card.mouse-left + assignments-card.mouse-render-width * spot.fx - self.width / 2;
+            y: assignments-card.mouse-top + assignments-card.mouse-render-height * spot.fy - self.height / 2;
+            number: index + 1;
+            on-photo: true;
+            hot: assignments-card.hot-index == index;
+            TouchArea {
+                changed has-hover => {
+                    if self.has-hover { assignments-card.hot-index = index; }
+                    else if assignments-card.hot-index == index { assignments-card.hot-index = -1; }
+                }
+            }
         }
 
         VerticalLayout {
-            x: 374px; y: 50px; width: parent.width - 392px; height: 330px; spacing: 0px;
+            x: assignments-card.rows-x; y: assignments-card.rows-y;
+            width: parent.width - assignments-card.rows-x - 18px;
+            height: assignments-card.row-height * 6; spacing: 0px;
             for item[index] in root.bindings : BindingCard {
-                item: item; item-index: index; actions: root.binding-actions; interactive: root.interactive;
+                item: item; item-index: index; actions: root.binding-actions; filtered-actions: root.binding-actions-filtered;
+                interactive: root.interactive; row-height: assignments-card.row-height;
+                hot: assignments-card.hot-index == index;
                 action-selected(item-index, action) => { root.set-binding-action(item-index, action); }
+                filter-query-changed(query) => { root.filter-binding-actions(query); }
+                hover-changed(row, inside) => {
+                    if inside { assignments-card.hot-index = row; }
+                    else if assignments-card.hot-index == row { assignments-card.hot-index = -1; }
+                }
             }
         }
     }
@@ -742,18 +901,21 @@ component SensitivityPage inherits Rectangle {
     SectionTitle { x: 24px; y: 20px; title: "sensitivity"; subtitle: "Fine-tune pointer speed and sensor behavior."; }
     ScrollView {
         x: 24px; y: 88px; width: parent.width - 48px; height: parent.height - 106px;
+        horizontal-scrollbar-policy: always-off;
         VerticalLayout {
-            width: parent.width;
+            width: parent.width; alignment: start;
             spacing: Theme.space-3;
             HorizontalLayout {
-                width: parent.width; height: root.columns-height; spacing: Theme.space-3;
+                width: parent.width; spacing: Theme.space-3;
                 Card {
-                    min-width: 430px; height: root.columns-height;
+                    min-width: 430px; min-height: root.columns-height;
                     Text { x: 16px; y: 14px; text: "DPI stages"; color: Theme.text; font-size: 14px; font-weight: 700; }
                     Text { x: 16px; y: 36px; width: parent.width - 146px; text: "Select or drag a stage."; color: Theme.muted; font-size: 9px; }
                     ActionButton { x: parent.width - 122px; y: 10px; width: 106px; label: "add stage"; compact: true; enabled: root.interactive && root.dpi-stages.length < 8; clicked => { root.add-dpi-stage(); } }
                     VerticalLayout {
-                        x: 10px; y: 66px; width: parent.width - 20px; height: parent.height - 76px; spacing: Theme.space-1;
+                        // Start-aligned so extra height from the stretch sits below
+                        // the stages instead of spreading the rows apart.
+                        x: 10px; y: 66px; width: parent.width - 20px; height: parent.height - 76px; spacing: Theme.space-1; alignment: start;
                         for stage[index] in root.dpi-stages : DpiStageRow {
                             stage: stage; item-index: index; interactive: root.interactive; can-remove: root.dpi-stages.length > 1;
                             range-min: "\{round(root.dpi-min)}"; range-max: "\{round(root.dpi-max)}";
@@ -764,28 +926,34 @@ component SensitivityPage inherits Rectangle {
                     }
                 }
                 VerticalLayout {
-                    min-width: 318px; max-width: 318px; height: 462px; spacing: Theme.space-3;
+                    min-width: 318px; max-width: 318px; spacing: Theme.space-3;
                     Card {
-                        height: 64px;
-                        Text { x: 16px; y: 10px; text: "DPI display range"; color: Theme.text; font-size: 12px; font-weight: 700; }
-                        Text { x: 16px; y: 32px; width: parent.width - 174px; text: "Configured in App Settings."; color: Theme.muted; font-size: 9px; overflow: elide; }
-                        ActionButton { x: parent.width - 142px; y: 15px; width: 126px; label: "app settings"; primary: true; compact: true; clicked => { root.open-settings(); } }
+                        VerticalLayout {
+                            padding-left: 16px; padding-right: 16px; padding-top: 10px; padding-bottom: 12px; spacing: 4px;
+                            Text { text: "DPI display range"; color: Theme.text; font-size: 12px; font-weight: 700; }
+                            HorizontalLayout { spacing: Theme.space-2;
+                                Text { text: "Configured in App Settings."; color: Theme.muted; font-size: 9px; overflow: elide; vertical-alignment: center; }
+                                ActionButton { width: 126px; label: "app settings"; primary: true; compact: true; clicked => { root.open-settings(); } }
+                            }
+                        }
                     }
                     Card {
-                        height: 386px;
-                        Text { x: 16px; y: 14px; text: "sensor behavior"; color: Theme.text; font-size: 14px; font-weight: 700; }
-                        Text { x: 16px; y: 36px; width: parent.width - 32px; text: root.interactive ? "Tune how movement is reported." : "Connect your mouse to edit."; color: root.interactive ? Theme.muted : Theme.warning; font-size: 9px; overflow: elide; }
-                        ToggleRow { x: 16px; y: 56px; width: parent.width - 32px; label: "motion sync"; detail: "Align reports with sensor capture timing."; checked <=> root.motion-sync-readback; interactive: root.interactive; toggled(value) => { root.toggle-motion-sync(value); } }
-                        Rectangle { x: 16px; y: 120px; width: parent.width - 32px; height: 1px; background: Theme.border; }
-                        ToggleRow { x: 16px; y: 124px; width: parent.width - 32px; label: "ripple control"; detail: "Smooth tiny movements at high DPI."; checked <=> root.ripple-control-readback; interactive: root.interactive; toggled(value) => { root.toggle-ripple-control(value); } }
-                        Rectangle { x: 16px; y: 188px; width: parent.width - 32px; height: 1px; background: Theme.border; }
-                        ToggleRow { x: 16px; y: 192px; width: parent.width - 32px; label: "angle snapping"; detail: "Straighten near-axis movement."; checked <=> root.angle-snap; interactive: root.interactive; toggled(value) => { root.toggle-angle-snap(value); } }
-                        Rectangle { x: 16px; y: 256px; width: parent.width - 32px; height: 1px; background: Theme.border; }
-                        Text { x: 16px; y: 270px; text: "lift-off distance"; color: Theme.text; font-size: 12px; font-weight: 650; }
-                        Text { x: 16px; y: 294px; width: parent.width - 32px; text: "Stop tracking sooner or later when lifted."; color: Theme.muted; font-size: 9px; overflow: elide; }
-                        HorizontalLayout { x: 16px; y: 326px; width: parent.width - 32px; height: 34px; spacing: Theme.space-2;
-                            ChoiceButton { label: "1 mm"; compact: true; selected: root.lift-off-choice == 0; enabled: root.interactive; clicked => { root.lift-off-choice = 0; root.set-lift-off(0); } }
-                            ChoiceButton { label: "2 mm"; compact: true; selected: root.lift-off-choice == 1; enabled: root.interactive; clicked => { root.lift-off-choice = 1; root.set-lift-off(1); } }
+                        VerticalLayout {
+                            padding-left: 16px; padding-right: 16px; padding-top: 14px; padding-bottom: 16px; spacing: 8px;
+                            Text { text: "sensor behavior"; color: Theme.text; font-size: 14px; font-weight: 700; }
+                            Text { text: root.interactive ? "Tune how movement is reported." : "Connect your mouse to edit."; color: root.interactive ? Theme.muted : Theme.warning; font-size: 9px; wrap: word-wrap; }
+                            ToggleRow { label: "motion sync"; detail: "Align reports with sensor capture timing."; checked <=> root.motion-sync-readback; interactive: root.interactive; toggled(value) => { root.toggle-motion-sync(value); } }
+                            Rectangle { height: 1px; background: Theme.border; }
+                            ToggleRow { label: "ripple control"; detail: "Smooth tiny movements at high DPI."; checked <=> root.ripple-control-readback; interactive: root.interactive; toggled(value) => { root.toggle-ripple-control(value); } }
+                            Rectangle { height: 1px; background: Theme.border; }
+                            ToggleRow { label: "angle snapping"; detail: "Straighten near-axis movement."; checked <=> root.angle-snap; interactive: root.interactive; toggled(value) => { root.toggle-angle-snap(value); } }
+                            Rectangle { height: 1px; background: Theme.border; }
+                            Text { text: "lift-off distance"; color: Theme.text; font-size: 12px; font-weight: 650; }
+                            Text { text: "Stop tracking sooner or later when lifted."; color: Theme.muted; font-size: 9px; wrap: word-wrap; }
+                            HorizontalLayout { height: 34px; spacing: Theme.space-2;
+                                ChoiceButton { label: "1 mm"; compact: true; selected: root.lift-off-choice == 0; enabled: root.interactive; clicked => { root.lift-off-choice = 0; root.set-lift-off(0); } }
+                                ChoiceButton { label: "2 mm"; compact: true; selected: root.lift-off-choice == 1; enabled: root.interactive; clicked => { root.lift-off-choice = 1; root.set-lift-off(1); } }
+                            }
                         }
                     }
                 }
@@ -814,61 +982,78 @@ component PerformancePage inherits Rectangle {
     SectionTitle { x: 24px; y: 20px; title: "performance"; subtitle: "Balance responsiveness with battery life."; }
     ScrollView {
         x: 24px; y: 88px; width: parent.width - 48px; height: parent.height - 106px;
+        horizontal-scrollbar-policy: always-off;
         VerticalLayout {
-            width: parent.width; spacing: Theme.space-3;
+            width: parent.width; spacing: Theme.space-3; alignment: start;
             Card {
-                width: parent.width; height: 166px;
-                Text { x: 18px; y: 16px; text: "polling rate"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 41px; width: parent.width - 36px; text: root.ble-device ? "Connect by USB to change the polling rate." : "Higher rates feel more responsive and use more power."; color: root.ble-device ? Theme.warning : Theme.muted; font-size: 10px; }
-                HorizontalLayout { x: 18px; y: 76px; width: parent.width - 36px; height: 54px; spacing: Theme.space-2;
-                    ChoiceButton { label: "125"; detail: "Hz"; selected: root.selected-rate-hz == 125; enabled: root.rate-interactive; clicked => { root.selected-rate-hz = 125; root.rate-changed(125); } }
-                    ChoiceButton { label: "250"; detail: "Hz"; selected: root.selected-rate-hz == 250; enabled: root.rate-interactive; clicked => { root.selected-rate-hz = 250; root.rate-changed(250); } }
-                    ChoiceButton { label: "500"; detail: "Hz"; selected: root.selected-rate-hz == 500; enabled: root.rate-interactive; clicked => { root.selected-rate-hz = 500; root.rate-changed(500); } }
-                    ChoiceButton { label: "1000"; detail: "Hz"; selected: root.selected-rate-hz == 1000; enabled: root.rate-interactive; clicked => { root.selected-rate-hz = 1000; root.rate-changed(1000); } }
+                width: parent.width;
+                VerticalLayout {
+                    padding-left: 18px; padding-right: 18px; padding-top: 16px; padding-bottom: 18px; spacing: 8px;
+                    Text { text: "polling rate"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                    Text { text: root.ble-device ? "Connect by USB to change the polling rate." : "Higher rates feel more responsive and use more power."; color: root.ble-device ? Theme.warning : Theme.muted; font-size: 10px; wrap: word-wrap; }
+                    HorizontalLayout { height: 54px; spacing: Theme.space-2;
+                        ChoiceButton { label: "125"; detail: "Hz"; selected: root.selected-rate-hz == 125; enabled: root.rate-interactive; clicked => { root.selected-rate-hz = 125; root.rate-changed(125); } }
+                        ChoiceButton { label: "250"; detail: "Hz"; selected: root.selected-rate-hz == 250; enabled: root.rate-interactive; clicked => { root.selected-rate-hz = 250; root.rate-changed(250); } }
+                        ChoiceButton { label: "500"; detail: "Hz"; selected: root.selected-rate-hz == 500; enabled: root.rate-interactive; clicked => { root.selected-rate-hz = 500; root.rate-changed(500); } }
+                        ChoiceButton { label: "1000"; detail: "Hz"; selected: root.selected-rate-hz == 1000; enabled: root.rate-interactive; clicked => { root.selected-rate-hz = 1000; root.rate-changed(1000); } }
+                    }
                 }
             }
             Card {
-                width: parent.width; height: 140px;
-                Text { x: 18px; y: 16px; text: "click debounce"; color: Theme.text; font-size: 14px; font-weight: 700; }
-                Text { x: 18px; y: 40px; text: "Lower values respond faster; higher values filter switch bounce."; color: Theme.muted; font-size: 10px; }
-                ThemedSlider {
-                    x: 18px; y: 64px; width: parent.width - 178px;
-                    minimum: 4; maximum: 50; step: 2; value: root.debounce-ms; enabled: root.interactive;
-                    accessible-name: "click debounce"; minimum-label: "4 ms"; maximum-label: "50 ms";
-                    changed(value) => { root.set-debounce-ms(round(value / 2) * 2); }
+                width: parent.width;
+                VerticalLayout {
+                    padding-left: 18px; padding-right: 18px; padding-top: 16px; padding-bottom: 18px; spacing: 8px;
+                    Text { text: "click debounce"; color: Theme.text; font-size: 14px; font-weight: 700; }
+                    Text { text: "Lower values respond faster; higher values filter switch bounce."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                    HorizontalLayout { spacing: Theme.space-2;
+                        ThemedSlider {
+                            minimum: 4; maximum: 50; step: 2; value: root.debounce-ms; enabled: root.interactive;
+                            accessible-name: "click debounce"; minimum-label: "4 ms"; maximum-label: "50 ms";
+                            changed(value) => { root.set-debounce-ms(round(value / 2) * 2); }
+                        }
+                        VerticalLayout { width: 82px; spacing: 0px; padding-top: 4px;
+                            InputField { width: parent.width; text: "\{root.debounce-ms}"; interactive: root.interactive; accepted(value) => { root.set-debounce-text(value); } }
+                        }
+                                                    Text { text: "ms"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
+                    }
                 }
-                InputField { x: parent.width - 144px; y: 68px; width: 82px; text: "\{root.debounce-ms}"; interactive: root.interactive; accepted(value) => { root.set-debounce-text(value); } }
-                Text { x: parent.width - 54px; y: 68px; height: Theme.control-height; text: "ms"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
             }
             power-card := Card {
-                width: parent.width; height: 174px;
-                Rectangle {
-                    x: 18px; y: 0px; width: (power-card.width - 54px) / 2; height: parent.height; background: transparent;
-                    Text { y: 16px; text: "sleep timer"; color: Theme.text; font-size: 14px; font-weight: 700; }
-                    Text { y: 40px; width: parent.width; text: "First power-saving delay."; color: Theme.muted; font-size: 10px; }
-                    ThemedSlider {
-                        x: 0px; y: 64px; width: parent.width - 100px;
-                        minimum: 1; maximum: 60; step: 1; value: root.sleep-half-minutes; enabled: root.interactive;
-                        accessible-name: "sleep timer"; minimum-label: "0.5 min"; maximum-label: "30 min";
-                        changed(value) => { root.set-sleep-half-minutes(round(value)); }
+                width: parent.width;
+                HorizontalLayout {
+                    padding-left: 18px; padding-right: 18px; padding-top: 16px; padding-bottom: 18px; spacing: 18px;
+                    VerticalLayout { width: (parent.width - 73px) / 2; spacing: 8px;
+                        Text { text: "sleep timer"; color: Theme.text; font-size: 14px; font-weight: 700; }
+                        Text { text: "First power-saving delay."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                        HorizontalLayout { spacing: Theme.space-2;
+                            ThemedSlider {
+                                minimum: 1; maximum: 60; step: 1; value: root.sleep-half-minutes; enabled: root.interactive;
+                                accessible-name: "sleep timer"; minimum-label: "0.5 min"; maximum-label: "30 min";
+                                changed(value) => { root.set-sleep-half-minutes(round(value)); }
+                            }
+                            VerticalLayout { width: 56px; spacing: 0px; padding-top: 4px;
+                                InputField { width: parent.width; text: "\{root.sleep-half-minutes * 0.5}"; interactive: root.interactive; accepted(value) => { root.set-sleep-text(value); } }
+                            }
+                            Text { text: "min"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
+                        }
                     }
-                    InputField { x: parent.width - 90px; y: 68px; width: 56px; text: "\{root.sleep-half-minutes * 0.5}"; interactive: root.interactive; accepted(value) => { root.set-sleep-text(value); } }
-                    Text { x: parent.width - 28px; y: 68px; height: Theme.control-height; text: "min"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
-                }
-                Rectangle { x: parent.width / 2; y: Theme.space-4; width: 1px; height: parent.height - Theme.space-5 - Theme.space-3; background: Theme.border; }
-                Rectangle {
-                    x: parent.width / 2 + 18px; y: 0px; width: (power-card.width - 54px) / 2; height: parent.height; background: transparent;
-                    Text { y: 16px; text: "deep sleep"; color: Theme.text; font-size: 14px; font-weight: 700; }
-                    Text { y: 40px; width: parent.width; text: "Whole-minute power-off delay."; color: Theme.muted; font-size: 10px; }
-                    ThemedSlider {
-                        x: 0px; y: 64px; width: parent.width - 100px;
-                        minimum: 1; maximum: 60; step: 1; value: root.deep-sleep-minutes; enabled: root.interactive && root.deep-sleep-known;
-                        accessible-name: "deep sleep timer"; minimum-label: "1 min"; maximum-label: "60 min";
-                        changed(value) => { root.set-deep-sleep-minutes(round(value)); }
+                    Rectangle { width: 1px; background: Theme.border; }
+                    VerticalLayout { width: (parent.width - 73px) / 2; spacing: 8px;
+                        Text { text: "deep sleep"; color: Theme.text; font-size: 14px; font-weight: 700; }
+                        Text { text: "Whole-minute power-off delay."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                        HorizontalLayout { spacing: Theme.space-2;
+                            ThemedSlider {
+                                minimum: 1; maximum: 60; step: 1; value: root.deep-sleep-minutes; enabled: root.interactive && root.deep-sleep-known;
+                                accessible-name: "deep sleep timer"; minimum-label: "1 min"; maximum-label: "60 min";
+                                changed(value) => { root.set-deep-sleep-minutes(round(value)); }
+                            }
+                            VerticalLayout { width: 56px; spacing: 0px; padding-top: 4px;
+                                InputField { width: parent.width; text: "\{root.deep-sleep-minutes}"; interactive: root.interactive && root.deep-sleep-known; accepted(value) => { root.set-deep-sleep-text(value); } }
+                            }
+                            Text { text: "min"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
+                        }
+                        if !root.deep-sleep-known : Text { text: "Reconnect the mouse to load this setting."; color: Theme.warning; font-size: 9px; wrap: word-wrap; }
                     }
-                    InputField { x: parent.width - 90px; y: 68px; width: 56px; text: "\{root.deep-sleep-minutes}"; interactive: root.interactive && root.deep-sleep-known; accepted(value) => { root.set-deep-sleep-text(value); } }
-                    Text { x: parent.width - 28px; y: 68px; height: Theme.control-height; text: "min"; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
-                    if !root.deep-sleep-known : Text { x: 0px; y: 136px; width: parent.width; text: "Reconnect the mouse to load this setting."; color: Theme.warning; font-size: 9px; }
                 }
             }
         }
@@ -914,74 +1099,96 @@ component AdvancedPage inherits Rectangle {
     SectionTitle { x: 24px; y: 20px; title: "advanced"; subtitle: "Connection details and recovery tools."; }
     ScrollView {
         x: 24px; y: 88px; width: parent.width - 48px; height: parent.height - 106px;
+        horizontal-scrollbar-policy: always-off;
         VerticalLayout {
-            width: parent.width;
+            width: parent.width; alignment: start;
             spacing: 12px;
             Card {
-                width: parent.width; height: 184px;
-                Text { x: 18px; y: 15px; text: "connection details"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 40px; text: root.device-name; color: Theme.text; font-size: 12px; font-weight: 650; overflow: elide; }
-                Text { x: 18px; y: 64px; text: root.transport-label; color: Theme.muted; font-size: 10px; }
-                Text { x: 18px; y: 92px; text: "diagnostics (select + Ctrl+C for bug reports)"; color: Theme.muted; font-size: 9px; }
-                TextInput { x: 18px; y: 110px; width: parent.width - 36px; height: 30px; text: root.device-id-text + " · " + root.device-product-text; read-only: true; font-size: 10px; }
-                if !root.sim-scenario.is-empty : Text { x: 18px; y: 150px; width: parent.width - 36px; text: "sim scenario: " + root.sim-scenario; color: Theme.warning; font-size: 10px; overflow: elide; }
-            }
-            Card {
-                width: parent.width; height: 226px;
-                Text { x: 18px; y: 15px; text: "configuration source"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 40px; width: parent.width - 36px; text: "USB defaults to the mouse, dongle defaults to saved. BLE always uses saved."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
-                Text { x: 18px; y: 68px; text: "USB (wired)"; color: Theme.text; font-size: 11px; font-weight: 600; }
-                HorizontalLayout { x: 18px; y: 86px; width: 230px; height: 38px; spacing: 6px;
-                    ChoiceButton { label: "from mouse"; compact: true; selected: root.baseline-choice-wired == 0; enabled: root.interactive && !root.ble-device; clicked => { root.baseline-choice-wired = 0; root.set-baseline-choice-wired(0); } }
-                    ChoiceButton { label: "saved"; compact: true; selected: root.baseline-choice-wired == 1; enabled: root.interactive; clicked => { root.baseline-choice-wired = 1; root.set-baseline-choice-wired(1); } }
-                }
-                Text { x: 18px; y: 132px; text: "2.4G receiver (dongle)"; color: Theme.text; font-size: 11px; font-weight: 600; }
-                HorizontalLayout { x: 18px; y: 150px; width: 230px; height: 38px; spacing: 6px;
-                    ChoiceButton { label: "from mouse"; compact: true; selected: root.baseline-choice-receiver == 0; enabled: root.interactive; clicked => { root.baseline-choice-receiver = 0; root.set-baseline-choice-receiver(0); } }
-                    ChoiceButton { label: "saved"; compact: true; selected: root.baseline-choice-receiver == 1; enabled: root.interactive; clicked => { root.baseline-choice-receiver = 1; root.set-baseline-choice-receiver(1); } }
-                }
-                ToggleRow { x: 276px; y: 88px; width: parent.width - 294px; label: "use defaults if needed"; detail: "Allow full-profile writes when no baseline exists (first Bluetooth setup)."; checked <=> root.allow-explicit-defaults; interactive: root.interactive; toggled(value) => { root.set-allow-explicit-defaults(value); } }
-                ToggleRow { x: 276px; y: 152px; width: parent.width - 294px; label: "warn when click breaks"; detail: "Popup and banner if a save would leave no button left-clicking."; checked <=> root.warn-no-left-click; interactive: root.interactive; toggled(value) => { root.set-warn-no-left-click(value); } }
-            }
-            Card {
-                width: parent.width; height: 184px;
-                Text { x: 18px; y: 15px; text: "profile readings"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 40px; width: parent.width - 36px; height: 58px; text: root.ble-device ? "Reading profiles needs USB; unavailable over BLE." : root.all-profiles-observed ? "All five profiles have been read." : "Re-read all five profiles without replacing your saved settings."; color: root.ble-device ? Theme.warning : Theme.muted; font-size: 10px; wrap: word-wrap; }
-                ActionButton { x: 18px; y: 116px; width: 194px; label: "read all profiles"; compact: true; enabled: root.interactive && !root.ble-device; clicked => { root.request-refresh-all-profiles(); } }
-            }
-            Card {
-                width: parent.width; height: 116px;
-                Text { x: 18px; y: 15px; text: "backup and recovery"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 40px; text: "Import or export a backup, or reset stale local data."; color: Theme.muted; font-size: 10px; }
-                HorizontalLayout { x: 18px; y: 68px; width: 360px; height: 34px; spacing: 6px;
-                    ActionButton { label: "import"; compact: true; enabled: !root.verification-running; clicked => { root.request-import(); } }
-                    ActionButton { label: "export"; compact: true; enabled: !root.verification-running; clicked => { root.request-export(); } }
-                }
-            }
-            Card {
-                width: parent.width; height: 148px + root.unassociated.length * 68px;
-                Text { x: 18px; y: 15px; text: "mouse identity"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 40px; width: parent.width - 36px; text: "Add another mouse to tell your mice apart. Unrecognized connections below can be restored, added, adopted, or paired."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
-                ActionButton { x: 18px; y: 80px; width: 176px; label: "add another mouse"; primary: true; compact: true; enabled: root.interactive && !root.ceremony-active; clicked => { root.request-add-mouse(); } }
-                if root.ceremony-active : ActionButton { x: 204px; y: 80px; width: 120px; label: "show setup"; compact: true; clicked => { root.show-ceremony(); } }
-                Rectangle { x: 18px; y: 126px; width: parent.width - 36px; height: 1px; background: Theme.border; }
-                if root.unassociated.length == 0 : Text { x: 18px; y: 138px; width: parent.width - 36px; text: "Every connection is recognized."; color: Theme.muted; font-size: 10px; }
+                width: parent.width;
                 VerticalLayout {
-                    x: 18px; y: 136px; width: parent.width - 36px; height: root.unassociated.length * 68px; spacing: 8px;
-                    for connection[index] in root.unassociated : Rectangle {
-                        height: 60px;
-                        border-radius: Theme.radius;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        background: Theme.surface-raised;
-                        Text { x: 12px; y: 6px; width: parent.width - 24px; height: 16px; text: connection.name; color: Theme.text; font-size: 11px; font-weight: 650; overflow: elide; }
-                        Text { x: 12px; y: 24px; width: parent.width - 24px; height: 14px; text: connection.detail; color: Theme.muted; font-size: 9px; overflow: elide; }
-                        HorizontalLayout {
-                            x: 12px; y: 40px; width: parent.width - 24px; height: 26px; spacing: 6px;
-                            if connection.can-restore : ActionButton { label: "restore a saved mouse"; compact: true; height: 26px; enabled: root.interactive && !root.ceremony-active; clicked => { root.unassociated-action(index, 1); } }
-                            if connection.can-add : ActionButton { label: "add as a different mouse"; compact: true; height: 26px; enabled: root.interactive && !root.ceremony-active; clicked => { root.unassociated-action(index, 0); } }
-                            if connection.can-adopt : ActionButton { label: "adopt this mouse"; compact: true; height: 26px; enabled: root.interactive && !root.ceremony-active; clicked => { root.unassociated-action(index, 2); } }
-                            if connection.can-associate : ActionButton { label: "pair with a saved mouse"; compact: true; height: 26px; enabled: root.interactive && !root.ceremony-active; clicked => { root.unassociated-action(index, 3); } }
+                    padding-left: 18px; padding-right: 18px; padding-top: 15px; padding-bottom: 18px; spacing: 6px;
+                    Text { text: "connection details"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                    Text { text: root.device-name; color: Theme.text; font-size: 12px; font-weight: 650; wrap: word-wrap; }
+                    Text { text: root.transport-label; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                    Text { text: "diagnostics (select + Ctrl+C for bug reports)"; color: Theme.muted; font-size: 9px; wrap: word-wrap; }
+                    TextInput { height: 30px; text: root.device-id-text + " · " + root.device-product-text; read-only: true; font-size: 10px; color: Theme.muted; }
+                    if !root.sim-scenario.is-empty : Text { text: "sim scenario: " + root.sim-scenario; color: Theme.warning; font-size: 10px; wrap: word-wrap; }
+                }
+            }
+            Card {
+                width: parent.width;
+                VerticalLayout {
+                    padding-left: 18px; padding-right: 18px; padding-top: 15px; padding-bottom: 18px; spacing: 8px;
+                    Text { text: "configuration source"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                    Text { text: "USB defaults to the mouse, dongle defaults to saved. BLE always uses saved."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                    HorizontalLayout { spacing: 18px;
+                        VerticalLayout { width: 230px; spacing: 8px;
+                            Text { text: "USB (wired)"; color: Theme.text; font-size: 11px; font-weight: 600; }
+                            HorizontalLayout { width: 230px; height: 38px; spacing: 6px;
+                                ChoiceButton { label: "from mouse"; compact: true; selected: root.baseline-choice-wired == 0; enabled: root.interactive && !root.ble-device; clicked => { root.baseline-choice-wired = 0; root.set-baseline-choice-wired(0); } }
+                                ChoiceButton { label: "saved"; compact: true; selected: root.baseline-choice-wired == 1; enabled: root.interactive; clicked => { root.baseline-choice-wired = 1; root.set-baseline-choice-wired(1); } }
+                            }
+                            Text { text: "2.4G receiver (dongle)"; color: Theme.text; font-size: 11px; font-weight: 600; }
+                            HorizontalLayout { width: 230px; height: 38px; spacing: 6px;
+                                ChoiceButton { label: "from mouse"; compact: true; selected: root.baseline-choice-receiver == 0; enabled: root.interactive; clicked => { root.baseline-choice-receiver = 0; root.set-baseline-choice-receiver(0); } }
+                                ChoiceButton { label: "saved"; compact: true; selected: root.baseline-choice-receiver == 1; enabled: root.interactive; clicked => { root.baseline-choice-receiver = 1; root.set-baseline-choice-receiver(1); } }
+                            }
+                        }
+                        VerticalLayout { width: parent.width - 284px; spacing: 8px;
+                            ToggleRow { label: "use defaults if needed"; detail: "Allow full-profile writes when no baseline exists (first Bluetooth setup)."; checked <=> root.allow-explicit-defaults; interactive: root.interactive; toggled(value) => { root.set-allow-explicit-defaults(value); } }
+                            ToggleRow { label: "warn when click breaks"; detail: "Popup and banner if a save would leave no button left-clicking."; checked <=> root.warn-no-left-click; interactive: root.interactive; toggled(value) => { root.set-warn-no-left-click(value); } }
+                        }
+                    }
+                }
+            }
+            Card {
+                width: parent.width;
+                VerticalLayout {
+                    padding-left: 18px; padding-right: 18px; padding-top: 15px; padding-bottom: 18px; spacing: 8px;
+                    Text { text: "profile readings"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                    Text { text: root.ble-device ? "Reading profiles needs USB; unavailable over BLE." : root.all-profiles-observed ? "All five profiles have been read." : "Re-read all five profiles without replacing your saved settings."; color: root.ble-device ? Theme.warning : Theme.muted; font-size: 10px; wrap: word-wrap; }
+                    ActionButton { width: 194px; label: "read all profiles"; compact: true; enabled: root.interactive && !root.ble-device; clicked => { root.request-refresh-all-profiles(); } }
+                }
+            }
+            Card {
+                width: parent.width;
+                VerticalLayout {
+                    padding-left: 18px; padding-right: 18px; padding-top: 15px; padding-bottom: 18px; spacing: 8px;
+                    Text { text: "backup and recovery"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                    Text { text: "Import or export a backup, or reset stale local data."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                    HorizontalLayout { width: 360px; height: 34px; spacing: 6px;
+                        ActionButton { label: "import"; compact: true; enabled: !root.verification-running; clicked => { root.request-import(); } }
+                        ActionButton { label: "export"; compact: true; enabled: !root.verification-running; clicked => { root.request-export(); } }
+                    }
+                }
+            }
+            Card {
+                width: parent.width;
+                VerticalLayout {
+                    padding-left: 18px; padding-right: 18px; padding-top: 15px; padding-bottom: 18px; spacing: 8px;
+                    Text { text: "mouse identity"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                    Text { text: "Add another mouse to tell your mice apart. Unrecognized connections below can be restored, added, adopted, or paired."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                    HorizontalLayout { height: 34px; spacing: 6px;
+                        ActionButton { width: 176px; label: "add another mouse"; primary: true; compact: true; enabled: root.interactive && !root.ceremony-active; clicked => { root.request-add-mouse(); } }
+                        if root.ceremony-active : ActionButton { width: 120px; label: "show setup"; compact: true; clicked => { root.show-ceremony(); } }
+                    }
+                    VerticalLayout { spacing: 8px;
+                        for connection[index] in root.unassociated : Rectangle {
+                            border-radius: Theme.radius;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            background: Theme.surface-raised;
+                            VerticalLayout {
+                                x: 12px; y: 6px; width: parent.width - 24px; spacing: 2px; padding-bottom: 8px;
+                                Text { text: connection.name; color: Theme.text; font-size: 11px; font-weight: 650; overflow: elide; }
+                                Text { text: connection.detail; color: Theme.muted; font-size: 9px; overflow: elide; }
+                                HorizontalLayout { spacing: 6px;
+                                    if connection.can-restore : ActionButton { label: "restore a saved mouse"; compact: true; height: 26px; enabled: root.interactive && !root.ceremony-active; clicked => { root.unassociated-action(index, 1); } }
+                                    if connection.can-add : ActionButton { label: "add as a different mouse"; compact: true; height: 26px; enabled: root.interactive && !root.ceremony-active; clicked => { root.unassociated-action(index, 0); } }
+                                    if connection.can-adopt : ActionButton { label: "adopt this mouse"; compact: true; height: 26px; enabled: root.interactive && !root.ceremony-active; clicked => { root.unassociated-action(index, 2); } }
+                                    if connection.can-associate : ActionButton { label: "pair with a saved mouse"; compact: true; height: 26px; enabled: root.interactive && !root.ceremony-active; clicked => { root.unassociated-action(index, 3); } }
+                                }
+                            }
                         }
                     }
                 }
@@ -991,15 +1198,11 @@ component AdvancedPage inherits Rectangle {
 }
 
 component SettingsPage inherits Rectangle {
-    in property <int> product-name-choice;
-    in-out property <string> custom-product-name;
     in property <bool> logarithmic-scale;
     in property <float> dpi-min;
     in property <float> dpi-max;
     in-out property <string> dpi-min-text;
     in-out property <string> dpi-max-text;
-    callback select-product-name(int);
-    callback custom-name-changed(string);
     callback select-appearance(int);
     callback toggle-dpi-scale;
     callback apply-dpi-range(string, string);
@@ -1007,43 +1210,44 @@ component SettingsPage inherits Rectangle {
     SectionTitle { x: 24px; y: 18px; title: "app settings"; subtitle: "Personalize the app and its DPI display."; }
     ScrollView {
         x: 24px; y: 88px; width: parent.width - 48px; height: parent.height - 106px;
+        horizontal-scrollbar-policy: always-off;
         VerticalLayout {
-            width: parent.width; spacing: Theme.space-3;
+            width: parent.width; spacing: Theme.space-3; alignment: start;
             Card {
-                width: parent.width; height: 142px;
-                Text { x: 18px; y: 14px; text: "DPI scale and range"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 38px; width: parent.width - 36px; text: "Controls how DPI stages are spaced in the Sensitivity visualization."; color: Theme.muted; font-size: 9px; overflow: elide; }
-                ActionButton { x: 18px; y: 66px; width: 142px; label: root.logarithmic-scale ? "logarithmic scale" : "linear scale"; compact: true; clicked => { root.toggle-dpi-scale(); } }
-                Text { x: 176px; y: 56px; text: "minimum"; color: Theme.muted; font-size: 9px; }
-                InputField { x: 176px; y: 72px; width: 84px; text <=> root.dpi-min-text; accepted(value) => { root.apply-dpi-range(value, root.dpi-max-text); } }
-                Text { x: 272px; y: 56px; text: "maximum"; color: Theme.muted; font-size: 9px; }
-                InputField { x: 272px; y: 72px; width: 84px; text <=> root.dpi-max-text; accepted(value) => { root.apply-dpi-range(root.dpi-min-text, value); } }
-                ActionButton { x: 368px; y: 72px; width: 106px; label: "apply range"; primary: true; compact: true; clicked => { root.apply-dpi-range(root.dpi-min-text, root.dpi-max-text); } }
-                Text { x: 490px; y: 72px; width: parent.width - 508px; height: 34px; text: "Current: \{round(root.dpi-min)}–\{round(root.dpi-max)} DPI"; color: Theme.muted; font-size: 9px; vertical-alignment: center; overflow: elide; }
-            }
-            Card {
-                width: parent.width; height: root.product-name-choice == 2 ? 178px : 120px;
-                Text { x: 18px; y: 16px; text: "display name"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 42px; text: "This name appears at the top of the app."; color: Theme.muted; font-size: 10px; }
-                HorizontalLayout { x: 18px; y: 74px; width: parent.width - 36px; height: 34px; spacing: Theme.space-1;
-                    ChoiceButton { label: "Attack Shark X3"; compact: true; selected: root.product-name-choice == 0; clicked => { root.select-product-name(0); } }
-                    ChoiceButton { label: "Kysona M600"; compact: true; selected: root.product-name-choice == 1; clicked => { root.select-product-name(1); } }
-                    ChoiceButton { label: "custom"; compact: true; selected: root.product-name-choice == 2; clicked => { root.select-product-name(2); } }
-                }
-                if root.product-name-choice == 2 : InputField {
-                    x: 18px; y: 126px; width: 360px; text <=> root.custom-product-name;
-                    placeholder-text: "enter a display name";
-                    accepted(value) => { root.custom-name-changed(value); }
+                width: parent.width;
+                VerticalLayout {
+                    padding-left: 18px; padding-right: 18px; padding-top: 14px; padding-bottom: 18px; spacing: 8px;
+                    Text { text: "DPI scale and range"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                    Text { text: "Controls how DPI stages are spaced in the Sensitivity visualization."; color: Theme.muted; font-size: 9px; wrap: word-wrap; }
+                    HorizontalLayout { spacing: Theme.space-2;
+                        VerticalLayout { spacing: 2px; padding-top: 14px;
+                            ActionButton { width: 142px; label: root.logarithmic-scale ? "logarithmic scale" : "linear scale"; compact: true; clicked => { root.toggle-dpi-scale(); } }
+                        }
+                        VerticalLayout { width: 84px; spacing: 2px;
+                            Text { text: "minimum"; color: Theme.muted; font-size: 9px; }
+                            InputField { width: parent.width; text <=> root.dpi-min-text; accepted(value) => { root.apply-dpi-range(value, root.dpi-max-text); } }
+                        }
+                        VerticalLayout { width: 84px; spacing: 2px;
+                            Text { text: "maximum"; color: Theme.muted; font-size: 9px; }
+                            InputField { width: parent.width; text <=> root.dpi-max-text; accepted(value) => { root.apply-dpi-range(root.dpi-min-text, value); } }
+                        }
+                        VerticalLayout { spacing: 2px; padding-top: 14px;
+                            ActionButton { width: 106px; label: "apply range"; primary: true; compact: true; clicked => { root.apply-dpi-range(root.dpi-min-text, root.dpi-max-text); } }
+                        }
+                    }
                 }
             }
             Card {
-                width: parent.width; height: 112px;
-                Text { x: 18px; y: 16px; text: "appearance"; color: Theme.text; font-size: 15px; font-weight: 700; }
-                Text { x: 18px; y: 42px; text: "Follow system tracks operating system changes automatically."; color: Theme.muted; font-size: 10px; }
-                HorizontalLayout { x: 18px; y: 70px; width: 360px; height: 34px; spacing: Theme.space-1;
-                    ChoiceButton { label: "follow system"; compact: true; selected: Theme.appearance == ColorScheme.unknown; clicked => { root.select-appearance(0); } }
-                    ChoiceButton { label: "light"; compact: true; selected: Theme.appearance == ColorScheme.light; clicked => { root.select-appearance(1); } }
-                    ChoiceButton { label: "dark"; compact: true; selected: Theme.appearance == ColorScheme.dark; clicked => { root.select-appearance(2); } }
+                width: parent.width;
+                VerticalLayout {
+                    padding-left: 18px; padding-right: 18px; padding-top: 16px; padding-bottom: 18px; spacing: 8px;
+                    Text { text: "appearance"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                    Text { text: "Follow system tracks operating system changes automatically."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                    HorizontalLayout { width: 360px; height: 34px; spacing: Theme.space-1;
+                        ChoiceButton { label: "follow system"; compact: true; selected: Theme.appearance == ColorScheme.unknown; clicked => { root.select-appearance(0); } }
+                        ChoiceButton { label: "light"; compact: true; selected: Theme.appearance == ColorScheme.light; clicked => { root.select-appearance(1); } }
+                        ChoiceButton { label: "dark"; compact: true; selected: Theme.appearance == ColorScheme.dark; clicked => { root.select-appearance(2); } }
+                    }
                 }
             }
         }
@@ -1069,27 +1273,6 @@ component StateConflictPopup inherits PopupWindow {
         ActionButton { x: 20px; y: parent.height - 54px; width: 178px; label: "reset local data"; primary: true; clicked => { root.discard(); } }
         ActionButton { x: parent.width - 110px; y: parent.height - 54px; width: 90px; label: "quit"; compact: true; clicked => { root.close-app(); } }
         Text { x: 214px; y: parent.height - 46px; width: parent.width - 334px; height: 30px; text: "A backup is kept automatically."; color: Theme.muted; font-size: 9px; wrap: word-wrap; }
-    }
-}
-
-component TailHideConfirmationPopup inherits PopupWindow {
-    in property <int> profile-index: -1;
-    callback confirm;
-    callback cancel;
-    width: 480px;
-    height: 230px;
-
-    Rectangle {
-        background: Theme.surface;
-        border-color: Theme.danger;
-        border-width: 2px;
-        border-radius: Theme.radius;
-        drop-shadow-blur: 24px;
-        drop-shadow-color: Theme.shadow;
-        Text { x: 20px; y: 16px; width: parent.width - 40px; text: "hide this profile?"; color: Theme.text; font-size: 16px; font-weight: 700; }
-        Text { x: 20px; y: 52px; width: parent.width - 40px; height: 92px; text: "Profile \{root.profile-index + 1} is the last profile that can be hidden. Another profile may become active."; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
-        ActionButton { x: 20px; y: parent.height - 56px; width: 176px; label: "hide profile"; destructive: true; clicked => { root.confirm(); } }
-        ActionButton { x: parent.width - 116px; y: parent.height - 56px; width: 96px; label: "cancel"; compact: true; clicked => { root.cancel(); } }
     }
 }
 
@@ -1213,6 +1396,7 @@ component CeremonyTargetPicker inherits PopupWindow {
         Text { x: 20px; y: 48px; width: parent.width - 40px; height: 36px; text: root.detail; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
         ScrollView {
             x: 20px; y: 94px; width: parent.width - 40px; height: 176px;
+            horizontal-scrollbar-policy: always-off;
             VerticalLayout {
                 width: parent.width;
                 spacing: 4px;
@@ -1260,17 +1444,24 @@ export component AppWindow inherits Window {
     in-out property <bool> motion-sync-readback: false;
     in-out property <bool> ripple-control-readback: false;
     in-out property <bool> dpi-log-scale: true;
-    in-out property <int> product-name-choice: 0;
-    in-out property <string> product-name: "Attack Shark X3";
-    in-out property <string> custom-product-name: "custom mouse";
     in-out property <float> dpi-min: 200.0;
     in-out property <float> dpi-max: 3200.0;
     in-out property <string> dpi-min-text: "200";
     in-out property <string> dpi-max-text: "3200";
+    in-out property <bool> white-shell: false;
     in-out property <string> transport-label: "USB not selected";
     in-out property <string> battery-text: "";
     in-out property <string> lifecycle-text: "starting";
-    in-out property <string> device-name: "No device selected";
+    /// Loaded mouse display name, shown as the header title. Neutral app
+    /// label until a mouse loads; enrollment always names so no fallback
+    /// text is needed once hardware is ready.
+    in-out property <string> device-name: "Attack Shark X3";
+    /// Header subtitle: stable id + transport once loaded.
+    in-out property <string> device-subtitle: "no device selected";
+    in-out property <bool> header-editing-name: false;
+    /// Live draft of the header rename field. Mirrored here because the
+    /// click-away surface is a sibling of the field and cannot see it.
+    in-out property <string> rename-draft: "";
     in-out property <string> device-id-text: "not available";
     in-out property <string> device-product-text: "not available";
     /// Active sim scenario from `X3_SIM`; empty when running on hardware.
@@ -1303,13 +1494,23 @@ export component AppWindow inherits Window {
     in-out property <string> lmb-break-action: "";
     in-out property <bool> no-left-click-now: false;
     in-out property <bool> banner-dismissed: false;
+    /// Auto-demo banner: true while the worker serves the pinned demo
+    /// device. The strip shows until dismissed, then collapses to a header
+    /// pill; both clear when demo mode exits.
+    in-out property <bool> demo-active: false;
+    in-out property <bool> demo-banner-dismissed: false;
+    out property <bool> show-demo-banner: root.demo-active && !root.demo-banner-dismissed;
+    out property <bool> show-demo-pill: root.demo-active && root.demo-banner-dismissed;
+    out property <bool> show-click-banner: root.no-left-click-now && root.warn-no-left-click && !root.banner-dismissed;
+    /// Stacked banner height under the 62px header: each visible strip is
+    /// 34px. The content area offsets by this instead of nesting ternaries.
+    out property <length> banner-stack: (root.show-demo-banner ? 34px : 0px) + (root.show-click-banner ? 34px : 0px);
     in-out property <int> pending-ask-kind: 0;
     in-out property <string> pending-endpoint-label: "";
     in property <[string]> pending-candidates;
     in-out property <bool> ble-device: false;
     in-out property <bool> verification-running: false;
     in-out property <int> last-enabled-profile: -1;
-    property <int> pending-hide-profile: -1;
     in-out property <int> pending-unassociated-row: -1;
 
     in property <[DeviceRow]> devices;
@@ -1317,6 +1518,7 @@ export component AppWindow inherits Window {
     in property <[DpiStage]> dpi-stages;
     in property <[BindingRow]> bindings;
     in property <[string]> binding-actions;
+    in property <[string]> binding-actions-filtered;
     in property <[ProfileRow]> profiles;
 
     in-out property <bool> ceremony-active: false;
@@ -1340,16 +1542,17 @@ export component AppWindow inherits Window {
     callback select-profile(int);
     callback add-profile;
     callback rename-profile(int, string);
+    callback rename-device(string);
     callback hide-profile(int);
     callback select-dpi(int);
     callback drag-dpi(int, float);
     callback add-dpi-stage;
     callback remove-dpi-stage(int);
     callback toggle-dpi-scale;
-    callback select-product-name(int);
-    callback custom-name-changed(string);
     callback dpi-range-changed(string, string);
     callback set-binding-action(int, string);
+    callback filter-binding-actions(string);
+    callback select-shell(bool);
     callback select-appearance(int);
     callback request-save;
     callback restore-lmb;
@@ -1395,16 +1598,112 @@ export component AppWindow inherits Window {
     callback close-state-conflict;
     callback close-app;
 
+    // Click-away surface for the header rename. Declared before all content so
+    // it sits at the back: Slint dispatches pointer input front-to-back and
+    // stops at the first item that accepts, so presses on the field (or any
+    // widget) never reach it, while presses on plain background land here and
+    // commit the draft.
+    if root.header-editing-name : TouchArea {
+        width: parent.width; height: parent.height;
+        clicked => {
+            // Empty click-away cancels, like an empty blur: focus loss must
+            // never destroy the name.
+            if (!root.rename-draft.is-empty) {
+                root.rename-device(root.rename-draft);
+            }
+            root.header-editing-name = false;
+        }
+    }
     Rectangle {
         x: 0px; y: 0px; width: parent.width; height: 62px; background: Theme.surface;
         Rectangle { x: 0px; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.border; }
         HorizontalLayout {
-            x: 18px; y: 11px; height: 40px; spacing: Theme.space-3; alignment: start;
-            VerticalLayout { spacing: 0px; max-width: 240px;
-                Text { text: root.product-name; color: Theme.text; font-size: 17px; font-weight: 700; overflow: elide; }
-                Text { text: root.device-name; color: Theme.muted; font-size: 10px; overflow: elide; }
+            x: 18px; y: 8px; height: 46px; spacing: 12px; alignment: start; cross-axis-alignment: center;
+            // Title stack: name over stable id (`mouse-1`), both hugging
+            // content so the pencil sits directly after the name. The pill
+            // carries the transport, so the small text shows no transport.
+            // Edit mode overlays a borderless field at the same size and
+            // position as the name; Esc cancels via the worker round-trip
+            // (rename-device with no change is a no-op).
+            VerticalLayout { spacing: 0px; cross-axis-alignment: start;
+                title-row := HorizontalLayout { spacing: 6px; cross-axis-alignment: center;
+                    if !root.header-editing-name : Text { text: root.device-name; color: Theme.text; font-size: 17px; font-weight: 700; max-width: 220px; overflow: elide; vertical-alignment: center; }
+                    if !root.header-editing-name && root.hardware-ready : Rectangle {
+                        width: 26px; height: 26px; border-radius: Theme.radius;
+                        background: rename-area.has-hover ? Theme.surface-raised : transparent;
+                        Image { x: (parent.width - 14px) / 2; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: @image-url("../assets/pencil.svg"); image-fit: contain; }
+                        rename-area := TouchArea {
+                            accessible-role: button; accessible-label: "rename this mouse";
+                            accessible-action-default => { root.header-editing-name = true; }
+                            mouse-cursor: pointer; clicked => { root.header-editing-name = true; }
+                        }
+                    }
+                    if root.header-editing-name : name-field := TextInput {
+                        width: 208px; height: 28px;
+                        font-size: 17px; font-weight: 700;
+                        // Colour it explicitly: the std-widgets palette follows
+                        // the *system* scheme, not Theme.appearance, so an
+                        // unstyled TextInput renders white-on-white in light mode.
+                        color: Theme.text;
+                        selection-foreground-color: Theme.text;
+                        selection-background-color: Theme.accent-soft;
+                        vertical-alignment: center;
+                        // Single click places the cursor, double selects the
+                        // word, triple selects all (Slint click-count
+                        // behavior). Nothing grabs focus on press while this
+                        // field is open — the app's global-shortcut FocusScope
+                        // is `focus-on-click: false` — so a repeat click never
+                        // blurs the field mid-edit.
+                        property <bool> cancelling: false;
+                        // The `text:` binding above is dropped from codegen
+                        // once `self.text` is written elsewhere (Escape/blur
+                        // restores), so seed the draft imperatively and take
+                        // focus so the user can type straight away. Select-all
+                        // then clear-selection parks the caret at the end of
+                        // the existing name (`clear-selection` collapses the
+                        // anchor onto the cursor) without needing a byte
+                        // offset, which would be wrong for non-ASCII names.
+                        init => { self.text = root.device-name; root.rename-draft = root.device-name; self.focus(); self.select-all(); self.clear-selection(); }
+                        changed text => { root.rename-draft = self.text; }
+                        changed has-focus => {
+                            if (!self.has-focus && root.header-editing-name && !self.cancelling) {
+                                // Empty blur cancels (restores the original):
+                                // focus loss must never destroy the name.
+                                // Explicit Enter with blank still clears to
+                                // the stable-id fallback (worker contract).
+                                if (self.text.is-empty) {
+                                    self.text = root.device-name;
+                                } else {
+                                    root.rename-device(self.text);
+                                }
+                                root.header-editing-name = false;
+                            }
+                            self.cancelling = false;
+                        }
+                        key-pressed(event) => {
+                            if (event.text == Key.Escape) {
+                                self.cancelling = true;
+                                self.text = root.device-name;
+                                root.header-editing-name = false;
+                                return accept;
+                            }
+                            return reject;
+                        }
+                        accepted => { root.rename-device(self.text); root.header-editing-name = false; }
+                    }
+                }
+                Text { text: root.device-id-text; color: Theme.muted; font-size: 10px; max-width: 240px; overflow: elide; }
             }
             StatusPill { label: root.transport-label + (root.battery-text.is-empty ? "" : " · " + root.battery-text); dot-color: root.hardware-ready ? Theme.success : Theme.warning; compact: true; }
+            if root.show-demo-pill : Rectangle {
+                height: 26px; border-radius: Theme.radius; background: Theme.warning-soft; border-width: 1px; border-color: Theme.warning;
+                HorizontalLayout {
+                    padding-left: 10px; padding-right: 12px; spacing: 8px; alignment: start; cross-axis-alignment: center;
+                    Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.warning; }
+                    Text { text: "simulated"; color: Theme.text; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+                }
+                TouchArea { accessible-role: button; accessible-label: "show the simulated-mouse notice"; mouse-cursor: pointer; clicked => { root.demo-banner-dismissed = false; } }
+            }
         }
         ActionButton { x: parent.width - 282px; y: 14px; width: 86px; label: "refresh"; compact: true; enabled: !root.busy && !root.dirty; clicked => { root.request-refresh(); } }
         ActionButton { x: parent.width - 188px; y: 14px; width: 126px; label: "discard / reload"; compact: true; enabled: root.hardware-ready && !root.busy; clicked => { root.request-reset(); } }
@@ -1415,7 +1714,7 @@ export component AppWindow inherits Window {
     }
 
     Rectangle {
-        x: 0px; y: 62px; width: 220px; height: parent.height - 62px; background: Theme.sidebar;
+        x: 0px; y: 62px + root.banner-stack; width: 220px; height: parent.height - 62px - root.banner-stack; background: Theme.sidebar;
         Rectangle { x: parent.width - 1px; width: 1px; height: parent.height; background: Theme.border; }
         VerticalLayout {
             x: 12px; y: 10px; width: parent.width - 24px; height: 160px; spacing: 0px;
@@ -1436,28 +1735,38 @@ export component AppWindow inherits Window {
             select-profile(index) => { root.select-profile(index); }
             add-profile => { root.add-profile(); }
             rename-profile(index, name) => { root.rename-profile(index, name); }
-            hide-profile(index) => { root.pending-hide-profile = index; tail-hide-confirmation.show(); }
+            hide-profile(index) => { root.hide-profile(index); }
         }
     }
 
-    if root.no-left-click-now && root.warn-no-left-click && !root.banner-dismissed : Rectangle {
-        x: 0px; y: 62px; width: parent.width; height: 34px; background: Theme.danger-soft;
+    if root.show-demo-banner : Rectangle {
+        x: 0px; y: 62px; width: parent.width; height: 34px; background: Theme.warning-soft;
+        Rectangle { x: 0px; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.warning; }
+        Text { x: 18px; y: 0px; width: parent.width - 120px; height: parent.height; text: "Simulated mouse — no hardware found. Connect your mouse."; color: Theme.warning; font-size: 12px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+        IconButton { x: parent.width - 52px; y: 4px; width: 40px; height: 26px; icon: @image-url("../assets/close.svg"); accessible-name: "dismiss the simulated-mouse notice"; clicked => { root.demo-banner-dismissed = true; } }
+    }
+
+    if root.show-click-banner : Rectangle {
+        x: 0px; y: 62px + (root.show-demo-banner ? 34px : 0px); width: parent.width; height: 34px; background: Theme.danger-soft;
         Rectangle { x: 0px; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.danger; }
         Text { x: 18px; y: 0px; width: parent.width - 220px; height: parent.height; text: "No button left-clicks — press Ctrl+Alt+L to restore."; color: Theme.danger; font-size: 12px; font-weight: 700; vertical-alignment: center; overflow: elide; }
         ActionButton { x: parent.width - 190px; y: 4px; width: 130px; height: 26px; label: "restore click"; compact: true; clicked => { root.restore-lmb(); } }
-        ActionButton { x: parent.width - 52px; y: 4px; width: 40px; height: 26px; label: "✕"; compact: true; clicked => { root.banner-dismissed = true; } }
+        IconButton { x: parent.width - 52px; y: 4px; width: 40px; height: 26px; icon: @image-url("../assets/close.svg"); accessible-name: "dismiss the no-click warning"; clicked => { root.banner-dismissed = true; } }
     }
 
     Rectangle {
-        x: 220px; y: root.no-left-click-now && root.warn-no-left-click && !root.banner-dismissed ? 96px : 62px; width: parent.width - 220px; height: parent.height - (root.no-left-click-now && root.warn-no-left-click && !root.banner-dismissed ? 140px : 106px); background: Theme.canvas;
+        x: 220px; y: 62px + root.banner-stack; width: parent.width - 220px; height: parent.height - 106px - root.banner-stack; background: Theme.canvas;
         OverviewPage { visible: root.current-page == 0;
             width: parent.width; height: parent.height;
             profile-summary: root.profile-summary; active-dpi-text: root.active-dpi-text; active-stage-text: root.active-stage-text;
             polling-rate-text: root.polling-rate-text; hardware-ready: root.hardware-ready;
         }
         ButtonsPage { visible: root.current-page == 1;
-            width: parent.width; height: parent.height; bindings: root.bindings; binding-actions: root.binding-actions; interactive: root.hardware-ready && !root.busy;
+            width: parent.width; height: parent.height; bindings: root.bindings; binding-actions: root.binding-actions; binding-actions-filtered: root.binding-actions-filtered; interactive: root.hardware-ready && !root.busy;
+            white-shell: root.white-shell;
             set-binding-action(index, action) => { root.set-binding-action(index, action); }
+            filter-binding-actions(query) => { root.filter-binding-actions(query); }
+            select-shell(white) => { root.select-shell(white); }
         }
         SensitivityPage { visible: root.current-page == 2;
             width: parent.width; height: parent.height; dpi-stages: root.dpi-stages; dpi-min: root.dpi-min; dpi-max: root.dpi-max;
@@ -1509,11 +1818,9 @@ export component AppWindow inherits Window {
             show-ceremony => { root.show-ceremony(); }
         }
         SettingsPage { visible: root.current-page == 5;
-            width: parent.width; height: parent.height; product-name-choice: root.product-name-choice; custom-product-name <=> root.custom-product-name;
+            width: parent.width; height: parent.height;
             logarithmic-scale: root.dpi-log-scale; dpi-min: root.dpi-min; dpi-max: root.dpi-max;
             dpi-min-text <=> root.dpi-min-text; dpi-max-text <=> root.dpi-max-text;
-            select-product-name(index) => { root.select-product-name(index); }
-            custom-name-changed(name) => { root.custom-name-changed(name); }
             select-appearance(value) => { root.select-appearance(value); }
             toggle-dpi-scale => { root.toggle-dpi-scale(); }
             apply-dpi-range(minimum, maximum) => { root.dpi-range-changed(minimum, maximum); }
@@ -1522,7 +1829,7 @@ export component AppWindow inherits Window {
 
     Rectangle {
         x: 220px; y: parent.height - 44px; width: parent.width - 220px; height: 44px; background: Theme.surface;
-        Rectangle { width: parent.width; height: 1px; background: Theme.border; }
+        Rectangle { x: 0px; y: 0px; width: parent.width; height: 1px; background: Theme.border; }
         Rectangle { x: 16px; y: 18px; width: 7px; height: 7px; border-radius: 4px; background: root.busy ? Theme.warning : root.hardware-ready ? (root.dirty ? Theme.warning : Theme.success) : Theme.warning; }
         Text { x: 32px; width: parent.width - 270px; height: parent.height; text: root.status-text; color: root.busy ? Theme.warning : Theme.muted; font-size: 9px; vertical-alignment: center; overflow: elide; }
         Text { x: parent.width - 258px; width: 86px; height: parent.height; text: root.busy ? "busy" : root.hardware-ready ? (root.dirty ? "unsaved" : "saved") : "not connected"; color: root.busy || root.dirty || !root.hardware-ready ? Theme.warning : Theme.success; font-size: 9px; font-weight: 700; horizontal-alignment: right; vertical-alignment: center; }
@@ -1569,17 +1876,22 @@ export component AppWindow inherits Window {
         save-anyway => { lmb-break-confirm.close(); root.request-save(); }
         back => { lmb-break-confirm.close(); }
     }
-    tail-hide-confirmation := TailHideConfirmationPopup {
-        x: 300px; y: 210px; close-policy: no-auto-close; profile-index: root.pending-hide-profile;
-        confirm => { tail-hide-confirmation.close(); root.hide-profile(root.pending-hide-profile); root.pending-hide-profile = -1; }
-        cancel => { tail-hide-confirmation.close(); root.pending-hide-profile = -1; }
-    }
     show-state-conflict => { state-conflict.show(); }
     show-ceremony => { ceremony.show(); }
     close-ceremony => { ceremony.close(); root.ceremony-active = false; }
     show-restore-picker => { restore-picker.show(); }
     show-pending-ask => { pending-ask.show(); }
-    FocusScope {
+    shortcut-scope := FocusScope {
+        // This scope spans the whole window, so the default
+        // `focus-on-click: true` made every mouse press steal keyboard focus
+        // from whatever the user clicked — including the header rename field,
+        // which lost its caret, selection and pending edit on the second
+        // click. It is a shortcut host, not a click target: it keeps focus by
+        // default and is deliberately not focusable by clicking. The
+        // Ctrl+Alt+L recovery shortcut exists precisely for when clicks are
+        // broken, so requiring a click to arm it never made sense.
+        focus-on-click: false;
+        init => { self.focus(); }
         key-pressed(event) => {
             if (event.modifiers.control && event.modifiers.alt && event.text == "l") {
                 root.restore-lmb();
